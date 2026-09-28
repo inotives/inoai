@@ -1,1 +1,4 @@
 .agent-rig/.creds/
+/.inoai-connect*/
+/dist/
+/node_modules/

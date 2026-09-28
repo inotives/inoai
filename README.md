@@ -2,14 +2,14 @@
 
 inoai is a local personal-agent bridge: it connects a Discord bot to a locally authenticated coding-agent CLI, beginning with Codex CLI and the owner’s ChatGPT subscription. It stores conversation history and durable agent Memory in SQLite, without using the OpenAI API.
 
-> **Status:** V1 is designed and documented; implementation has not started.
+> **Status:** Phase 1 scaffolding is implemented. Discord, Codex, SQLite persistence, and the Electron app itself remain later work.
 
 ## V1 in brief
 
 - TypeScript core, Discord transport, and Codex CLI runtime.
 - Discord `@inoai` starts a dedicated thread; follow-up messages in that thread continue the same Agent Session.
 - SQLite persists users, sessions, messages, events, approvals, daily recaps, and shared agent Memory.
-- A silent daily Memory Review runs at 06:00 in the host machine’s local time.
+- Memory Review configuration is validated locally; scheduled review execution is deferred.
 - Codex capability, MCP, sandbox, and approval settings come from the local Codex CLI environment. Permission requests become Discord **Approve** / **Reject** buttons.
 - A separate macOS Electron app provides analytics and manual Memory management by opening SQLite directly.
 
@@ -46,7 +46,7 @@ One `.inoai-connect*` directory is one independent Agent Instance. Each has sepa
 Run a named instance with its runtime home:
 
 ```text
-inoai start --connect-dir .inoai-connect-planner
+inoai --connect-dir .inoai-connect-planner
 inoai ui --connect-dir .inoai-connect-planner
 ```
 
@@ -64,7 +64,57 @@ Only one core process may use a runtime home at a time. Different homes may run 
 
 During development, use the ignored repository-root `.inoai-connect/` as the persistent local runtime home. Tests must use disposable runtime homes in the system temporary directory and must not touch real development data.
 
-The Electron UI has a **Load SQLite** action to switch between Agent Instances. It reads only `inoai.sqlite`, never a runtime home’s `.env`.
+### Local setup
+
+inoai requires Node.js 22 or newer.
+
+```sh
+npm install
+npm run build
+```
+
+The first validation or start creates the ignored `.inoai-connect/` runtime home with a blank `.env`, `agent.md`, and `inoai.sqlite`. Copy the value-free sample into that home and fill in the Discord values locally; never commit the resulting `.env` or any `.inoai-connect*/` directory.
+
+```sh
+npm run validate
+cp .env.sample .inoai-connect/.env
+# Edit .inoai-connect/.env with your local Discord values.
+npm run validate
+```
+
+`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex`, local `HH:MM` review time, and a positive review limit. It does not contact Discord or Codex.
+
+Start the local core after validation:
+
+```sh
+npm start
+```
+
+Use an independent named runtime home with the same commands:
+
+```sh
+# This creates a blank .inoai-connect-planner/.env and reports missing settings.
+npm run validate -- --connect-dir .inoai-connect-planner
+cp .env.sample .inoai-connect-planner/.env
+# Edit .inoai-connect-planner/.env with your local Discord values.
+npm run validate -- --connect-dir .inoai-connect-planner
+npm start -- --connect-dir .inoai-connect-planner
+```
+
+Run the focused checks with:
+
+```sh
+npm test
+```
+
+### UI launcher
+
+The macOS UI bundle is a sibling deployment artifact, not runtime-home data. From a packaged deployment use `inoai ui`; during development use the equivalent command below. It passes only the selected `inoai.sqlite` path to `inoai-ui.app` and does not read or change `.env`.
+
+```sh
+npm start -- ui
+npm start -- ui --connect-dir .inoai-connect-planner
+```
 
 ## Documentation
 
