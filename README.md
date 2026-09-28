@@ -107,6 +107,16 @@ Run the focused checks with:
 npm test
 ```
 
+### Manual Memory
+
+Manual Memory writes SQLite directly and never starts an Agent Runtime:
+
+```sh
+npm start -- memory add "Prefer focused tests"
+npm start -- memory list
+npm start -- memory delete 1
+```
+
 ### UI launcher
 
 The macOS UI bundle is a sibling deployment artifact, not runtime-home data. From a packaged deployment use `inoai ui`; during development use the equivalent command below. It passes only the selected `inoai.sqlite` path to `inoai-ui.app` and does not read or change `.env`.
