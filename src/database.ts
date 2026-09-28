@@ -1,0 +1,461 @@
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, lstatSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+import type { Configuration } from "./config.js";
+import type { RuntimeHome } from "./runtime-home.js";
+
+export const databaseBusyTimeoutMs = 5_000;
+
+const initialSchema = `
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  transport TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  external_user_id TEXT NOT NULL,
+  display_name TEXT,
+  role TEXT NOT NULL DEFAULT 'family' CHECK (role IN ('owner', 'family')),
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'disabled')),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL)),
+  UNIQUE (transport, workspace_id, external_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  transport TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  parent_conversation_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  initiating_external_message_id TEXT NOT NULL,
+  agent_provider TEXT NOT NULL,
+  agent_session_id TEXT NOT NULL,
+  project_path TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'ended', 'failed')),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  ended_at INTEGER,
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_conversation ON sessions(transport, workspace_id, conversation_id) WHERE state = 'active' AND deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS unique_initiating_message ON sessions(transport, workspace_id, initiating_external_message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS unique_agent_session ON sessions(agent_provider, agent_session_id);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  transport TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  external_message_id TEXT NOT NULL,
+  external_author_id TEXT,
+  user_id INTEGER REFERENCES users(id),
+  direction TEXT NOT NULL CHECK (direction IN ('user', 'agent')),
+  body TEXT NOT NULL,
+  reply_to_external_message_id TEXT,
+  in_reply_to_message_id INTEGER REFERENCES messages(id),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processing', 'completed', 'failed')),
+  failure_detail TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  started_at INTEGER,
+  completed_at INTEGER,
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS unique_external_message ON messages(transport, workspace_id, external_message_id);
+CREATE INDEX IF NOT EXISTS pending_user_messages ON messages(direction, state, id);
+CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER REFERENCES sessions(id),
+  message_id INTEGER REFERENCES messages(id),
+  event_type TEXT NOT NULL,
+  detail TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, id);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  runtime_approval_id TEXT NOT NULL UNIQUE,
+  request_message_id INTEGER REFERENCES messages(id),
+  resolution_message_id INTEGER REFERENCES messages(id),
+  summary TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'approved', 'rejected', 'expired', 'failed')),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS pending_approvals_by_session ON approvals(session_id, id) WHERE state = 'pending' AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS memory_reviews (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  from_message_id INTEGER NOT NULL REFERENCES messages(id),
+  through_message_id INTEGER NOT NULL REFERENCES messages(id),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processing', 'completed', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  recap TEXT,
+  failure_detail TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  started_at INTEGER,
+  completed_at INTEGER,
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS due_memory_reviews ON memory_reviews(state, next_attempt_at, id);
+
+CREATE TABLE IF NOT EXISTS memories (
+  id INTEGER PRIMARY KEY,
+  body TEXT NOT NULL,
+  source_message_id INTEGER REFERENCES messages(id),
+  created_by_user_id INTEGER REFERENCES users(id),
+  review_id INTEGER REFERENCES memory_reviews(id),
+  origin TEXT NOT NULL CHECK (origin IN ('manual', 'review')),
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'deleted')),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS active_memories ON memories(state, id);
+`;
+
+export class UnsafeDatabasePathError extends Error {
+  constructor(databaseFile: string) {
+    super(`Database must be inoai.sqlite inside the selected runtime home: ${databaseFile}`);
+    this.name = "UnsafeDatabasePathError";
+  }
+}
+
+export function openDatabase(home: RuntimeHome): DatabaseSync {
+  const directory = resolve(home.directory);
+  const databaseFile = resolve(home.databaseFile);
+  const expectedFile = join(directory, "inoai.sqlite");
+  if (databaseFile !== expectedFile || lstatSync(directory).isSymbolicLink() || (existsSync(databaseFile) && lstatSync(databaseFile).isSymbolicLink())) {
+    throw new UnsafeDatabasePathError(home.databaseFile);
+  }
+
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
+  database.exec(initialSchema);
+  recoverStaleWork(database);
+  return database;
+}
+
+type AuditColumns = {
+  created_at: number;
+  created_by: string;
+  updated_at: number;
+  updated_by: string;
+  deleted_at: number | null;
+  deleted_by: string | null;
+};
+
+export type UserRecord = AuditColumns & {
+  id: number;
+  transport: string;
+  workspace_id: string;
+  external_user_id: string;
+  display_name: string | null;
+  role: "owner" | "family";
+  state: "active" | "disabled";
+};
+
+export type SessionRecord = AuditColumns & {
+  id: number;
+  user_id: number;
+  transport: string;
+  workspace_id: string;
+  parent_conversation_id: string;
+  conversation_id: string;
+  initiating_external_message_id: string;
+  agent_provider: string;
+  agent_session_id: string;
+  project_path: string;
+  state: "active" | "ended" | "failed";
+  ended_at: number | null;
+};
+
+export type MessageRecord = AuditColumns & {
+  id: number;
+  session_id: number;
+  transport: string;
+  workspace_id: string;
+  external_message_id: string;
+  external_author_id: string | null;
+  user_id: number | null;
+  direction: "user" | "agent";
+  body: string;
+  reply_to_external_message_id: string | null;
+  in_reply_to_message_id: number | null;
+  state: "pending" | "processing" | "completed" | "failed";
+  failure_detail: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+};
+
+export type EventRecord = AuditColumns & {
+  id: number;
+  session_id: number | null;
+  message_id: number | null;
+  event_type: string;
+  detail: string | null;
+};
+
+export type MemoryRecord = AuditColumns & {
+  id: number;
+  body: string;
+  source_message_id: number | null;
+  created_by_user_id: number | null;
+  review_id: number | null;
+  origin: "manual" | "review";
+  state: "active" | "deleted";
+};
+
+export type MemoryReviewRecord = AuditColumns & {
+  id: number;
+  session_id: number;
+  from_message_id: number;
+  through_message_id: number;
+  state: "pending" | "processing" | "completed" | "failed";
+  attempts: number;
+  next_attempt_at: number;
+  recap: string | null;
+  failure_detail: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+};
+
+type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
+type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
+export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failure_detail" | "started_at" | "completed_at" | "state"> & { state?: MessageRecord["state"] };
+export type NewAgentResponse = Omit<NewMessage, "session_id" | "direction" | "in_reply_to_message_id" | "state">;
+export type MessageQueueMode = "per-session" | "global";
+type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
+type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state">;
+type NewMemoryReview = Omit<MemoryReviewRecord, keyof AuditColumns | "id" | "attempts" | "next_attempt_at" | "recap" | "failure_detail" | "started_at" | "completed_at" | "state">;
+
+function activeRow<T>(database: DatabaseSync, sql: string, ...values: Array<string | number | bigint | Uint8Array | null>): T | undefined {
+  return database.prepare(sql).get(...values) as T | undefined;
+}
+
+export function recoverStaleWork(database: DatabaseSync, actor = "startup-recovery"): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const table of ["messages", "memory_reviews"]) {
+      database.prepare(`UPDATE ${table} SET state = 'pending', updated_at = unixepoch(), updated_by = ?
+        WHERE state = 'processing' AND deleted_at IS NULL`).run(actor);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function upsertUser(database: DatabaseSync, user: NewUser, actor = "system"): UserRecord | undefined {
+  database.prepare(`INSERT INTO users (transport, workspace_id, external_user_id, display_name, role, state, created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(transport, workspace_id, external_user_id) DO UPDATE SET
+      display_name = excluded.display_name, role = excluded.role, state = excluded.state,
+      deleted_at = NULL, deleted_by = NULL,
+      updated_at = unixepoch(), updated_by = excluded.updated_by`).run(
+    user.transport, user.workspace_id, user.external_user_id, user.display_name, user.role, user.state, actor, actor,
+  );
+  return activeRow<UserRecord>(database, "SELECT * FROM users WHERE transport = ? AND workspace_id = ? AND external_user_id = ? AND deleted_at IS NULL", user.transport, user.workspace_id, user.external_user_id);
+}
+
+export function bootstrapOwner(database: DatabaseSync, configuration: Configuration): UserRecord {
+  database.exec("BEGIN");
+  try {
+    const owner = upsertUser(database, {
+      transport: "discord",
+      workspace_id: configuration.discordGuildId,
+      external_user_id: configuration.discordOwnerUserId,
+      display_name: null,
+      role: "owner",
+      state: "active",
+    })!;
+    database.prepare(`UPDATE users SET state = 'disabled', updated_at = unixepoch(), updated_by = 'owner-bootstrap'
+      WHERE transport = 'discord' AND workspace_id = ? AND role = 'owner' AND state = 'active'
+        AND deleted_at IS NULL AND external_user_id <> ?`).run(configuration.discordGuildId, configuration.discordOwnerUserId);
+    database.exec("COMMIT");
+    return owner;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function createSession(database: DatabaseSync, session: NewSession, actor = "system"): SessionRecord {
+  const result = database.prepare(`INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id, agent_provider, agent_session_id, project_path, state, created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    session.user_id, session.transport, session.workspace_id, session.parent_conversation_id, session.conversation_id,
+    session.initiating_external_message_id, session.agent_provider, session.agent_session_id, session.project_path,
+    session.state ?? "active", actor, actor,
+  );
+  return activeRow<SessionRecord>(database, "SELECT * FROM sessions WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+}
+
+export function getSession(database: DatabaseSync, id: number): SessionRecord | undefined {
+  return activeRow<SessionRecord>(database, "SELECT * FROM sessions WHERE id = ? AND deleted_at IS NULL", id);
+}
+
+export function archiveMessage(database: DatabaseSync, message: NewMessage, actor = "system"): { message?: MessageRecord; inserted: boolean } {
+  const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(transport, workspace_id, external_message_id) DO NOTHING`).run(
+    message.session_id, message.transport, message.workspace_id, message.external_message_id, message.external_author_id,
+    message.user_id, message.direction, message.body, message.reply_to_external_message_id, message.in_reply_to_message_id,
+    message.state ?? "pending", actor, actor,
+  );
+  return {
+    message: activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE transport = ? AND workspace_id = ? AND external_message_id = ? AND deleted_at IS NULL", message.transport, message.workspace_id, message.external_message_id),
+    inserted: result.changes === 1,
+  };
+}
+
+export function listMessages(database: DatabaseSync, sessionId: number): MessageRecord[] {
+  return database.prepare("SELECT * FROM messages WHERE session_id = ? AND deleted_at IS NULL ORDER BY id").all(sessionId) as MessageRecord[];
+}
+
+export function softDeleteMessage(database: DatabaseSync, id: number, actor = "system"): void {
+  database.prepare("UPDATE messages SET updated_at = unixepoch(), updated_by = ?, deleted_at = unixepoch(), deleted_by = ? WHERE id = ? AND deleted_at IS NULL").run(actor, actor, id);
+}
+
+export function claimNextMessage(database: DatabaseSync, mode: MessageQueueMode, actor = "system"): MessageRecord | undefined {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const message = activeRow<MessageRecord>(database, `SELECT * FROM messages AS candidate
+      WHERE candidate.direction = 'user' AND candidate.state = 'pending' AND candidate.deleted_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM messages AS processing
+          WHERE processing.session_id = candidate.session_id AND processing.direction = 'user'
+            AND processing.state = 'processing' AND processing.deleted_at IS NULL)
+        AND (? = 'per-session' OR NOT EXISTS (SELECT 1 FROM messages AS processing
+          WHERE processing.direction = 'user' AND processing.state = 'processing' AND processing.deleted_at IS NULL))
+      ORDER BY candidate.id LIMIT 1`, mode);
+    if (!message) {
+      database.exec("COMMIT");
+      return undefined;
+    }
+    database.prepare(`UPDATE messages SET state = 'processing', started_at = unixepoch(), updated_at = unixepoch(), updated_by = ?
+      WHERE id = ? AND state = 'pending' AND deleted_at IS NULL`).run(actor, message.id);
+    const claimed = activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE id = ? AND deleted_at IS NULL", message.id);
+    database.exec("COMMIT");
+    return claimed;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function completeMessageWithResponse(database: DatabaseSync, messageId: number, response: NewAgentResponse, actor = "system"): { message: MessageRecord; response: MessageRecord } | undefined {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const message = activeRow<MessageRecord>(database, `SELECT * FROM messages
+      WHERE id = ? AND direction = 'user' AND state = 'processing' AND deleted_at IS NULL`, messageId);
+    if (!message) {
+      database.exec("COMMIT");
+      return undefined;
+    }
+    const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?, 'completed', ?, ?)`).run(
+      message.session_id, response.transport, response.workspace_id, response.external_message_id, response.external_author_id,
+      response.user_id, response.body, response.reply_to_external_message_id, message.id, actor, actor,
+    );
+    database.prepare(`UPDATE messages SET state = 'completed', completed_at = unixepoch(), updated_at = unixepoch(), updated_by = ?
+      WHERE id = ? AND state = 'processing' AND deleted_at IS NULL`).run(actor, message.id);
+    const completed = activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE id = ? AND deleted_at IS NULL", message.id)!;
+    const agentResponse = activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+    database.exec("COMMIT");
+    return { message: completed, response: agentResponse };
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function createEvent(database: DatabaseSync, event: NewEvent, actor = "system"): EventRecord {
+  const result = database.prepare("INSERT INTO events (session_id, message_id, event_type, detail, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)").run(event.session_id, event.message_id, event.event_type, event.detail, actor, actor);
+  return activeRow<EventRecord>(database, "SELECT * FROM events WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+}
+
+export function listEvents(database: DatabaseSync, sessionId?: number): EventRecord[] {
+  return (sessionId === undefined
+    ? database.prepare("SELECT * FROM events WHERE deleted_at IS NULL ORDER BY id").all()
+    : database.prepare("SELECT * FROM events WHERE session_id = ? AND deleted_at IS NULL ORDER BY id").all(sessionId)) as EventRecord[];
+}
+
+export function createMemory(database: DatabaseSync, memory: NewMemory, actor = "system"): MemoryRecord {
+  const result = database.prepare("INSERT INTO memories (body, source_message_id, created_by_user_id, review_id, origin, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)").run(memory.body, memory.source_message_id, memory.created_by_user_id, memory.review_id, memory.origin, actor, actor);
+  return activeRow<MemoryRecord>(database, "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+}
+
+export function listMemories(database: DatabaseSync): MemoryRecord[] {
+  return database.prepare("SELECT * FROM memories WHERE state = 'active' AND deleted_at IS NULL ORDER BY id").all() as MemoryRecord[];
+}
+
+export function softDeleteMemory(database: DatabaseSync, id: number, actor = "system"): void {
+  database.prepare("UPDATE memories SET state = 'deleted', updated_at = unixepoch(), updated_by = ?, deleted_at = unixepoch(), deleted_by = ? WHERE id = ? AND deleted_at IS NULL").run(actor, actor, id);
+}
+
+export function createMemoryReview(database: DatabaseSync, review: NewMemoryReview, actor = "system"): MemoryReviewRecord {
+  const boundary = (messageId: number) => activeRow<MessageRecord>(database,
+    "SELECT * FROM messages WHERE id = ? AND session_id = ? AND deleted_at IS NULL", messageId, review.session_id);
+  const cursor = activeRow<{ through_message_id: number }>(database,
+    "SELECT MAX(through_message_id) AS through_message_id FROM memory_reviews WHERE session_id = ? AND state = 'completed' AND deleted_at IS NULL", review.session_id);
+  if (!boundary(review.from_message_id) || !boundary(review.through_message_id) || review.from_message_id > review.through_message_id || review.from_message_id <= (cursor?.through_message_id ?? 0)) {
+    throw new RangeError("Memory review boundaries must be active, ordered messages after the completed review cursor");
+  }
+  const result = database.prepare("INSERT INTO memory_reviews (session_id, from_message_id, through_message_id, created_by, updated_by) VALUES (?, ?, ?, ?, ?)").run(review.session_id, review.from_message_id, review.through_message_id, actor, actor);
+  return activeRow<MemoryReviewRecord>(database, "SELECT * FROM memory_reviews WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+}
+
+export function completeMemoryReview(database: DatabaseSync, id: number, recap: string, actor = "system"): MemoryReviewRecord | undefined {
+  database.prepare("UPDATE memory_reviews SET state = 'completed', recap = ?, completed_at = unixepoch(), updated_at = unixepoch(), updated_by = ? WHERE id = ? AND deleted_at IS NULL").run(recap, actor, id);
+  return activeRow<MemoryReviewRecord>(database, "SELECT * FROM memory_reviews WHERE id = ? AND deleted_at IS NULL", id);
+}
+
+export function messagesForMemoryReview(database: DatabaseSync, sessionId: number): MessageRecord[] {
+  return database.prepare(`SELECT * FROM messages
+    WHERE session_id = ? AND id > COALESCE((SELECT MAX(through_message_id) FROM memory_reviews
+      WHERE session_id = ? AND state = 'completed' AND deleted_at IS NULL), 0)
+      AND deleted_at IS NULL ORDER BY id`).all(sessionId, sessionId) as MessageRecord[];
+}
