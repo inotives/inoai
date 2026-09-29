@@ -87,9 +87,18 @@ Include YAML frontmatter with `agent`, `role`, `tool`, `task`, `task_title`, and
 ## Project phase workflow
 
 1. Start a new phase with `grill-with-docs`: read the phase and existing docs, ask one decision at a time with a recommendation, and record material tradeoffs in an ADR.
-2. Finalize the phase documentation before implementation. Commit or push only when the user explicitly requests it.
-3. Implement only the finalized phase scope, run its acceptance checks, and report the verified result.
-4. Complete the AgentRig task and create a handoff when the phase or assigned role is complete.
+2. Finalize the phase documentation before implementation. Check the current branch; when starting from `main`, create and switch to a phase feature branch before creating tasks or changing project files.
+3. Split the phase into AgentRig tasks with explicit `depends_on` edges and one final reviewer task.
+4. Set only dependency-free work to `ready`. Keep every downstream task `blocked`; satisfying a dependency does not automatically authorize starting all newly eligible work.
+5. Drive implementation one task at a time through this manager loop:
+   1. Unblock and claim the next eligible worker task.
+   2. Spawn a worker agent. It reads the worker role, task, source docs, and relevant prior handoff; changes only its assigned scope; runs focused tests, typecheck, build, and diff checks; then sets the task to `review` and writes a worker handoff. It does not commit or push.
+   3. Spawn an independent reviewer agent. It reads the reviewer role, task, worker handoff, source docs, and current diff; runs focused checks; makes no implementation edits; and writes a reviewer handoff.
+   4. If review has no findings, mark the task `done` and unblock only the next selected dependent task.
+   5. If review finds an issue, set the same task back to `in_progress` and spawn a worker to read both handoffs, implement the focused fix, add regression coverage, verify it, and write a new handoff. Re-run independent review until clean; do not unlock downstream work meanwhile.
+6. After all worker tasks pass task-level review, unblock and claim the final reviewer task. Run the phase-wide acceptance checks against the integrated diff and mark it `done` only when clean.
+7. Write the planner phase handoff with verification evidence and any resolved review findings.
+8. Commit, push, or open a pull request only when the user explicitly requests it.
 
 ## Coding guidelines
 

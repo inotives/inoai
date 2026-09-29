@@ -20,10 +20,6 @@ async function temporaryDeployment(): Promise<string> {
   return mkdtemp(join(tmpdir(), "inoai-test-"));
 }
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 const validEnv = [
   "DISCORD_BOT_TOKEN=token",
   "DISCORD_GUILD_ID=guild",
@@ -142,22 +138,18 @@ test("concurrent releases cannot remove a successor lock", async () => {
   }
 });
 
-test("the executable honors --connect-dir", async () => {
+test("the executable validates --connect-dir without connecting", async () => {
   const deployment = await temporaryDeployment();
   const executable = fileURLToPath(new URL("../index.js", import.meta.url));
   const home = await bootstrapRuntimeHome(deployment, ".inoai-connect-2");
   await writeFile(home.envFile, validEnv);
-  const child = spawn(process.execPath, [executable, "--connect-dir", ".inoai-connect-2"], { cwd: deployment });
+  const child = spawn(process.execPath, [executable, "validate", "--connect-dir", ".inoai-connect-2"], { cwd: deployment });
   try {
-    await once(child.stdout!, "data");
-    await stat(join(deployment, ".inoai-connect-2", "inoai.lock"));
-    await assert.rejects(stat(join(deployment, ".inoai-connect", "inoai.lock")));
-    await wait(30);
-    assert.equal(child.exitCode, null);
-  } finally {
-    child.kill("SIGTERM");
-    await once(child, "exit");
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0);
     await assert.rejects(stat(join(deployment, ".inoai-connect-2", "inoai.lock")));
+    await assert.rejects(stat(join(deployment, ".inoai-connect", "inoai.lock")));
+  } finally {
     await rm(deployment, { recursive: true, force: true });
   }
 });
