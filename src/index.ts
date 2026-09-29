@@ -1,15 +1,21 @@
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfiguration } from "./config.js";
-import { bootstrapOwner, createMemory, listMemories, openDatabase, softDeleteMemory } from "./database.js";
+import { archiveMessage, bootstrapOwner, createEvent, createMemory, createSession, listMemories, openDatabase, softDeleteMemory } from "./database.js";
 import type { MemoryRecord } from "./database.js";
+import { classifyIncomingMessage } from "./inbound-policy.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "./runtime-home.js";
+import { createChatTransport } from "./transport.js";
+import type { ChatTransport, IncomingMessage } from "./transport.js";
 import { launchUi } from "./ui.js";
 
 export const appName = "inoai";
 export * from "./config.js";
 export * from "./database.js";
+export * from "./inbound-policy.js";
 export * from "./runtime-home.js";
+export * from "./transport.js";
 export * from "./ui.js";
 
 export async function validate(launchDirectory = process.cwd(), connectDirectory?: string) {
@@ -24,18 +30,117 @@ export async function start(launchDirectory = process.cwd(), connectDirectory?: 
   try {
     const database = openDatabase(runtimeHome);
     const owner = bootstrapOwner(database, configuration);
-    return {
+    const pendingIngestion = new Set<Promise<void>>();
+    const instance = {
       runtimeHome,
       configuration,
       database,
       owner,
+      pendingIngestion,
+      closing: false,
       release: async () => {
+        instance.closing = true;
+        await Promise.allSettled([...pendingIngestion]);
         database.close();
         await release();
       },
     };
+    return instance;
   } catch (error) {
     await release();
+    throw error;
+  }
+}
+
+export async function startTransport(
+  instance: Awaited<ReturnType<typeof start>>,
+  onIncomingMessage?: (message: IncomingMessage) => void,
+  transport: ChatTransport = createChatTransport(instance.configuration),
+  onFailure?: (error: Error) => void,
+): Promise<ChatTransport> {
+  const inFlight = new Set<string>();
+  const receive = onIncomingMessage ?? ((message: IncomingMessage) => {
+    if (instance.closing) return;
+    const eligible = classifyIncomingMessage(instance.database, instance.configuration, message);
+    const workspaceId = message.workspaceId;
+    if (eligible?.kind === "bound-thread" && workspaceId !== null) {
+      try {
+        archiveMessage(instance.database, {
+          session_id: eligible.session.id, transport: message.transport, workspace_id: workspaceId,
+          external_message_id: message.externalMessageId, external_author_id: message.externalUserId,
+          user_id: eligible.user.id, direction: "user", body: message.body,
+          reply_to_external_message_id: message.replyToExternalMessageId, in_reply_to_message_id: null,
+        }, "transport:discord");
+      } catch (error) {
+        console.error("Discord thread message failed:", error instanceof Error ? error.message : error);
+      }
+      return;
+    }
+    if (eligible?.kind !== "top-level" || workspaceId === null || inFlight.has(message.externalMessageId)) return;
+    const existing = instance.database.prepare(`SELECT id FROM sessions
+      WHERE transport = ? AND workspace_id = ? AND initiating_external_message_id = ?`).get(
+      message.transport, workspaceId, message.externalMessageId,
+    );
+    if (existing) return;
+
+    inFlight.add(message.externalMessageId);
+    const pending = (async () => {
+      let conversationId: string | undefined;
+      try {
+        conversationId = await transport.createConversation(
+          message.conversationId, message.externalMessageId, message.body.trim().slice(0, 100) || "inoai conversation",
+        );
+        instance.database.exec("BEGIN IMMEDIATE");
+        try {
+          const session = createSession(instance.database, {
+            user_id: eligible.user.id, transport: message.transport, workspace_id: workspaceId,
+            parent_conversation_id: message.conversationId, conversation_id: conversationId,
+            initiating_external_message_id: message.externalMessageId, agent_provider: instance.configuration.agentProvider,
+            agent_session_id: `pending:${message.externalMessageId}`, project_path: dirname(instance.runtimeHome.directory),
+          }, "transport:discord");
+          const archived = archiveMessage(instance.database, {
+            session_id: session.id, transport: message.transport, workspace_id: workspaceId,
+            external_message_id: message.externalMessageId, external_author_id: message.externalUserId,
+            user_id: eligible.user.id, direction: "user", body: message.body,
+            reply_to_external_message_id: message.replyToExternalMessageId, in_reply_to_message_id: null,
+          }, "transport:discord");
+          if (!archived.inserted) throw new Error("Initiating Discord message already archived");
+          instance.database.exec("COMMIT");
+        } catch (error) {
+          instance.database.exec("ROLLBACK");
+          throw error;
+        }
+      } catch (error) {
+        if (conversationId) {
+          try {
+            await transport.deleteConversation(conversationId);
+          } catch (cleanupError) {
+            console.error("Discord thread cleanup failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError);
+          }
+        }
+        console.error("Discord request failed:", error instanceof Error ? error.message : error);
+      } finally {
+        inFlight.delete(message.externalMessageId);
+      }
+    })();
+    instance.pendingIngestion.add(pending);
+    void pending.finally(() => instance.pendingIngestion.delete(pending));
+  });
+  try {
+    await transport.start(receive, async () => {
+      if (transport.health().state !== "ready") throw new Error("Discord disconnected before startup announcement");
+      const messageId = await transport.publishHealth(instance.configuration.discordAllowedChannelId, "inoai is online", instance.configuration.discordGuildId);
+      if (transport.health().state !== "ready") throw new Error("Discord disconnected during startup announcement");
+      createEvent(instance.database, {
+        session_id: null,
+        message_id: null,
+        event_type: "startup_online",
+        detail: `discord message ${messageId}`,
+      }, "transport:discord");
+    }, onFailure);
+    return transport;
+  } catch (error) {
+    await transport.stop();
     throw error;
   }
 }
@@ -91,7 +196,7 @@ function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "dele
   throw new Error("Usage: inoai memory <add <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
 }
 
-async function run(args: string[]): Promise<void> {
+export async function run(args: string[], suppliedTransport?: ChatTransport): Promise<void> {
   if (args[0] === "memory") {
     const { operation, argument, connectDirectory } = parseMemoryCommand(args.slice(1));
     const result = await manageMemory(operation, argument, process.cwd(), connectDirectory);
@@ -107,15 +212,58 @@ async function run(args: string[]): Promise<void> {
     console.log(`inoai configuration is valid: ${runtimeHome.directory}`);
     return;
   }
-  const { runtimeHome, release } = await start(process.cwd(), parseConnectDirectory(args));
-  const keepAlive = setInterval(() => undefined, 2 ** 31 - 1);
-  const stop = () => void release().finally(() => {
-    clearInterval(keepAlive);
-    process.exit(0);
-  });
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
-  console.log(`inoai started with ${runtimeHome.directory}`);
+  const instance = await start(process.cwd(), parseConnectDirectory(args));
+  const transport = suppliedTransport ?? createChatTransport(instance.configuration);
+  let keepAlive: NodeJS.Timeout | undefined;
+  let startup: Promise<ChatTransport> | undefined;
+  let cleanup: Promise<void> | undefined;
+  let signaled = false;
+  const shutdown = (code: number): Promise<void> => cleanup ??= (async () => {
+    try {
+      try {
+        instance.closing = true;
+        await Promise.allSettled([...instance.pendingIngestion]);
+        await transport.stop();
+      } finally {
+        await startup?.catch(() => undefined);
+      }
+    } finally {
+      await instance.release();
+      if (keepAlive) clearInterval(keepAlive);
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      process.exitCode = code;
+    }
+  })();
+  const onSignal = () => {
+    signaled = true;
+    void shutdown(0).catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : error);
+      process.exitCode = 1;
+    });
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  try {
+    startup = startTransport(instance, undefined, transport, (error) => {
+      console.error(error.message);
+      void shutdown(1).catch((failure: unknown) => {
+        console.error(failure instanceof Error ? failure.message : failure);
+        process.exitCode = 1;
+      });
+    });
+    await startup;
+  } catch (error) {
+    await shutdown(1);
+    if (signaled) return;
+    throw error;
+  }
+  if (cleanup) {
+    await cleanup;
+    return;
+  }
+  keepAlive = setInterval(() => undefined, 2 ** 31 - 1);
+  console.log(`inoai started with ${instance.runtimeHome.directory}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
