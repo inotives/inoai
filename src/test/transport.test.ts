@@ -9,7 +9,7 @@ import type { Client } from "discord.js";
 
 import { createChatTransport, DiscordTransport } from "../transport.js";
 import type { IncomingMessage } from "../transport.js";
-import { listEvents, listMessages } from "../database.js";
+import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages } from "../database.js";
 import { run, start, startTransport } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 
@@ -22,6 +22,7 @@ class FakeClient extends EventEmitter {
   sent: unknown[] = [];
   threadCount = 0;
   deletedThreads: string[] = [];
+  editedApprovals: string[] = [];
   threadStarted?: () => void;
   threadGate?: Promise<void>;
   channels = { fetch: async (id: string) => id === "parent" || id === "channel" ? {
@@ -31,6 +32,8 @@ class FakeClient extends EventEmitter {
     send: async (options: unknown) => { this.sendStarted?.(); await this.sendGate; if (this.failSend) throw new Error("send failed"); this.sent.push(options); return { id: `sent-${this.sent.length}` }; },
   } : {
     isThread: () => id.startsWith("thread"),
+    isTextBased: () => true,
+    messages: { fetch: async (messageId: string) => ({ author: { id: "inoai" }, edit: async (options: unknown) => { this.editedApprovals.push(messageId); this.sent.push(options); } }) },
     delete: async () => { this.deletedThreads.push(id); },
     isSendable: () => true,
     send: async (options: unknown) => { if (this.failSend) throw new Error("send failed"); this.sent.push(options); return { id: `sent-${this.sent.length}` }; },
@@ -338,6 +341,116 @@ test("startup announces once and archives one health Event across reconnects", a
       await transport.stop();
     } finally {
       await instance.release();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy approval recovery fails closed once, removes old controls, and keeps the Session usable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-legacy-approval-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv);
+    const first = await start(directory);
+    const session = createSession(first.database, {
+      user_id: first.owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
+      conversation_id: "thread", initiating_external_message_id: "initial", agent_provider: "codex",
+      agent_session_id: "legacy-thread", project_path: directory,
+    });
+    const request = archiveMessage(first.database, {
+      session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "old-control",
+      external_author_id: null, user_id: null, direction: "agent", body: "legacy prompt token=secret-123",
+      reply_to_external_message_id: null, in_reply_to_message_id: null, state: "completed",
+    });
+    first.database.prepare(`INSERT INTO approvals (session_id, runtime_approval_id, request_message_id, summary, expires_at)
+      VALUES (?, 'lost-json-rpc', ?, 'token=secret-123', unixepoch() + 3600)`).run(session.id, request.message!.id);
+    const userMessage = archiveMessage(first.database, {
+      session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "ordinary-user",
+      external_author_id: "owner", user_id: first.owner.id, direction: "user", body: "ordinary user request",
+      reply_to_external_message_id: null, in_reply_to_message_id: null, state: "completed",
+    });
+    first.database.prepare(`INSERT INTO approvals (session_id, runtime_approval_id, request_message_id, summary, expires_at, state)
+      VALUES (?, 'previously-failed', ?, 'another unsafe preview', unixepoch() + 3600, 'failed')`).run(session.id, userMessage.message!.id);
+    await first.release();
+
+    const recovered = await start(directory);
+    try {
+      const approval = recovered.database.prepare("SELECT state, summary, resolution_message_id FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get();
+      assert.equal(approval?.state, "failed");
+      assert.equal(approval?.summary, "Legacy approval request redacted");
+      assert.equal(recovered.database.prepare("SELECT summary FROM approvals WHERE runtime_approval_id = 'previously-failed'").get()?.summary, "Legacy approval request redacted");
+      assert.equal(listMessages(recovered.database, session.id).find((message) => message.id === request.message!.id)?.body, "Legacy approval request redacted");
+      assert.equal(listMessages(recovered.database, session.id).find((message) => message.external_message_id === "ordinary-user")?.body, "ordinary user request");
+      assert.equal(listEvents(recovered.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
+      const fake = new FakeClient();
+      const transport = await startTransport(recovered, undefined, new DiscordTransport("token", fake as unknown as Client));
+      assert.deepEqual(fake.editedApprovals, ["old-control"]);
+      assert.deepEqual(fake.sent[0], { content: "A saved Codex approval could not be resumed after restart. No action was approved.", components: [] });
+      assert(fake.sent.some((message) => JSON.stringify(message).includes("Please make a fresh request")));
+      assert(!JSON.stringify(fake.sent).includes("secret-123"));
+      assert.equal(typeof recovered.database.prepare("SELECT resolution_message_id FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.resolution_message_id, "number");
+      assert.equal(listMessages(recovered.database, session.id).filter((message) => message.body.includes("Please make a fresh request")).length, 1);
+      assert.equal(fake.listenerCount(Events.InteractionCreate), 0);
+      fake.emit(Events.InteractionCreate, { customId: "approve:lost-json-rpc" });
+      assert.equal(recovered.database.prepare("SELECT state FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.state, "failed");
+      await transport.stop();
+    } finally {
+      await recovered.release();
+    }
+
+    const again = await start(directory);
+    try {
+      const fake = new FakeClient();
+      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client));
+      assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
+      assert.equal(listEvents(again.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
+      assert.equal(again.database.prepare("SELECT state FROM sessions WHERE id = ?").get(session.id)?.state, "active");
+      fake.emit(Events.MessageCreate, {
+        guildId: "guild", channelId: "thread", id: "fresh-request", author: { id: "owner", bot: false }, content: "fresh request",
+        channel: { isThread: () => true, parentId: "channel" }, reference: null, mentions: { parsedUsers: new Map() },
+      });
+      assert(listMessages(again.database, session.id).some((message) => message.external_message_id === "fresh-request"));
+      await transport.stop();
+    } finally {
+      await again.release();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a claimed legacy notice is not resent after a crash before Discord delivery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-legacy-notice-crash-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv);
+    const first = await start(directory);
+    const session = createSession(first.database, {
+      user_id: first.owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
+      conversation_id: "thread", initiating_external_message_id: "initial", agent_provider: "codex",
+      agent_session_id: "legacy-thread", project_path: directory,
+    });
+    first.database.prepare(`INSERT INTO approvals (session_id, runtime_approval_id, summary, expires_at)
+      VALUES (?, 'lost-request', 'unsafe preview', unixepoch() + 3600)`).run(session.id);
+    await first.release();
+
+    const recovered = await start(directory);
+    assert.equal(legacyApprovalNotices(recovered.database).length, 1);
+    assert.equal(claimLegacyApprovalNotice(recovered.database, legacyApprovalNotices(recovered.database)[0]!.id), true);
+    await recovered.release(); // Crash boundary: the claim committed, but Discord send never happened.
+
+    const again = await start(directory);
+    try {
+      assert.equal(legacyApprovalNotices(again.database).length, 0);
+      assert.equal(listEvents(again.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
+      const fake = new FakeClient();
+      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client));
+      assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
+      assert.equal(again.database.prepare("SELECT resolution_message_id FROM approvals").get()?.resolution_message_id, null);
+      await transport.stop();
+    } finally {
+      await again.release();
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
