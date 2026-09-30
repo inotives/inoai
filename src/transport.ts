@@ -29,6 +29,7 @@ export interface ChatTransport {
   createConversation(parentConversationId: string, initialMessageId: string, name: string): Promise<string>;
   deleteConversation(conversationId: string): Promise<void>;
   sendMessage(conversationId: string, text: string, replyToExternalMessageId?: string): Promise<string>;
+  disableLegacyApprovalControls?(conversationId: string, messageId: string): Promise<void>;
   publishHealth(targetConversationId: string, text: string, workspaceId: string): Promise<string>;
   health(): TransportHealth;
 }
@@ -126,6 +127,14 @@ export class DiscordTransport implements ChatTransport {
     if (!channel?.isSendable()) throw new Error("Discord conversation is not sendable");
     const message = await channel.send({ content: text, ...(replyToExternalMessageId ? { reply: { messageReference: replyToExternalMessageId } } : {}) });
     return message.id;
+  }
+
+  async disableLegacyApprovalControls(conversationId: string, messageId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel?.isTextBased()) throw new Error("Discord conversation is not text based");
+    const message = await channel.messages.fetch(messageId);
+    if (message.author.id !== this.client.user?.id) throw new Error("Cannot edit another bot's approval message");
+    await message.edit({ content: "A saved Codex approval could not be resumed after restart. No action was approved.", components: [] });
   }
 
   async publishHealth(targetConversationId: string, text: string, workspaceId: string): Promise<string> {

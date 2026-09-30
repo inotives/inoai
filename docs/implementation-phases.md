@@ -95,9 +95,9 @@ V1 proves a safe Discord-to-Codex conversation flow using the local CLI's config
 2. Verify local Codex authentication before accepting work.
 3. Start, continue, cancel, and stream an Agent Session from the configured project path.
 4. Preserve the Codex CLI's configured skills, MCP servers, and permission/sandbox policy; do not add a wrapper-level tool allowlist or approval bypass.
-5. Relay a Codex approval request to the active Discord thread with **Approve** and **Reject** buttons, persist its pending state, and resume only after an owner button interaction.
+5. Fail closed on every Codex approval request in V1: return a protocol-correct decline, record only a non-secret outcome, and tell the owner that the action needs local Codex. Do not post **Approve**/**Reject** buttons, persist raw request details, add a command allowlist, or silently change Codex's configured sandbox/approval policy. Codex CLI `0.157.1` does not provide a complete safe preview for these Discord prompts. Do not replay an interrupted turn after restart.
 6. Record runtime failures as Events without exposing credentials or raw tool traces.
-7. Retry a failed or timed-out turn up to three times with bounded backoff; post one concise Discord failure only after all attempts fail.
+7. Retry a failed or timed-out turn up to three times with bounded backoff only when the runtime turn never started or is proven to have had no side effects. If execution may have begun and its outcome is uncertain, fail closed after that attempt and ask for a fresh request; publish at most one concise Discord failure and no duplicate answer.
 
 **Testable outcome:** a local, ChatGPT-authenticated Codex session can answer a project question and use the configured Codex capabilities without inoai changing their permissions.
 
@@ -106,12 +106,11 @@ V1 proves a safe Discord-to-Codex conversation flow using the local CLI's config
 - Startup succeeds with ChatGPT CLI authentication and no `OPENAI_API_KEY`/`CODEX_API_KEY`.
 - A normal question returns a streamed answer.
 - A configured local skill or read-only MCP tool is available to the Codex session.
-- A tool action requiring Codex approval follows the configured Codex policy and is never silently elevated by inoai.
-- A Discord approval survives an app restart and resumes or rejects the exact pending runtime request once.
-- An unanswered approval expires after 24 hours and cannot resume an old action.
-- Only the owner can resolve a pending approval; resolution or expiry disables both Discord buttons, and a second click has no effect.
+- Every current Codex approval method receives a protocol-correct decline without hanging the turn; the owner gets a fixed safe notice, and no actionable Discord controls or pending approval row is created.
+- A command containing a token-shaped literal is never copied into SQLite, logs, or Discord. Legacy saved pending approvals are failed closed on restart and their saved previews redacted; the interrupted turn is not replayed. Recovery records one safe Event and claims its Discord notice before sending, so a crash can omit the notice but cannot duplicate it.
 - Expired authentication and exhausted usage become clear local/Discord-safe failure states.
-- A failed turn retries at most three times and emits one failure notice, never duplicate answers.
+- A pre-start failure may retry at most three times with bounded backoff and emits one failure notice if exhausted.
+- A timeout or process loss after execution may have begun is not replayed automatically; its uncertain outcome is recorded and the owner is asked for a fresh request.
 - Cancellation stops the active runtime turn and leaves the Conversation usable.
 
 ## Phase 5 — End-to-end conversation worker
@@ -134,7 +133,7 @@ V1 proves a safe Discord-to-Codex conversation flow using the local CLI's config
 - Two Conversations can make progress independently while one Conversation never has overlapping runtime turns.
 - A failed concurrent-session check falls back to global serialization without dropping queued Messages.
 - A duplicate Discord gateway event produces no duplicate runtime turn.
-- Restarting the app requeues unfinished work and preserves Session mapping.
+- Restarting the app requeues only work known not to have reached the Agent Runtime. Work whose runtime outcome is uncertain fails closed without replay; Session mapping is preserved.
 - An idle thread retains its Agent Session until an explicit `/inoai reset`.
 - A reply to an earlier Message retains its quoted context when processed later.
 - A long response is split safely and stored as linked agent Messages.
@@ -210,7 +209,7 @@ V1 proves a safe Discord-to-Codex conversation flow using the local CLI's config
 
 - Disconnect/reconnect Discord without duplicate online messages or duplicate Message processing.
 - Stop the process during a runtime turn and recover safely on restart.
-- Confirm a tool action requiring approval is relayed to Discord and never silently elevated by inoai.
+- Confirm a tool action requiring approval is declined through Codex's protocol, produces only a fixed safe Discord notice, and is never silently elevated or exposed as an actionable Discord control.
 - Restore each rotated local backup and confirm archived Conversations, Recaps, and Memory remain available.
 - Run the packaged macOS core in an empty deployment folder; it initializes only `.inoai-connect/` and launches the sibling Electron UI with `inoai ui`.
 

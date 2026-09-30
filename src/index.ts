@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfiguration } from "./config.js";
-import { archiveMessage, bootstrapOwner, createEvent, createMemory, createSession, listMemories, openDatabase, softDeleteMemory } from "./database.js";
+import { archiveMessage, bootstrapOwner, claimLegacyApprovalNotice, createEvent, createMemory, createSession, legacyApprovalNotices, listMemories, openDatabase, resolveLegacyApprovalNotice, softDeleteMemory } from "./database.js";
 import type { MemoryRecord } from "./database.js";
 import { classifyIncomingMessage } from "./inbound-policy.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "./runtime-home.js";
@@ -12,9 +12,15 @@ import { launchUi } from "./ui.js";
 
 export const appName = "inoai";
 export * from "./config.js";
+export * from "./agent-runtime.js";
+export * from "./agent-session.js";
+export * from "./approval-relay.js";
+export * from "./codex-app-server.js";
+export * from "./codex-runtime.js";
 export * from "./database.js";
 export * from "./inbound-policy.js";
 export * from "./runtime-home.js";
+export * from "./runtime-turn.js";
 export * from "./transport.js";
 export * from "./ui.js";
 
@@ -129,6 +135,31 @@ export async function startTransport(
   try {
     await transport.start(receive, async () => {
       if (transport.health().state !== "ready") throw new Error("Discord disconnected before startup announcement");
+      for (const approval of legacyApprovalNotices(instance.database)) {
+        if (approval.external_message_id) {
+          // No interaction handler can approve an old button; scrub it when Discord still exposes the message.
+          await transport.disableLegacyApprovalControls?.(approval.conversation_id, approval.external_message_id).catch(() => undefined);
+        }
+        // Claim before the network send: a crash may omit this notice, but cannot duplicate it.
+        if (!claimLegacyApprovalNotice(instance.database, approval.id)) continue;
+        const notice = "A saved Codex approval could not be resumed after restart. No action was approved. Please make a fresh request.";
+        const externalMessageId = await transport.sendMessage(approval.conversation_id, notice);
+        instance.database.exec("BEGIN IMMEDIATE");
+        try {
+          const archived = archiveMessage(instance.database, {
+            session_id: approval.session_id, transport: approval.transport, workspace_id: approval.workspace_id,
+            external_message_id: externalMessageId, external_author_id: null, user_id: null,
+            direction: "agent", body: notice, reply_to_external_message_id: null, in_reply_to_message_id: null,
+            state: "completed",
+          }, "startup-recovery");
+          if (!archived.message) throw new Error("Legacy approval notice was not archived");
+          resolveLegacyApprovalNotice(instance.database, approval.id, archived.message.id);
+          instance.database.exec("COMMIT");
+        } catch (error) {
+          instance.database.exec("ROLLBACK");
+          throw error;
+        }
+      }
       const messageId = await transport.publishHealth(instance.configuration.discordAllowedChannelId, "inoai is online", instance.configuration.discordGuildId);
       if (transport.health().state !== "ready") throw new Error("Discord disconnected during startup announcement");
       createEvent(instance.database, {

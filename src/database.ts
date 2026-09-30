@@ -176,6 +176,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
   database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
   database.exec(initialSchema);
   recoverStaleWork(database);
+  recoverLegacyApprovals(database);
   return database;
 }
 
@@ -239,6 +240,17 @@ export type EventRecord = AuditColumns & {
   detail: string | null;
 };
 
+export type ApprovalRecord = AuditColumns & {
+  id: number;
+  session_id: number;
+  runtime_approval_id: string;
+  request_message_id: number | null;
+  resolution_message_id: number | null;
+  summary: string;
+  expires_at: number;
+  state: "pending" | "approved" | "rejected" | "expired" | "failed";
+};
+
 export type MemoryRecord = AuditColumns & {
   id: number;
   body: string;
@@ -290,6 +302,52 @@ export function recoverStaleWork(database: DatabaseSync, actor = "startup-recove
   }
 }
 
+export function recoverLegacyApprovals(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    // Old approval prompts could contain arbitrary runtime text. Keep the row for audit,
+    // but remove its preview before any Discord recovery or UI read can expose it.
+    database.prepare(`UPDATE messages SET body = 'Legacy approval request redacted', updated_at = unixepoch(), updated_by = 'startup-recovery'
+      WHERE id IN (SELECT request_message_id FROM approvals WHERE request_message_id IS NOT NULL)
+        AND direction = 'agent' AND body != 'Legacy approval request redacted'`).run();
+    database.prepare(`UPDATE approvals SET summary = 'Legacy approval request redacted', updated_at = unixepoch(),
+      updated_by = CASE WHEN state = 'failed' AND updated_by = 'startup-recovery' THEN updated_by ELSE 'startup-redaction' END
+      WHERE summary != 'Legacy approval request redacted'`).run();
+    const pending = database.prepare("SELECT id, session_id FROM approvals WHERE state = 'pending' AND deleted_at IS NULL").all() as Array<{ id: number; session_id: number }>;
+    const fail = database.prepare(`UPDATE approvals SET state = 'failed', updated_at = unixepoch(), updated_by = 'startup-recovery'
+      WHERE id = ? AND state = 'pending' AND deleted_at IS NULL`);
+    for (const row of pending) {
+      fail.run(row.id);
+      createEvent(database, { session_id: row.session_id, message_id: null,
+        event_type: "legacy_approval_failed", detail: "saved approval cannot resume; fresh request required" }, "startup-recovery");
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function legacyApprovalNotices(database: DatabaseSync): Array<{ id: number; session_id: number; conversation_id: string; transport: "discord"; workspace_id: string; external_message_id: string | null }> {
+  return database.prepare(`SELECT a.id, a.session_id, s.conversation_id, s.transport, s.workspace_id, m.external_message_id
+    FROM approvals a JOIN sessions s ON s.id = a.session_id
+    LEFT JOIN messages m ON m.id = a.request_message_id
+    WHERE a.state = 'failed' AND a.updated_by = 'startup-recovery' AND a.resolution_message_id IS NULL
+      AND a.deleted_at IS NULL ORDER BY a.id`).all() as ReturnType<typeof legacyApprovalNotices>;
+}
+
+export function claimLegacyApprovalNotice(database: DatabaseSync, approvalId: number): boolean {
+  return database.prepare(`UPDATE approvals SET updated_at = unixepoch(), updated_by = 'startup-notice-claimed'
+    WHERE id = ? AND state = 'failed' AND updated_by = 'startup-recovery'
+      AND resolution_message_id IS NULL AND deleted_at IS NULL`).run(approvalId).changes === 1;
+}
+
+export function resolveLegacyApprovalNotice(database: DatabaseSync, approvalId: number, messageId: number): void {
+  database.prepare(`UPDATE approvals SET resolution_message_id = ?, updated_at = unixepoch(), updated_by = 'startup-notice-sent'
+    WHERE id = ? AND state = 'failed' AND updated_by = 'startup-notice-claimed'
+      AND resolution_message_id IS NULL AND deleted_at IS NULL`).run(messageId, approvalId);
+}
+
 export function upsertUser(database: DatabaseSync, user: NewUser, actor = "system"): UserRecord | undefined {
   database.prepare(`INSERT INTO users (transport, workspace_id, external_user_id, display_name, role, state, created_by, updated_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -336,6 +394,14 @@ export function createSession(database: DatabaseSync, session: NewSession, actor
 
 export function getSession(database: DatabaseSync, id: number): SessionRecord | undefined {
   return activeRow<SessionRecord>(database, "SELECT * FROM sessions WHERE id = ? AND deleted_at IS NULL", id);
+}
+
+export function bindAgentSession(database: DatabaseSync, id: number, threadId: string, actor = "runtime:codex"): SessionRecord {
+  if (!threadId || threadId.startsWith("pending:")) throw new Error("Invalid Codex thread ID");
+  const result = database.prepare(`UPDATE sessions SET agent_session_id = ?, updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND agent_session_id LIKE 'pending:%' AND state = 'active' AND deleted_at IS NULL`).run(threadId, actor, id);
+  if (result.changes !== 1) throw new Error("Agent Session is no longer pending");
+  return getSession(database, id)!;
 }
 
 export function archiveMessage(database: DatabaseSync, message: NewMessage, actor = "system"): { message?: MessageRecord; inserted: boolean } {
@@ -421,6 +487,11 @@ export function listEvents(database: DatabaseSync, sessionId?: number): EventRec
   return (sessionId === undefined
     ? database.prepare("SELECT * FROM events WHERE deleted_at IS NULL ORDER BY id").all()
     : database.prepare("SELECT * FROM events WHERE session_id = ? AND deleted_at IS NULL ORDER BY id").all(sessionId)) as EventRecord[];
+}
+
+export function failApproval(database: DatabaseSync, id: number): void {
+  database.prepare(`UPDATE approvals SET state = 'failed', updated_at = unixepoch(), updated_by = 'runtime:codex'
+    WHERE id = ? AND state = 'pending' AND deleted_at IS NULL`).run(id);
 }
 
 export function createMemory(database: DatabaseSync, memory: NewMemory, actor = "system"): MemoryRecord {

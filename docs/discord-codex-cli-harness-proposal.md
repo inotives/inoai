@@ -194,7 +194,7 @@ Discord can deliver a second task while Codex is answering the first. Do not run
 1. On every eligible message event, insert the inbound message as `pending` in SQLite and acknowledge it as queued if another task is running.
 2. A Session worker selects its oldest pending message, marks it `processing`, and sends it to Codex only when that Session has no other active turn.
 3. It persists Codex's completed answer, delivers it to Discord, marks the inbound message `completed`, then starts the next pending message.
-4. If the process restarts, any stale `processing` row returns to `pending`; the worker resumes safely from SQLite.
+4. Before an Agent Runtime turn can start, a stale `processing` row may return to `pending` after restart. Once execution may have begun, a stale row without proof of no side effects has an uncertain outcome: record it as failed, notify the owner once, and require a fresh request rather than automatically replaying it. The Phase 2 queue initially requeues stale rows because no runtime execution is connected yet; Phase 5 must add this safety distinction when it wires in the runtime.
 
 For V1, serialize turns within a Conversation and let different Conversations run independently only after the selected Codex app-server flow passes a concurrent-session check. If that check fails or later becomes unreliable, automatically fall back to one global queue. This prevents context races and preserves service at reduced throughput.
 
@@ -254,7 +254,9 @@ The UI includes a **Load SQLite** action. It opens a native file picker for `ino
 
 ## Discord approval controls
 
-When Codex asks for permission, inoai posts an **Approve** and **Reject** button in the active thread. A button click is valid only from the owner, for the exact pending approval, and before its 24-hour expiry. Resolve the database row atomically before resuming or rejecting the runtime turn; later clicks receive no action. On resolution or expiry, edit the approval message to show its final state and disable both buttons. Button interactions are recorded as Events and never treated as normal agent input.
+In V1, every Codex approval request is declined through the live app-server protocol. inoai records only a non-secret outcome and posts a fixed safe notice in the active thread: the action needs local Codex. It never posts **Approve**/**Reject** buttons, stores raw request details, auto-approves, or changes Codex's configured sandbox/approval policy. Codex CLI `0.157.1` exposes arbitrary request text and best-effort action fields, not a complete safe preview for informed Discord consent. Do not replace this gap with a wrapper-level command allowlist or a coarse blind-approval prompt. Revisit buttons only after a supported safe-preview mechanism passes consent and secret-leak tests.
+
+No new approval stays pending in SQLite. If an earlier local build left a pending approval row or Discord controls, recovery fails that row and makes the controls inert; a saved row cannot restore a live runtime request. Never replay an interrupted turn from SQLite alone.
 
 ## Acceptance checks
 
