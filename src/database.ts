@@ -464,7 +464,7 @@ export function getSession(database: DatabaseSync, id: number): SessionRecord | 
 }
 
 export function bindAgentSession(database: DatabaseSync, id: number, threadId: string, actor = "runtime:codex"): SessionRecord {
-  if (!threadId || threadId.startsWith("pending:")) throw new Error("Invalid Codex thread ID");
+  if (!threadId || threadId.startsWith("pending:")) throw new Error("Invalid Agent Session ID");
   const result = database.prepare(`UPDATE sessions SET agent_session_id = ?, updated_at = unixepoch(), updated_by = ?
     WHERE id = ? AND agent_session_id LIKE 'pending:%' AND state = 'active' AND deleted_at IS NULL`).run(threadId, actor, id);
   if (result.changes !== 1) throw new Error("Agent Session is no longer pending");

@@ -1,6 +1,6 @@
 # inoai implementation phases
 
-V1 proves a safe Discord-to-Codex conversation flow using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
+V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI added as a second runtime in Phase 5a, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
 
 ## Phase 1 — Scaffolding
 
@@ -148,6 +148,46 @@ Phase 5 acceptance requires deterministic fake-transport/runtime tests, the isol
 - With a real bot in a private test channel, the owner can start a thread, receive a Codex answer, continue the same Agent Session, and exercise status, cancel, and reset; verify that the Discord Messages match the SQLite archive. Use only a disposable project and read-only prompts.
 - The online-report channel posts the startup health message but ignores conversation-start mentions; an owner mention in another accessible channel starts a Conversation, while unmentioned top-level Messages do not.
 
+## Phase 5a — Claude runtime
+
+**Purpose:** add Claude CLI as a second Agent Runtime with the same Discord, SQLite, queue, approval, and retry behavior as Codex, using the owner's local Claude subscription sign-in and no Anthropic API key.
+
+Match Codex behavior unless a Claude difference forces otherwise. Each runtime home still selects exactly one provider; the recommended Claude deployment is a separate `.inoai-connect-claude/` home with its own Discord bot. Phases 6–8 apply to both providers. See [ADR 0007](adr/0007-claude-matches-codex-fail-closed-approvals.md) and [ADR 0008](adr/0008-drive-claude-through-headless-cli.md).
+
+### Tasks
+
+1. Spike the installed `claude` CLI headless contract before adapter work: `-p --output-format stream-json` event and final-result shapes, `--session-id`/`--resume`, `--append-system-prompt`, how a permission prompt not covered by the owner's settings is denied and reported in `-p` mode, how to read the active credential source, SIGINT cancellation, and whether probe sessions can avoid persisting. Record findings; if denials or the credential source cannot be observed reliably, stop and ask the owner before choosing another mechanism.
+2. Accept `AGENT_PROVIDER=claude` and an optional `CLAUDE_MODEL` (blank uses the CLI default) in `.env` validation and `.env.sample`. Add no permission, sandbox, approval, or credential keys.
+3. Add the minimal provider seam: each adapter supplies a display name and login hint used by shared failure and recovery notices, and `index.ts` selects the runtime, its approval handling, and its concurrency probe with a simple `switch`.
+4. Implement the Claude adapter behind `AgentRuntime`: spawn the installed `claude -p --output-format stream-json` per Turn in the project path; assign the Agent Session UUID at creation, start the first Turn with `--session-id` and later Turns with `--resume`; pass `agent.md` through `--append-system-prompt` with `--system-prompt-snapshot off` on every Turn so edits reach existing Sessions; pass `--permission-prompts none` so prompts fail closed explicitly; pass `--model` only when `CLAUDE_MODEL` is set; leave settings, MCP servers, skills, `CLAUDE.md`, permission rules, and permission mode to the owner's Claude configuration.
+5. Map stream events to progress and the final answer; map authentication, usage, pre-start, idle-timeout (5 minutes without an event), cancellation, and uncertain outcomes to the existing failure kinds, retrying only per [ADR 0002](adr/0002-retry-only-proven-safe-runtime-turns.md). Cancel with SIGINT.
+6. Fail closed on every Claude permission prompt per ADR 0007: the Turn proceeds with the CLI's denial, inoai records a non-secret `approval_unsupported` Event, and posts a fixed notice to use local Claude for the blocked action. Never add allow rules, auto-allow tools, or change the permission mode.
+7. At startup, ask the CLI which credential it will use and refuse to start unless it is the owner's interactive subscription login (`/login`), naming the overriding source locally. Never edit shell, settings, or credentials.
+8. Refuse a Turn whose Session `agent_provider` differs from the configured provider: fail the Message and post a fixed notice that `/inoai reset` or a new thread starts a session with the current provider.
+9. Add a tool-free Claude concurrency probe: two ephemeral sessions in a disposable project with tools disabled must both stream before either completes; otherwise use global FIFO.
+10. Make the wrong-bot `/inoai` rejection explain that the thread belongs to another inoai bot.
+11. Add Claude setup and validation instructions and the subscription-login policy note to the README.
+12. Run a focused live Discord smoke test from an isolated `.inoai-connect-claude/` home with its own bot token in a private test channel against a disposable project.
+
+**Testable outcome:** a Claude-backed Agent Instance holds a persistent Agent Session across Discord thread Messages with the same safety behavior as Codex.
+
+Phase 5a acceptance requires deterministic fake-CLI tests, the authenticated tool-free Claude concurrency probe, and the live Discord smoke test. Keep the bot token only in an ignored runtime-home `.env`.
+
+**Test scenarios:**
+
+- `AGENT_PROVIDER=claude` validates; an unsupported provider or malformed `CLAUDE_MODEL` fails before startup.
+- Startup succeeds with Claude subscription sign-in and refuses, naming the source, when `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `apiKeyHelper`, a cloud provider, or an Anthropic profile would supply the credential.
+- A normal question returns a final answer; a follow-up resumes the same Claude Agent Session, including after an inoai restart.
+- `agent.md` reaches every Turn without replacing Claude's default system prompt; a configured local skill or read-only MCP tool is available.
+- A tool call needing a permission prompt is denied without hanging; the owner gets the fixed notice, and no actionable control, pending approval row, or raw tool input is stored or sent.
+- Expired authentication and exhausted usage produce Claude-worded notices with the Claude login hint.
+- A pre-start failure retries at most three times; a timeout or process loss after the Turn may have begun is not replayed.
+- `/inoai cancel` and `/inoai reset` stop an active Claude Turn and leave the Conversation usable.
+- A Codex-bound thread in a home switched to `claude` refuses the Turn with the fixed notice, and `/inoai reset` then starts a Claude session in that thread.
+- The probe enables per-session concurrency only when both sessions overlap; sequential or failed runs keep global FIFO without dropping queued Messages.
+- A token-shaped literal in a prompt or tool input is never copied into SQLite, logs, or Discord beyond the archived owner Message.
+- With a real Claude bot in a private test channel, the owner can start a thread, receive a Claude answer, continue the same Agent Session, and exercise status, cancel, and reset; Discord Messages match the SQLite archive.
+
 ## Phase 6 — Daily Memory Review
 
 **Purpose:** distill stable preferences and project decisions from the local archive without adding chat noise.
@@ -209,7 +249,7 @@ Phase 5 acceptance requires deterministic fake-transport/runtime tests, the isol
 
 1. Run the end-to-end acceptance scenarios from a fresh local setup.
 2. Verify restart behavior for Discord reconnect, SQLite recovery, and unfinished worker state.
-3. Verify that a tool action requiring approval follows the configured Codex policy without inoai bypassing it.
+3. Verify that a tool action requiring approval follows the configured Codex or Claude policy without inoai bypassing it.
 4. Create a local, SQLite-consistent daily backup after the recap pass and keep three rotating snapshots outside Git.
 5. Package the core as a macOS single executable with the sibling Electron bundle and verify a fresh deployment-folder bootstrap.
 
@@ -219,7 +259,7 @@ Phase 5 acceptance requires deterministic fake-transport/runtime tests, the isol
 
 - Disconnect/reconnect Discord without duplicate online messages or duplicate Message processing.
 - Stop the process during a runtime turn and recover safely on restart.
-- Confirm a tool action requiring approval is declined through Codex's protocol, produces only a fixed safe Discord notice, and is never silently elevated or exposed as an actionable Discord control.
+- Confirm a tool action requiring approval is declined through the selected runtime's protocol, produces only a fixed safe Discord notice, and is never silently elevated or exposed as an actionable Discord control.
 - Restore each rotated local backup and confirm archived Conversations, Recaps, and Memory remain available.
 - Run the packaged macOS core in an empty deployment folder; it initializes only `.inoai-connect/` and launches the sibling Electron UI with `inoai ui`.
 

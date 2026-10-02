@@ -10,13 +10,13 @@ export async function startAgentSession(database: DatabaseSync, runtime: AgentRu
   if (!session || !session.agent_session_id.startsWith("pending:")) throw new Error("Agent Session is not pending");
   const instructions = await readFile(home.agentFile, "utf8");
   const threadId = await runtime.createSession(session.project_path, instructions);
-  bindAgentSession(database, sessionId, threadId);
+  bindAgentSession(database, sessionId, threadId, `runtime:${session.agent_provider}`);
   return threadId;
 }
 
 export async function resumeAgentSession(database: DatabaseSync, runtime: AgentRuntime, sessionId: number, home: RuntimeHome): Promise<string> {
   const session = getSession(database, sessionId);
-  if (!session || session.agent_session_id.startsWith("pending:") || session.state !== "active") throw new Error("Agent Session has no Codex thread to resume");
+  if (!session || session.agent_session_id.startsWith("pending:") || session.state !== "active") throw new Error("Agent Session has no runtime session to resume");
   const instructions = await readFile(home.agentFile, "utf8");
   await runtime.resumeSession(session.agent_session_id, session.project_path, instructions);
   return session.agent_session_id;

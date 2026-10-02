@@ -108,17 +108,22 @@ test("native inoai interaction is deferred privately and routed without a messag
   const controls: string[] = [];
   const replies: unknown[] = [];
   await transport.start(() => { throw new Error("Slash command must not enter the message queue"); }, undefined, undefined,
-    async (control) => { controls.push(`${control.command}:${control.conversationId}:${control.externalUserId}`); await control.respond("ready"); });
-  fake.emit(Events.InteractionCreate, {
+    async (control) => { controls.push(`${control.command}:${control.conversationId}:${control.externalUserId}:${control.conversationOwnedByBot}`); await control.respond("ready"); });
+  const interaction = (channelId: string, ownerId: string) => ({
     isChatInputCommand: () => true, commandName: "inoai", options: { getSubcommand: () => "status" },
-    guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel" },
+    guildId: "guild", channelId, channel: { isThread: () => true, parentId: "channel", ownerId },
     user: { id: "owner" },
     deferReply: async (options: unknown) => { replies.push(options); },
     editReply: async (options: unknown) => { replies.push(options); },
   });
+  fake.emit(Events.InteractionCreate, interaction("thread", "inoai"));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(controls, ["status:thread:owner"]);
+  assert.deepEqual(controls, ["status:thread:owner:true"]);
   assert.deepEqual(replies, [{ flags: MessageFlags.Ephemeral }, { content: "ready", allowedMentions: { parse: [] } }]);
+  fake.emit(Events.InteractionCreate, interaction("other-thread", "other-bot"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(controls, ["status:thread:owner:true", "status:other-thread:owner:false"]);
+  assert.deepEqual(replies.slice(2), [{ flags: MessageFlags.Ephemeral }, { content: "ready", allowedMentions: { parse: [] } }]);
   await transport.stop();
 });
 
@@ -172,6 +177,7 @@ const validEnv = [
 ].join("\n");
 
 const fakeRuntime: AgentRuntime = {
+  displayName: "Codex", loginHint: "codex login",
   async createSession() { return "fake-codex-thread"; }, async resumeSession() {},
   async *runTurn() { yield { type: "answer" as const, text: "ok" }; },
   async cancel() {}, health() { return { state: "ready" }; }, async close() {},
@@ -638,6 +644,154 @@ test("CLI exits and releases the runtime lock after terminal Discord failure", a
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Claude startup failure happens before any external connection and releases the runtime lock", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-claude-provider-"));
+  const previousDirectory = process.cwd();
+  const previousPath = process.env.PATH;
+  try {
+    // An empty PATH makes the installed `claude` unavailable without running the real CLI.
+    process.env.PATH = directory;
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=claude"));
+    process.chdir(directory);
+    const fake = new FakeClient();
+    let loggedIn = false;
+    fake.login = async () => { loggedIn = true; return "connected"; };
+    await assert.rejects(run([], new DiscordTransport("token", fake as unknown as Client)), /Claude CLI is unavailable/);
+    assert.equal(loggedIn, false);
+    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
+    const restarted = await start(directory);
+    await restarted.release();
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    process.chdir(previousDirectory);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A fake `claude` placed on PATH: it answers --version, `auth status --json` from status.json, and each -p Turn
+// with one permission denial and an answer. Only the subscription fields matter; identity fields are sentinels.
+const fakeClaudeScript = `
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const dir = dirname(fileURLToPath(import.meta.url));
+const argv = process.argv.slice(2);
+if (argv[0] === "--version") process.exit(0);
+if (argv[0] === "auth") {
+  const { status, exit } = JSON.parse(readFileSync(join(dir, "status.json"), "utf8"));
+  process.stdout.write(JSON.stringify(status, null, 2) + "\\n");
+  process.exit(exit);
+}
+const sid = argv[argv.findIndex((arg) => arg === "--session-id" || arg === "--resume") + 1];
+process.stdin.resume();
+process.stdin.on("end", () => {
+  for (const event of [
+    { type: "system", subtype: "init", session_id: sid, apiKeySource: "none" },
+    { type: "system", subtype: "permission_denied", tool_name: "Bash", tool_input: { command: "rm -rf /" } },
+    { type: "result", subtype: "success", is_error: false, result: "claude answer", session_id: sid, permission_denials: [{ tool_name: "Bash" }] },
+  ]) process.stdout.write(JSON.stringify(event) + "\\n");
+});
+`;
+
+async function withFakeClaude(status: unknown, fn: (directory: string, home: Awaited<ReturnType<typeof bootstrapRuntimeHome>>) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-claude-run-"));
+  const bin = join(directory, "bin");
+  const previousDirectory = process.cwd();
+  const previousPath = process.env.PATH;
+  const previousHome = process.env.HOME;
+  const hadOauth = Object.hasOwn(process.env, "CLAUDE_CODE_OAUTH_TOKEN");
+  const previousOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const previousExitCode = process.exitCode;
+  try {
+    await mkdir(bin);
+    await writeFile(join(bin, "claude"), `#!${process.execPath}\n${fakeClaudeScript}`, { mode: 0o755 });
+    await writeFile(join(bin, "status.json"), JSON.stringify({ status, exit: 0 }));
+    process.env.PATH = bin;
+    // run() starts the real Claude probe, which resolves ~/.claude through os.homedir() (HOME on macOS):
+    // a temp HOME keeps it away from the developer's real CLI folders.
+    await mkdir(join(directory, "home"));
+    process.env.HOME = join(directory, "home");
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=claude"));
+    process.chdir(directory);
+    await fn(directory, home);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (hadOauth) process.env.CLAUDE_CODE_OAUTH_TOKEN = previousOauth;
+    else delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.chdir(previousDirectory);
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const claudeSubscription = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "owner-sentinel@example.com", orgId: "org-sentinel", orgName: "Org Sentinel" };
+
+test("Claude credential guard refuses an API key before Discord starts and releases the runtime lock", async () => {
+  await withFakeClaude({ ...claudeSubscription, apiKeySource: "ANTHROPIC_API_KEY" }, async (directory, home) => {
+    const fake = new FakeClient();
+    let loggedIn = false;
+    fake.login = async () => { loggedIn = true; return "connected"; };
+    const error = await run([], new DiscordTransport("token", fake as unknown as Client)).then(() => assert.fail("expected refusal"), (failure: unknown) => failure as Error);
+    assert.match(error.message, /Claude credential refused: an API key \(ANTHROPIC_API_KEY\)/);
+    assert.equal(/sentinel/i.test(error.message), false);
+    assert.equal(loggedIn, false);
+    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
+    const restarted = await start(directory);
+    try {
+      assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM events").get()?.count, 0);
+    } finally { await restarted.release(); }
+  });
+});
+
+test("Claude startup with the subscription login wires the runtime and a denied Turn posts the fixed notice", async () => {
+  await withFakeClaude(claudeSubscription, async (directory, home) => {
+    const fake = new FakeClient();
+    const logged: unknown[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = (...args: unknown[]) => { logged.push(args); };
+    console.error = (...args: unknown[]) => { logged.push(args); };
+    try {
+      await run([], new DiscordTransport("token", fake as unknown as Client));
+      fake.emit(Events.MessageCreate, {
+        guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
+        channel: { isThread: () => false }, reference: null,
+        mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
+      });
+      const sentText = () => JSON.stringify(fake.sent);
+      for (let attempt = 0; attempt < 500 && !(sentText().includes("Use local Claude for the blocked action") && sentText().includes("claude answer")); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      process.emit("SIGTERM");
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if (await stat(home.lockFile).then(() => false, () => true)) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+    assert.match(JSON.stringify(fake.sent), /Claude permission request declined: .* Use local Claude for the blocked action\./);
+    assert.match(JSON.stringify(fake.sent), /claude answer/);
+    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
+    assert.equal(/sentinel|rm -rf/i.test(JSON.stringify([fake.sent, logged])), false);
+    const restarted = await start(directory);
+    try {
+      const events = listEvents(restarted.database);
+      assert.equal(events.filter((event) => event.event_type === "approval_unsupported").length, 1);
+      assert.equal(/sentinel|rm -rf/i.test(JSON.stringify(restarted.database.prepare("SELECT * FROM events").all())), false);
+      assert.equal(restarted.database.prepare("SELECT agent_provider FROM sessions").get()?.agent_provider, "claude");
+    } finally { await restarted.release(); }
+  });
 });
 
 test("invalid configuration or database prevents Discord startup", async () => {

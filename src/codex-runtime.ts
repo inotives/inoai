@@ -6,6 +6,8 @@ type ActiveTurn = { started: Promise<string>; interrupt?: Promise<void>; cancelR
 type TurnNotice = { method: string; params: { threadId?: string; turnId?: string; turn?: { id?: string; status?: string; error?: { codexErrorInfo?: unknown } }; delta?: string; item?: { type?: string; text?: string } } };
 
 export class CodexRuntime implements AgentRuntime {
+  readonly displayName = "Codex";
+  readonly loginHint = "codex login";
   private readonly sessions = new Map<string, string>();
   private readonly active = new Map<string, ActiveTurn>();
 

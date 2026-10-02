@@ -22,8 +22,9 @@ async function withSession(check: (database: ReturnType<typeof openDatabase>, se
   } finally { await rm(project, { recursive: true, force: true }); }
 }
 
-function fakeRuntime(run: (attempt: number) => AsyncIterable<RuntimeEvent>): AgentRuntime & { attempts: number } {
+function fakeRuntime(run: (attempt: number) => AsyncIterable<RuntimeEvent>, displayName = "Codex", loginHint = "codex login"): AgentRuntime & { attempts: number } {
   return {
+    displayName, loginHint,
     attempts: 0,
     async createSession() { return "thread"; },
     async resumeSession() {},
@@ -71,12 +72,32 @@ test("safe transient recovery returns exactly one confirmed answer; auth and usa
       yield { type: "answer", text: "done" };
     });
     assert.deepEqual(await runRuntimeTurn(database, runtime, sessionId, "thread", "question"), { state: "completed", answer: "done", attempts: 2, replaySafe: false });
-    for (const kind of ["authentication", "usage", "cancelled", "timed_out"] as const) {
+    for (const kind of ["authentication", "usage", "cancelled", "timed_out", "session_missing"] as const) {
       const failed = fakeRuntime(async function* () { throw new RuntimeFailure(kind); });
       const result = await runRuntimeTurn(database, failed, sessionId, "thread", "question");
       assert.equal(result.state, "failed");
       assert.equal(result.state === "failed" ? result.reason : "", kind);
       assert.equal(failed.attempts, 1);
     }
+  });
+});
+
+test("failure notices name the runtime and its login hint", async () => {
+  await withSession(async (database, sessionId) => {
+    const notice = async (kind: RuntimeFailure["kind"], displayName?: string, loginHint?: string) => {
+      const result = await runRuntimeTurn(database, fakeRuntime(async function* () { throw new RuntimeFailure(kind); }, displayName, loginHint), sessionId, "thread", "question");
+      return result.state === "failed" ? result.notice : "";
+    };
+    assert.deepEqual(await Promise.all((["authentication", "usage", "pre_start", "timed_out", "cancelled", "uncertain"] as const).map((kind) => notice(kind))), [
+      "Codex sign-in needs attention. Run codex login locally, then send a fresh request.",
+      "Codex usage is unavailable. Check your account locally, then send a fresh request.",
+      "Codex could not start the turn. Please send a fresh request.",
+      "Codex timed out; its outcome is uncertain. Please send a fresh request.",
+      "Codex turn was cancelled. Please send a fresh request if needed.",
+      "Codex turn ended without a confirmed answer. Please send a fresh request.",
+    ]);
+    assert.equal(await notice("authentication", "Claude", "claude /login"), "Claude sign-in needs attention. Run claude /login locally, then send a fresh request.");
+    assert.equal(await notice("uncertain", "Claude", "claude /login"), "Claude turn ended without a confirmed answer. Please send a fresh request.");
+    assert.equal(await notice("session_missing", "Claude", "claude /login"), "This thread's Claude session could not be found. Use /inoai reset to start a new session.");
   });
 });
