@@ -10,13 +10,13 @@ import { classifyIncomingMessage } from "../inbound-policy.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import type { IncomingMessage } from "../transport.js";
 
-test("inbound policy admits only the active owner in the configured Discord location", async () => {
+test("inbound policy admits owner mentions across non-status guild channels and bound threads", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-eligibility-"));
   try {
     const database = openDatabase(await bootstrapRuntimeHome(directory));
     try {
       const configuration = validateConfiguration({
-        DISCORD_BOT_TOKEN: "token", DISCORD_GUILD_ID: "guild", DISCORD_OWNER_USER_ID: "owner", DISCORD_ALLOWED_CHANNEL_ID: "channel",
+        DISCORD_BOT_TOKEN: "token", DISCORD_GUILD_ID: "guild", DISCORD_OWNER_USER_ID: "owner", DISCORD_STATUS_CHANNEL_ID: "status",
         CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000",
       });
       const owner = bootstrapOwner(database, configuration);
@@ -26,9 +26,10 @@ test("inbound policy admits only the active owner in the configured Discord loca
         mentionedUserIds: ["inoai"], mentionedBotUserIds: ["inoai"], botUserId: "inoai", authorIsBot: false,
       };
       assert.deepEqual(classifyIncomingMessage(database, configuration, topLevel), { kind: "top-level", user: owner });
+      assert.deepEqual(classifyIncomingMessage(database, configuration, { ...topLevel, conversationId: "another-channel" }), { kind: "top-level", user: owner });
 
       for (const change of [
-        { authorIsBot: true }, { workspaceId: "other-guild" }, { conversationId: "other-channel" },
+        { authorIsBot: true }, { workspaceId: "other-guild" }, { conversationId: "status" },
         { externalUserId: "stranger" }, { botUserId: null },
         { mentionedBotUserIds: [] }, { mentionedBotUserIds: ["other-bot"] },
         { mentionedBotUserIds: ["inoai", "other-bot"] },
@@ -42,6 +43,7 @@ test("inbound policy admits only the active owner in the configured Discord loca
       const thread = { ...topLevel, conversationId: "owned-thread", parentConversationId: "channel", mentionedUserIds: [], mentionedBotUserIds: [] };
       assert.deepEqual(classifyIncomingMessage(database, configuration, thread), { kind: "bound-thread", user: owner, session });
       assert.equal(classifyIncomingMessage(database, configuration, { ...thread, conversationId: "other-bot-thread" }), null);
+      assert.equal(classifyIncomingMessage(database, configuration, { ...thread, parentConversationId: "status" }), null);
       assert.equal(classifyIncomingMessage(database, configuration, { ...thread, parentConversationId: "other-channel" }), null);
       assert.equal(classifyIncomingMessage(database, configuration, { ...thread, externalUserId: "stranger" }), null);
       assert.equal(classifyIncomingMessage(database, configuration, { ...thread, authorIsBot: true }), null);

@@ -32,8 +32,10 @@ export async function runRuntimeTurn(
   prompt: string,
   onProgress: (text: string) => void = () => {},
   messageId: number | null = null,
+  shutdown?: AbortSignal,
 ): Promise<RuntimeTurnOutcome> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (shutdown?.aborted) return { state: "failed", reason: "cancelled", notice: notices.cancelled, attempts: attempt - 1, replaySafe: false };
     createEvent(database, { session_id: sessionId, message_id: messageId, event_type: "runtime_attempt", detail: `attempt=${attempt}` }, "runtime");
     try {
       let answer: string | undefined;
@@ -47,6 +49,7 @@ export async function runRuntimeTurn(
     } catch (error) {
       const { reason, replaySafe } = failureKind(error);
       createEvent(database, { session_id: sessionId, message_id: messageId, event_type: "runtime_failure", detail: `attempt=${attempt}; reason=${reason}; replay_safe=${replaySafe}` }, "runtime");
+      if (shutdown?.aborted) return { state: "failed", reason: "cancelled", notice: notices.cancelled, attempts: attempt, replaySafe: false };
       if (replaySafe && (reason === "pre_start" || reason === "timed_out") && attempt < maxAttempts) {
         await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
         continue;

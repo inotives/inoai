@@ -59,6 +59,7 @@ Only one core process may use a runtime home at a time. Different homes may run 
 - A top-level message mentioning multiple agent bots is intentionally unsupported in V1; no Session or thread is created.
 - Bots ignore bot-authored messages, preventing agent-to-agent loops.
 - V1 admits only the configured owner. Family access is a later phase.
+- An owner mention can start a conversation in any accessible channel of the configured server except the status-only channel. Ordinary top-level messages do nothing; bound-thread follow-ups need no mention.
 
 ## Development
 
@@ -74,6 +75,8 @@ npm run build
 ```
 
 The first validation or start creates the ignored `.inoai-connect/` runtime home with a blank `.env`, `agent.md`, and `inoai.sqlite`. Copy the value-free sample into that home and fill in the Discord values locally; never commit the resulting `.env` or any `.inoai-connect*/` directory.
+
+Set `DISCORD_STATUS_CHANNEL_ID` to the server channel for the startup online notice. The former `DISCORD_ALLOWED_CHANNEL_ID` key is no longer accepted; update existing local runtime-home `.env` files before starting this version. The bot must have access to the status channel and any channel where you want to start conversations, including permission to create threads.
 
 ```sh
 npm run validate
