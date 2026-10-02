@@ -73,11 +73,19 @@ test("rejects a malformed Claude model and names unsupported agent providers", (
       return true;
     });
   }
-  assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: "opencode" }), (error: unknown) => {
-    assert(error instanceof ConfigurationError);
-    assert.match(error.message, /AGENT_PROVIDER must be codex or claude/);
-    return true;
-  });
+  for (const provider of ["other", "OpenCode", "opencode "]) {
+    assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: provider }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /AGENT_PROVIDER must be codex, claude, or opencode/);
+      return true;
+    });
+  }
+});
+
+test("accepts the OpenCode provider without a model setting", () => {
+  const configuration = validateConfiguration({ ...validValues, AGENT_PROVIDER: "opencode", CLAUDE_MODEL: "opus 4" });
+  assert.equal(configuration.agentProvider, "opencode");
+  assert.equal(configuration.claudeModel, undefined);
 });
 
 test("ignores CLAUDE_MODEL for a Codex home", () => {

@@ -6,9 +6,12 @@ import test from "node:test";
 
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
+import { ClaudeRuntime } from "../claude-runtime.js";
+import { CodexRuntime } from "../codex-runtime.js";
 import { ConversationWorker } from "../conversation-worker.js";
 import { archiveMessage, claimNextMessage, createSession, listMessages, markRuntimeStarted, openDatabase, upsertUser } from "../database.js";
 import { start, startTransport } from "../index.js";
+import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../transport.js";
 
@@ -339,6 +342,44 @@ test("an unrecognized stored provider is never echoed into the mismatch notice",
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("the mismatch notice names OpenCode for an OpenCode-bound thread and names the other provider in an OpenCode home", async () => {
+  const cases = [
+    { stored: "opencode", current: "codex", currentName: "Codex", notice: "This thread belongs to an OpenCode session. Use /inoai reset to start a new Codex session here, or start a new thread." },
+    { stored: "opencode", current: "claude", currentName: "Claude", notice: "This thread belongs to an OpenCode session. Use /inoai reset to start a new Claude session here, or start a new thread." },
+    { stored: "codex", current: "opencode", currentName: "OpenCode", notice: "This thread belongs to a Codex session. Use /inoai reset to start a new OpenCode session here, or start a new thread." },
+    { stored: "claude", current: "opencode", currentName: "OpenCode", notice: "This thread belongs to a Claude session. Use /inoai reset to start a new OpenCode session here, or start a new thread." },
+  ] as const;
+  for (const { stored, current, currentName, notice } of cases) {
+    const directory = await mkdtemp(join(tmpdir(), "inoai-worker-opencode-mismatch-"));
+    try {
+      const home = await bootstrapRuntimeHome(directory);
+      const database = openDatabase(home);
+      const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner",
+        display_name: null, role: "owner", state: "active" })!;
+      const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild",
+        parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "m1",
+        agent_provider: stored, agent_session_id: `${stored}-session`, project_path: directory });
+      archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild",
+        external_message_id: "m1", external_author_id: "owner", user_id: owner.id, direction: "user", body: "m1",
+        reply_to_external_message_id: null, in_reply_to_message_id: null });
+      const runtime: AgentRuntime = {
+        displayName: currentName, loginHint: "login",
+        async createSession() { throw new Error("Unexpected create"); }, async resumeSession() { throw new Error("Unexpected resume"); },
+        async *runTurn() { throw new Error("Unexpected turn"); },
+        async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+      };
+      const worker = new ConversationWorker(database, home, runtime, current);
+      try {
+        worker.wake();
+        await worker.idle();
+        const rows = listMessages(database, session.id);
+        assert.equal(rows.find((row) => row.direction === "user")?.failure_detail, "Agent provider mismatch; replay_safe=false");
+        assert.equal(rows.find((row) => row.direction === "agent")?.body, notice);
+      } finally { await worker.stop(); database.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
 test("a missing runtime session fails once and tells the owner to reset", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-worker-missing-"));
   try {
@@ -370,6 +411,73 @@ test("a missing runtime session fails once and tells the owner to reset", async 
         "This thread's Claude session could not be found. Use /inoai reset to start a new session.");
     } finally { await worker.stop(); database.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+// Runs one failing Turn through the worker with the real adapter's notice identity; no CLI is spawned.
+async function failedTurnNotice(provider: "codex" | "claude" | "opencode", kind: RuntimeFailure["kind"]) {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-notice-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    const database = openDatabase(home);
+    const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner",
+      display_name: null, role: "owner", state: "active" })!;
+    const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild",
+      parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "turn",
+      agent_provider: provider, agent_session_id: `${provider}-session`, project_path: directory });
+    archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild",
+      external_message_id: "turn", external_author_id: "owner", user_id: owner.id, direction: "user", body: "turn",
+      reply_to_external_message_id: null, in_reply_to_message_id: null });
+    const adapter: AgentRuntime = provider === "codex" ? new CodexRuntime({} as never) : provider === "claude" ? new ClaudeRuntime() : new OpenCodeRuntime();
+    let attempts = 0;
+    const runtime: AgentRuntime = {
+      displayName: adapter.displayName, loginHint: adapter.loginHint, authenticationNotice: adapter.authenticationNotice,
+      async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
+      async *runTurn() { attempts++; throw new RuntimeFailure(kind); },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const transport = new FakeTransport();
+    const worker = new ConversationWorker(database, home, runtime, provider, () => {}, transport);
+    try {
+      worker.enablePerSessionConcurrency();
+      worker.wake();
+      await worker.idle();
+      const user = listMessages(database, session.id).find((row) => row.direction === "user");
+      return { sent: transport.sent, attempts, state: user?.state, failureDetail: user?.failure_detail, mode: worker.concurrencyMode() };
+    } finally { await worker.stop(); database.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+test("authentication and usage failures post the fixed provider-worded notice once without replay or FIFO fallback", async () => {
+  const expected = {
+    codex: {
+      authentication: "Codex sign-in needs attention. Run codex login locally, then send a fresh request.",
+      usage: "Codex usage is unavailable. Check your account locally, then send a fresh request.",
+    },
+    claude: {
+      authentication: "Claude sign-in needs attention. Run claude /login locally, then send a fresh request.",
+      usage: "Claude usage is unavailable. Check your account locally, then send a fresh request.",
+    },
+    opencode: {
+      authentication: "OpenCode could not authenticate with its configured provider, or the free tier refused the request. Check opencode auth login locally, then send a fresh request.",
+      usage: "OpenCode usage is unavailable. Check your account locally, then send a fresh request.",
+    },
+  } as const;
+  for (const provider of ["codex", "claude", "opencode"] as const) {
+    for (const kind of ["authentication", "usage"] as const) {
+      const result = await failedTurnNotice(provider, kind);
+      assert.deepEqual(result, { sent: [expected[provider][kind]], attempts: 1, state: "failed",
+        failureDetail: `Runtime ${kind}; replay_safe=false`, mode: "per-session" }, `${provider} ${kind}`);
+    }
+  }
+});
+
+test("other failure kinds keep the generic notices and the existing FIFO fallback", async () => {
+  assert.deepEqual(await failedTurnNotice("opencode", "uncertain"), {
+    sent: ["I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive."],
+    attempts: 1, state: "failed", failureDetail: "Runtime uncertain; replay_safe=false", mode: "global" });
+  assert.deepEqual(await failedTurnNotice("claude", "cancelled"), {
+    sent: ["I couldn't complete that turn safely. Please check the local archive before sending a new request."],
+    attempts: 1, state: "failed", failureDetail: "Runtime cancelled; replay_safe=false", mode: "per-session" });
 });
 
 test("shutdown cancels the active turn and leaves later pending input for restart", async () => {

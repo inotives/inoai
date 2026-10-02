@@ -2,15 +2,15 @@
 
 inoai is a local personal-agent bridge: it connects a Discord bot to a locally authenticated coding-agent CLI, beginning with Codex CLI and the owner’s ChatGPT subscription. It stores conversation history and durable agent Memory in SQLite, without using the OpenAI API.
 
-> **Status:** Phases 1–5 and 5a are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, and the end-to-end conversation worker. Phase 5a adds Claude CLI as a second runtime. Daily Memory Review, the Electron app, and V1 hardening remain later work.
+> **Status:** Phases 1–5, 5a, and 5b are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, and the end-to-end conversation worker. Phase 5a adds Claude CLI and Phase 5b adds OpenCode as further runtimes. Daily Memory Review, the Electron app, and V1 hardening remain later work.
 
 ## V1 in brief
 
-- TypeScript core, Discord transport, and Codex CLI runtime, with Claude CLI as a second runtime from Phase 5a.
+- TypeScript core, Discord transport, and Codex CLI runtime, with Claude CLI (Phase 5a) and OpenCode (Phase 5b) as further runtimes.
 - Discord `@inoai` starts a dedicated thread; follow-up messages in that thread continue the same Agent Session.
 - SQLite persists users, sessions, messages, events, approvals, daily recaps, and shared agent Memory.
 - Memory Review configuration is validated locally; scheduled review execution is deferred.
-- Codex capability, MCP, sandbox, and approval settings come from the local Codex CLI environment. In V1, every permission request is declined with a fixed safe notice; Discord **Approve** / **Reject** buttons are deferred. Claude follows the same rules with its own local settings.
+- Codex capability, MCP, sandbox, and approval settings come from the local Codex CLI environment. In V1, every permission request is declined with a fixed safe notice; Discord **Approve** / **Reject** buttons are deferred. Claude and OpenCode follow the same rules with their own local settings.
 - A separate macOS Electron app provides analytics and manual Memory management by opening SQLite directly.
 
 ## Deployment layout
@@ -30,7 +30,7 @@ my-project/
 
 On first start, the core creates `.inoai-connect/` from bundled templates. It never overwrites an existing runtime home.
 
-`agent.md` defines the role and personality for that deployment. A project-level `AGENTS.md`, if present, remains normal project guidance for Codex; Claude reads the project's `CLAUDE.md` instead.
+`agent.md` defines the role and personality for that deployment. A project-level `AGENTS.md`, if present, remains normal project guidance for Codex and OpenCode; Claude reads the project's `CLAUDE.md` instead.
 
 ## Agent Instances
 
@@ -41,6 +41,7 @@ One `.inoai-connect*` directory is one independent Agent Instance. Each has sepa
 .inoai-connect-planner/   # planner role
 .inoai-connect-designer/  # designer role
 .inoai-connect-claude/    # Claude CLI adapter (Phase 5a)
+.inoai-connect-opencode/  # OpenCode CLI adapter (Phase 5b)
 ```
 
 Run a named instance with its runtime home:
@@ -85,7 +86,7 @@ cp .env.sample .inoai-connect/.env
 npm run validate
 ```
 
-`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex` or `claude`, a well-formed optional `CLAUDE_MODEL`, local `HH:MM` review time, and a positive review limit. It does not contact Discord, Codex, or Claude.
+`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex`, `claude`, or `opencode`, a well-formed optional `CLAUDE_MODEL`, local `HH:MM` review time, and a positive review limit. It does not contact Discord, Codex, Claude, or OpenCode.
 
 Start the local core after validation:
 
@@ -182,6 +183,53 @@ Anthropic's [Agent SDK documentation](https://code.claude.com/docs/en/agent-sdk/
 
 Give each concurrently running Agent Instance its own Discord bot and token, for example one for `.inoai-connect/` (Codex) and another for `.inoai-connect-claude/`. Reusing one bot token across runtime homes is only safe when just one of them runs at a time.
 
+## OpenCode runtime
+
+A runtime home can drive the owner's local OpenCode CLI instead of Codex or Claude. inoai runs `opencode run --format json --standalone` for each Turn and uses whatever provider and model OpenCode is configured with ([ADR 0009](docs/adr/0009-opencode-uses-its-configured-provider.md)).
+
+### Prerequisites
+
+- Node.js 22 or newer.
+- OpenCode installed, with `opencode` on the PATH of the shell that runs `npm start`. The default installer puts it in `~/.opencode/bin`, which a non-interactive shell may not include.
+- A Discord bot for this Agent Instance (see [Running alongside other homes](#running-alongside-other-homes)).
+
+### Setup
+
+```sh
+# This creates a blank .inoai-connect-opencode/.env and reports missing settings.
+npm run validate -- --connect-dir .inoai-connect-opencode
+cp .env.sample .inoai-connect-opencode/.env
+# Edit .inoai-connect-opencode/.env: set AGENT_PROVIDER=opencode and your local Discord values.
+npm run validate -- --connect-dir .inoai-connect-opencode
+npm start -- --connect-dir .inoai-connect-opencode
+```
+
+OpenCode has no model setting in `.env`; `CLAUDE_MODEL` is ignored. `npm run validate` stays offline and does not look for `opencode`. At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenCode CLI is unavailable` if it cannot be run.
+
+### Data and billing
+
+inoai passes no model or provider, so OpenCode's configured default answers every Turn, and there is no credential guard.
+
+- With the free OpenCode Zen default, nobody is billed, but Discord prompts and project context are sent to opencode.ai.
+- If you later configure another provider or API key in OpenCode, inoai uses it as configured, and that provider bills you as usual.
+- The free tier allows use only "from within OpenCode". inoai works today because it runs the stock CLI, but a future OpenCode change could refuse these runs. A refusal shows up as the OpenCode authentication notice in the thread.
+
+inoai never edits OpenCode configuration and never passes `--auto`, `--yolo`, or `--dangerously-skip-permissions`.
+
+### Behavior
+
+- Each Turn is a standalone `opencode run` in the deployment folder. The first Turn creates the OpenCode session and later Turns resume it with `--session`. These sessions appear in OpenCode's own session list for the deployment folder.
+- Project guidance comes from OpenCode's own `AGENTS.md` loading.
+- OpenCode (2.0.22) ignores the `instructions` config setting, so `agent.md` is sent as a delimited block at the start of every Turn's prompt. Edits apply from the next Turn, including in existing threads.
+- Permission requests fail closed. Headless OpenCode rejects any action that would need a prompt, and the thread gets a fixed notice to use local OpenCode for the blocked action. Your OpenCode settings, MCP servers, and permission rules apply unchanged.
+- **OpenCode's default rules are permissive.** Out of the box they allow shell commands and file edits, and only a few actions (such as file tools outside the project or reading `.env` files) ask. So with default settings a Discord message can make OpenCode run commands and change files in the deployment folder; only the asking cases are rejected. inoai keeps your configured policy and never tightens or loosens it. For Codex-like behavior, set the actions you want gated (for example shell and edit) to `ask` in your own OpenCode configuration; inoai will then reject them with the notice above.
+- An OpenCode home always processes Turns in one global FIFO queue; there is no concurrency probe.
+- A thread started under a different provider is not resumed, and its notice offers `/inoai reset` or a new thread. If the thread's OpenCode session can no longer be found, the notice asks you to run `/inoai reset`.
+
+### Running alongside other homes
+
+Give each concurrently running Agent Instance its own Discord bot and token, for example separate bots for `.inoai-connect/` (Codex), `.inoai-connect-claude/`, and `.inoai-connect-opencode/`. Reusing one bot token across runtime homes is only safe when just one of them runs at a time.
+
 ## Documentation
 
 - [Proposal](docs/discord-codex-cli-harness-proposal.md) — end-to-end behavior and boundaries.
@@ -193,7 +241,7 @@ Give each concurrently running Agent Instance its own Discord bot and token, for
 
 ## Deferred after V1
 
-- OpenCode, Slack, and Telegram adapters.
+- Slack and Telegram adapters.
 - Family access, remote Electron UI access, and cross-Agent-Instance Memory sharing.
 - Scheduled multi-step Tasks.
 - Cross-machine backups and Windows/Linux release packages.

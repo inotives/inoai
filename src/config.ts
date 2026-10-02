@@ -17,7 +17,7 @@ export type Configuration = {
   discordOwnerUserId: string;
   discordStatusChannelId: string;
   chatProvider: "discord";
-  agentProvider: "codex" | "claude";
+  agentProvider: "codex" | "claude" | "opencode";
   claudeModel?: string;
   memoryReviewTime: string;
   memoryReviewMaxChars: number;
@@ -35,8 +35,8 @@ export function validateConfiguration(values: Record<string, string | undefined>
   if (values.CHAT_PROVIDER && values.CHAT_PROVIDER !== "discord") {
     issues.push("CHAT_PROVIDER must be discord");
   }
-  if (values.AGENT_PROVIDER && values.AGENT_PROVIDER !== "codex" && values.AGENT_PROVIDER !== "claude") {
-    issues.push("AGENT_PROVIDER must be codex or claude");
+  if (values.AGENT_PROVIDER && !["codex", "claude", "opencode"].includes(values.AGENT_PROVIDER)) {
+    issues.push("AGENT_PROVIDER must be codex, claude, or opencode");
   }
   const claudeModel = values.AGENT_PROVIDER === "claude" ? values.CLAUDE_MODEL?.trim() || undefined : undefined;
   if (claudeModel && !/^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]*$/.test(claudeModel)) {

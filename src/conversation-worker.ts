@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 
-import type { AgentRuntime } from "./agent-runtime.js";
+import type { AgentRuntime, RuntimeFailureKind } from "./agent-runtime.js";
 import { resumeAgentSession, startAgentSession } from "./agent-session.js";
 import { archiveFailureNotice, archiveResponseChunks, claimNextMessage, claimResponseChunk, confirmResponseChunk, createEvent, failProcessingMessage, failRemainingResponseChunks, failResponseChunk, getSession, listPendingResponseChunks, markRuntimeStarted } from "./database.js";
 import type { Configuration } from "./config.js";
@@ -13,11 +13,12 @@ import type { ChatTransport } from "./transport.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
+const providerNoticeKinds = new Set<RuntimeFailureKind>(["authentication", "usage", "session_missing"]);
 // A fixed map keeps an arbitrary stored provider value out of the notice text.
-const providerNames: Record<string, string> = { codex: "Codex", claude: "Claude" };
+const providerNames: Record<string, string> = { codex: "a Codex", claude: "a Claude", opencode: "an OpenCode" };
 
 function providerMismatchNotice(storedProvider: string, currentDisplayName: string): string {
-  const owner = Object.hasOwn(providerNames, storedProvider) ? `a ${providerNames[storedProvider]} session` : "a session from a different agent provider";
+  const owner = Object.hasOwn(providerNames, storedProvider) ? `${providerNames[storedProvider]} session` : "a session from a different agent provider";
   return `This thread belongs to ${owner}. Use /inoai reset to start a new ${currentDisplayName} session here, or start a new thread.`;
 }
 
@@ -177,7 +178,8 @@ export class ConversationWorker {
         if (!failProcessingMessage(this.database, message.id, `Runtime ${outcome.reason}; replay_safe=${outcome.replaySafe}`, "conversation-worker")) return;
         createEvent(this.database, { session_id: session.id, message_id: message.id,
           event_type: "turn_failed", detail: `reason=${outcome.reason}; attempts=${outcome.attempts}` }, "conversation-worker");
-        archiveFailureNotice(this.database, message.id, outcome.reason === "session_missing" ? outcome.notice
+        // Only these kinds carry fixed provider-worded guidance the owner can act on; the rest stay generic.
+        archiveFailureNotice(this.database, message.id, providerNoticeKinds.has(outcome.reason) ? outcome.notice
           : outcome.reason === "uncertain" || outcome.reason === "timed_out" ? uncertainNotice : failureNotice);
       }
     } catch {

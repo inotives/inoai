@@ -2,7 +2,7 @@
 
 This project uses AgentRig. When Codex, Claude, OpenCode, or another terminal agent starts in this repository, use this file as the first routing guide.
 
-inoai is a local TypeScript bridge between a chat transport and a locally authenticated coding-agent CLI. V1 uses Discord with Codex CLI (the owner's ChatGPT sign-in) or, from Phase 5a, Claude CLI (the owner's Claude subscription sign-in); it does not use the OpenAI or Anthropic API.
+inoai is a local TypeScript bridge between a chat transport and a locally authenticated coding-agent CLI. V1 uses Discord with Codex CLI (the owner's ChatGPT sign-in) or, from Phase 5a, Claude CLI (the owner's Claude subscription sign-in), or, from Phase 5b, OpenCode (its configured provider; free OpenCode Zen today). Codex and Claude never use the OpenAI or Anthropic API.
 
 ## AgentRig startup
 
@@ -59,7 +59,7 @@ agent-rig tasks block <task-id> --reason "<reason>"
 - The portable core and Electron analytics UI are separate applications.
 - A deployment folder contains the core executable, sibling Electron bundle, and one or more ignored `.inoai-connect*` runtime homes.
 - Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, SQLite archive, Memory, approvals, and lock file.
-- Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex and, from Phase 5a, Claude CLI are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
+- Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), and OpenCode (Phase 5b) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
 - The Electron UI reads a selected runtime home's SQLite file directly. It must never read `.env` or expose credentials.
 
 ## Working rules
@@ -72,7 +72,7 @@ agent-rig tasks block <task-id> --reason "<reason>"
 - Preserve the configured CLI's skills, MCP servers, sandbox, and approval policy. Never silently elevate permissions.
 - Every bot ignores bot-authored messages. Cross-agent mentions inside a thread are not handoffs.
 - Keep secrets out of SQLite, logs, Discord, UI data, and committed files.
-- Do not modify global Codex or Claude configuration as part of this project.
+- Do not modify global Codex, Claude, or OpenCode configuration as part of this project.
 
 ## Handoff
 
@@ -137,4 +137,4 @@ This file is repository guidance, not an agent persona. The core copies a defaul
 
 ## V1 boundaries
 
-V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), and the accepted implementation phases. Defer scheduled Tasks, remote UI, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
+V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. Defer scheduled Tasks, remote UI, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
