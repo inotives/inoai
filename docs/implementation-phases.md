@@ -1,6 +1,6 @@
 # inoai implementation phases
 
-V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI added as a second runtime in Phase 5a, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
+V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
 
 ## Phase 1 — Scaffolding
 
@@ -188,6 +188,37 @@ Phase 5a acceptance requires deterministic fake-CLI tests, the authenticated too
 - A token-shaped literal in a prompt or tool input is never copied into SQLite, logs, or Discord beyond the archived owner Message.
 - With a real Claude bot in a private test channel, the owner can start a thread, receive a Claude answer, continue the same Agent Session, and exercise status, cancel, and reset; Discord Messages match the SQLite archive.
 
+## Phase 5b — OpenCode runtime
+
+**Purpose:** add OpenCode as a third Agent Runtime with the same Discord, SQLite, queue, approval, and retry behavior as the Claude adapter, using whatever provider and model the owner's OpenCode is configured with.
+
+Match the Claude adapter's behavior unless an OpenCode difference forces otherwise. OpenCode homes always use global FIFO (no concurrency probe). There is no model setting and no credential guard ([ADR 0009](adr/0009-opencode-uses-its-configured-provider.md)); today the configured default is a free OpenCode Zen model, which sends prompts and project context to opencode.ai. The recommended deployment is a separate `.inoai-connect-opencode/` home. Phases 6–8 apply to all three providers.
+
+### Tasks
+
+1. Spike the installed `opencode` (v2.0.22 at planning time) headless contract with a few short, harmless prompts against the configured free Zen model in a disposable project: `run --format json --standalone` event shapes for text, tool use, errors, and the session ID; whether `--session` accepts a pre-assigned `ses_` ID and resumes across standalone runs; how to check that a session exists before resuming without silently creating it; whether `OPENCODE_CONFIG_CONTENT` with `instructions` reaches a standalone run (it does not; see the spike); how an auto-rejected permission appears on stdout/stderr; SIGINT and exit codes; free-tier rate-limit and error shapes; standalone startup time; and how to remove probe/spike sessions. Record findings; if standalone cannot resume sessions or is unreasonably slow, stop and ask the owner.
+2. Accept `AGENT_PROVIDER=opencode` in `.env` validation and `.env.sample`, add `opencode` to the provider-mismatch display map, and add the `opencode` branch to the provider switch (global FIFO, no probe).
+3. Implement the OpenCode adapter behind `AgentRuntime` (display name `OpenCode`, login hint `opencode auth login`): spawn the installed `opencode run --format json --standalone` per Turn without a shell in the project path; deliver `agent.md` as a delimited "inoai operating instructions (not a user message)" block prepended to every Turn's stdin prompt (OpenCode ignores `instructions` config; owner decision after the spike); create the session on the first Turn without `--session`, store the streamed `sessionID`, and resume with `--session` afterwards, first checking — once per process, for a session not yet seen to succeed — that it exists with `opencode api --standalone GET /api/session/<id>`, failing closed with `session_missing` when the stored session no longer exists; build the answer from completed text events; classify from exit code and `error` events; map rate limits to `usage`, unknown failures to `uncertain`, retry only never-started Turns (ADR 0002); cancel with SIGINT; 5-minute idle timeout.
+4. Fail closed on every OpenCode permission request: never pass `--auto`, `--yolo`, or `--dangerously-skip-permissions`; detect OpenCode's headless auto-rejection and post one fixed notice per Turn with a count-only `approval_unsupported` Event, as for Claude.
+5. Add OpenCode setup, PATH, data-flow, and billing notes to the README.
+6. Run a focused live Discord smoke test from an isolated `.inoai-connect-opencode/` home in a disposable deployment folder.
+
+**Testable outcome:** an OpenCode-backed Agent Instance holds a persistent Agent Session across Discord thread Messages with the same safety behavior as the Claude adapter.
+
+Phase 5b acceptance requires deterministic fake-CLI tests and the live Discord smoke test.
+
+**Test scenarios:**
+
+- `AGENT_PROVIDER=opencode` validates; startup fails clearly when `opencode` is not on PATH, releasing the runtime lock.
+- A normal question returns a final answer; a follow-up resumes the same OpenCode session, including after an inoai restart.
+- `agent.md` reaches every Turn as a delimited prompt block alongside the project's native `AGENTS.md`; edits apply on the next Turn.
+- A stored session that no longer exists fails with `session_missing` and the reset notice, never a silently new session.
+- A tool call OpenCode auto-rejects yields one fixed notice and a count-only Event; no approval controls, rows, or raw tool input are stored or sent.
+- Rate-limit and authentication results map to fixed OpenCode-worded notices, and the authentication notice also covers a free-tier refusal; only never-started Turns retry; a timeout or process loss after the Turn may have begun is not replayed.
+- `/inoai cancel` and `/inoai reset` stop an active OpenCode Turn and leave the Conversation usable.
+- A Codex- or Claude-bound thread in an OpenCode home refuses the Turn with the mismatch notice.
+- With a real bot in a private test channel, the owner can start a thread, receive an OpenCode answer, continue the same Agent Session, and exercise status, cancel, and reset; Discord Messages match the SQLite archive.
+
 ## Phase 6 — Daily Memory Review
 
 **Purpose:** distill stable preferences and project decisions from the local archive without adding chat noise.
@@ -249,7 +280,7 @@ Phase 5a acceptance requires deterministic fake-CLI tests, the authenticated too
 
 1. Run the end-to-end acceptance scenarios from a fresh local setup.
 2. Verify restart behavior for Discord reconnect, SQLite recovery, and unfinished worker state.
-3. Verify that a tool action requiring approval follows the configured Codex or Claude policy without inoai bypassing it.
+3. Verify that a tool action requiring approval follows the configured Codex, Claude, or OpenCode policy without inoai bypassing it.
 4. Create a local, SQLite-consistent daily backup after the recap pass and keep three rotating snapshots outside Git.
 5. Package the core as a macOS single executable with the sibling Electron bundle and verify a fresh deployment-folder bootstrap.
 

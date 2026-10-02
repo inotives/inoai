@@ -672,6 +672,36 @@ test("Claude startup failure happens before any external connection and releases
   }
 });
 
+test("a missing OpenCode CLI fails startup before any external connection and releases the runtime lock", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-opencode-provider-"));
+  const previousDirectory = process.cwd();
+  const previousPath = process.env.PATH;
+  const previousHome = process.env.HOME;
+  try {
+    // A PATH of an empty temp dir and a temp HOME keep any installed `opencode` and the owner's OpenCode folders out of reach.
+    process.env.PATH = directory;
+    process.env.HOME = join(directory, "home");
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=opencode"));
+    process.chdir(directory);
+    const fake = new FakeClient();
+    let loggedIn = false;
+    fake.login = async () => { loggedIn = true; return "connected"; };
+    await assert.rejects(run([], new DiscordTransport("token", fake as unknown as Client)), /OpenCode CLI is unavailable/);
+    assert.equal(loggedIn, false);
+    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
+    const restarted = await start(directory);
+    await restarted.release();
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    process.chdir(previousDirectory);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 // A fake `claude` placed on PATH: it answers --version, `auth status --json` from status.json, and each -p Turn
 // with one permission denial and an answer. Only the subscription fields matter; identity fields are sentinels.
 const fakeClaudeScript = `
@@ -792,6 +822,102 @@ test("Claude startup with the subscription login wires the runtime and a denied 
       assert.equal(restarted.database.prepare("SELECT agent_provider FROM sessions").get()?.agent_provider, "claude");
     } finally { await restarted.release(); }
   });
+});
+
+// A fake `opencode` placed on PATH: it answers --version and each run with two auto-rejected tools, one ordinary tool
+// failure, and an answer. Token-shaped literals sit in the tool input, the error text, and stderr.
+const fakeOpenCodeScript = `
+const argv = process.argv.slice(2);
+if (argv[0] === "--version") process.exit(0);
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const sessionID = "ses_wired000000000000000000000";
+  const raw = "sk-test-AAAAAAAAAAAAAAAAAAAA ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  const rejected = "This non-interactive run cannot ask the user for permission, so the request was rejected. " + raw;
+  process.stderr.write("! permission requested: read (opencode-sentinel.env " + raw + "); auto-rejecting\\n");
+  process.stderr.write("! permission requested: external_directory (/" + raw + "/*); auto-rejecting\\n");
+  for (const event of [
+    { type: "step_start", sessionID, part: { type: "step-start" } },
+    { type: "tool_use", sessionID, part: { type: "tool", tool: "read", state: { status: "error", input: { path: "opencode-sentinel.env " + raw }, error: rejected } } },
+    { type: "tool_use", sessionID, part: { type: "tool", tool: "bash", state: { status: "error", input: { command: "ls /" + raw }, error: rejected } } },
+    { type: "tool_use", sessionID, part: { type: "tool", tool: "bash", state: { status: "error", input: { command: "false " + raw }, error: "Command failed " + raw } } },
+    { type: "step_finish", sessionID, part: { type: "step-finish", reason: "tool-calls" } },
+    { type: "step_start", sessionID, part: { type: "step-start" } },
+    { type: "text", sessionID, part: { type: "text", text: "opencode answer" } },
+  ]) process.stdout.write(JSON.stringify(event) + "\\n");
+});
+`;
+
+test("OpenCode startup wires the runtime and notifier, binds the streamed session ID, and keeps tool data out of Discord, logs, and SQLite", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-opencode-run-"));
+  const bin = join(directory, "bin");
+  const previousDirectory = process.cwd();
+  const previousPath = process.env.PATH;
+  const previousHome = process.env.HOME;
+  const previousExitCode = process.exitCode;
+  const originalLog = console.log;
+  const originalError = console.error;
+  try {
+    await mkdir(bin);
+    await writeFile(join(bin, "opencode"), `#!${process.execPath}\n${fakeOpenCodeScript}`, { mode: 0o755 });
+    process.env.PATH = bin;
+    await mkdir(join(directory, "home"));
+    process.env.HOME = join(directory, "home");
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=opencode"));
+    process.chdir(directory);
+    const fake = new FakeClient();
+    const logged: unknown[] = [];
+    console.log = (...args: unknown[]) => { logged.push(args); };
+    console.error = (...args: unknown[]) => { logged.push(args); };
+    await run([], new DiscordTransport("token", fake as unknown as Client));
+    fake.emit(Events.MessageCreate, {
+      guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
+      channel: { isThread: () => false }, reference: null,
+      mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
+    });
+    const sentText = () => JSON.stringify(fake.sent);
+    for (let attempt = 0; attempt < 500 && !(sentText().includes("Use local OpenCode for the blocked action") && sentText().includes("opencode answer")); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    process.emit("SIGTERM");
+    for (let attempt = 0; attempt < 500; attempt++) {
+      if (await stat(home.lockFile).then(() => false, () => true)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    console.log = originalLog;
+    console.error = originalError;
+    assert.match(JSON.stringify(fake.sent), /opencode answer/);
+    assert.match(JSON.stringify(logged), /OpenCode cross-session concurrency: unavailable; using global FIFO/);
+    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
+    const notice = "OpenCode permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local OpenCode for the blocked action.";
+    assert.equal(fake.sent.filter((sent) => JSON.stringify(sent).includes(notice)).length, 1);
+    const tokens = ["sk-test-AAAAAAAAAAAAAAAAAAAA", "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"];
+    const leaks = (text: string) => tokens.some((token) => text.includes(token)) || /sentinel|permission requested|cannot ask the user|external_directory|Command failed/i.test(text);
+    assert.equal(leaks(JSON.stringify([fake.sent, logged])), false);
+    const restarted = await start(directory);
+    try {
+      const session = restarted.database.prepare("SELECT agent_provider, agent_session_id, updated_by FROM sessions").get();
+      assert.deepEqual({ ...session }, { agent_provider: "opencode", agent_session_id: "ses_wired000000000000000000000", updated_by: "runtime:opencode" });
+      const denied = restarted.database.prepare("SELECT detail, created_by FROM events WHERE event_type = 'approval_unsupported'").all();
+      assert.deepEqual(denied.map((row) => ({ ...row })), [{ detail: "declined: no safe action preview; denials=2", created_by: "runtime:opencode" }]);
+      assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM messages WHERE direction = 'agent' AND body = ?").get(notice)?.count, 1);
+      assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM approvals").get()?.count, 0);
+      const tables = restarted.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+      const stored = JSON.stringify(tables.map(({ name }) => restarted.database.prepare(`SELECT * FROM "${name}"`).all()));
+      assert.equal(leaks(stored), false);
+    } finally { await restarted.release(); }
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    process.chdir(previousDirectory);
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("invalid configuration or database prevents Discord startup", async () => {

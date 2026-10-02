@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { AgentRuntime } from "./agent-runtime.js";
-import { ApprovalRelay, claudePermissionDenialNotifier } from "./approval-relay.js";
+import { ApprovalRelay, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "./approval-relay.js";
 import { ClaudeRuntime } from "./claude-runtime.js";
 import { CodexAppServer } from "./codex-app-server.js";
 import { CodexRuntime } from "./codex-runtime.js";
@@ -12,6 +12,7 @@ import { archiveMessage, bootstrapOwner, claimLegacyApprovalNotice, createEvent,
 import type { MemoryRecord } from "./database.js";
 import { ConversationWorker } from "./conversation-worker.js";
 import { classifyIncomingMessage } from "./inbound-policy.js";
+import { OpenCodeRuntime } from "./opencode-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "./runtime-home.js";
 import { createChatTransport } from "./transport.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "./transport.js";
@@ -351,6 +352,11 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
           runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
             onPermissionDenied: claudePermissionDenialNotifier(instance.database, transport) });
           probeConcurrency = () => probeClaudeConcurrency();
+          break;
+        case "opencode":
+          // OpenCode auto-rejects prompts in headless runs; the notifier only reports them. No concurrency probe yet,
+          // so the home keeps global FIFO.
+          runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.database, transport) });
           break;
       }
     }

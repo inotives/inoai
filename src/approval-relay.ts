@@ -48,24 +48,31 @@ export class ApprovalRelay {
   }
 }
 
-const claudeNotice = "Claude permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local Claude for the blocked action.";
-
-// The Claude CLI denies prompts itself (--permission-prompts none); this only reports each denied Turn once.
+// The headless Claude and OpenCode CLIs deny prompts themselves; this only reports each denied Turn once.
 // It receives a count, never tool names or input, so nothing raw can reach SQLite or Discord.
-export function claudePermissionDenialNotifier(database: DatabaseSync, transport: ChatTransport): (agentSessionId: string, count: number) => void {
+function permissionDenialNotifier(database: DatabaseSync, transport: ChatTransport, provider: "claude" | "opencode", name: string): (agentSessionId: string, count: number) => void {
+  const notice = `${name} permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local ${name} for the blocked action.`;
   return (agentSessionId, count) => {
-    const session = database.prepare(`SELECT id FROM sessions WHERE agent_provider = 'claude' AND agent_session_id = ?
-      AND state = 'active' AND deleted_at IS NULL`).get(agentSessionId) as { id: number } | undefined;
+    const session = database.prepare(`SELECT id FROM sessions WHERE agent_provider = ? AND agent_session_id = ?
+      AND state = 'active' AND deleted_at IS NULL`).get(provider, agentSessionId) as { id: number } | undefined;
     if (!session) return;
     const bound = getSession(database, session.id)!;
-    createEvent(database, { session_id: session.id, message_id: null, event_type: "approval_unsupported", detail: `declined: no safe action preview; denials=${count}` }, "runtime:claude");
-    void transport.sendMessage(bound.conversation_id, claudeNotice).then((messageId) => {
+    createEvent(database, { session_id: session.id, message_id: null, event_type: "approval_unsupported", detail: `declined: no safe action preview; denials=${count}` }, `runtime:${provider}`);
+    void transport.sendMessage(bound.conversation_id, notice).then((messageId) => {
       archiveMessage(database, {
         session_id: session.id, transport: bound.transport, workspace_id: bound.workspace_id,
         external_message_id: messageId, external_author_id: null, user_id: null,
-        direction: "agent", body: claudeNotice, reply_to_external_message_id: null, in_reply_to_message_id: null,
+        direction: "agent", body: notice, reply_to_external_message_id: null, in_reply_to_message_id: null,
         state: "completed",
       }, "transport:discord");
     }).catch(() => {});
   };
+}
+
+export function claudePermissionDenialNotifier(database: DatabaseSync, transport: ChatTransport): (agentSessionId: string, count: number) => void {
+  return permissionDenialNotifier(database, transport, "claude", "Claude");
+}
+
+export function openCodePermissionDenialNotifier(database: DatabaseSync, transport: ChatTransport): (agentSessionId: string, count: number) => void {
+  return permissionDenialNotifier(database, transport, "opencode", "OpenCode");
 }

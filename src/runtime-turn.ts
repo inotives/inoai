@@ -2,16 +2,16 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { RuntimeFailure } from "./agent-runtime.js";
 import type { AgentRuntime } from "./agent-runtime.js";
-import { createEvent } from "./database.js";
+import { createEvent, getSession, rebindAgentSession } from "./database.js";
 
 export type RuntimeTurnOutcome =
   | { state: "completed"; answer: string; attempts: number; replaySafe: false }
   | { state: "failed"; reason: RuntimeFailure["kind"]; notice: string; attempts: number; replaySafe: boolean };
 
 const maxAttempts = 3;
-function failureNotice(kind: RuntimeFailure["kind"], { displayName: name, loginHint }: AgentRuntime): string {
+function failureNotice(kind: RuntimeFailure["kind"], { displayName: name, loginHint, authenticationNotice }: AgentRuntime): string {
   switch (kind) {
-    case "authentication": return `${name} sign-in needs attention. Run ${loginHint} locally, then send a fresh request.`;
+    case "authentication": return authenticationNotice ?? `${name} sign-in needs attention. Run ${loginHint} locally, then send a fresh request.`;
     case "usage": return `${name} usage is unavailable. Check your account locally, then send a fresh request.`;
     case "pre_start": return `${name} could not start the turn. Please send a fresh request.`;
     case "timed_out": return `${name} timed out; its outcome is uncertain. Please send a fresh request.`;
@@ -44,7 +44,12 @@ export async function runRuntimeTurn(
       let answer: string | undefined;
       for await (const event of runtime.runTurn(agentSessionId, prompt)) {
         if (event.type === "progress") onProgress(event.text);
-        else answer = event.text;
+        else if (event.type === "session") {
+          // Bound as soon as it is reported, so a crash later in the Turn still leaves the real ID in SQLite.
+          const session = getSession(database, sessionId);
+          if (!session) throw new RuntimeFailure("uncertain");
+          rebindAgentSession(database, sessionId, agentSessionId, event.id, `runtime:${session.agent_provider}`);
+        } else answer = event.text;
       }
       if (answer === undefined) throw new RuntimeFailure("uncertain");
       createEvent(database, { session_id: sessionId, message_id: messageId, event_type: "runtime_completed", detail: `attempt=${attempt}` }, "runtime");

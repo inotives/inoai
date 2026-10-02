@@ -2,6 +2,8 @@ export interface AgentRuntime {
   // Shared user-facing notices name the runtime and its local sign-in command.
   readonly displayName: string;
   readonly loginHint: string;
+  // Optional fixed replacement for the shared authentication notice; never runtime output.
+  readonly authenticationNotice?: string;
   createSession(projectPath: string, instructions: string): Promise<string>;
   resumeSession(sessionId: string, projectPath: string, instructions: string): Promise<void>;
   runTurn(sessionId: string, prompt: string): AsyncIterable<RuntimeEvent>;
@@ -10,8 +12,10 @@ export interface AgentRuntime {
   close(): Promise<void>;
 }
 
+// "session": the runtime's own ID for a session it could only learn during the first Turn; the caller rebinds to it.
 export type RuntimeEvent =
   | { type: "progress"; text: string }
+  | { type: "session"; id: string }
   | { type: "answer"; text: string };
 
 // "session_missing": the runtime has no conversation for a bound session ID; only an explicit reset recovers.

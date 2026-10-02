@@ -471,6 +471,15 @@ export function bindAgentSession(database: DatabaseSync, id: number, threadId: s
   return getSession(database, id)!;
 }
 
+// Replaces a runtime-assigned placeholder with the ID the runtime reported during the first Turn.
+export function rebindAgentSession(database: DatabaseSync, id: number, fromId: string, toId: string, actor: string): SessionRecord {
+  if (!toId || toId.startsWith("pending:")) throw new Error("Invalid Agent Session ID");
+  const result = database.prepare(`UPDATE sessions SET agent_session_id = ?, updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND agent_session_id = ? AND agent_session_id NOT LIKE 'pending:%' AND state = 'active' AND deleted_at IS NULL`).run(toId, actor, id, fromId);
+  if (result.changes !== 1) throw new Error("Agent Session changed before rebinding");
+  return getSession(database, id)!;
+}
+
 export function archiveMessage(database: DatabaseSync, message: NewMessage, actor = "system"): { message?: MessageRecord; inserted: boolean } {
   if (!message.external_message_id) throw new RangeError("External message ID is required");
   const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, failure_detail, completed_at, delivery_state, created_by, updated_by)

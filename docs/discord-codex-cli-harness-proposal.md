@@ -60,7 +60,7 @@ MEMORY_REVIEW_TIME=06:00
 MEMORY_REVIEW_MAX_CHARS=20000
 ```
 
-`DISCORD_GUILD_ID` is the fixed V1 server boundary. `DISCORD_STATUS_CHANNEL_ID` selects a status-only online-report channel; it does not restrict conversation starts to that channel. Phase 5 renames the current `DISCORD_ALLOWED_CHANNEL_ID` setting to `DISCORD_STATUS_CHANNEL_ID` with no legacy alias, so existing local `.env` files must update that key when the implementation lands. `DISCORD_OWNER_USER_ID` seeds the first active `owner` record in SQLite's `users` allowlist. `CHAT_PROVIDER` accepts only `discord`. `AGENT_PROVIDER` accepts `codex` and, from Phase 5a, `claude`; an optional `CLAUDE_MODEL` selects a Claude model and is blank by default. No `.env` key may change a runtime's permission, sandbox, or approval policy. The Codex adapter uses the CLI's configured skills, MCP servers, permission policy, and sandbox policy; inoai does not override them. `MEMORY_REVIEW_TIME` is a local host time in `HH:MM` format; `MEMORY_REVIEW_MAX_CHARS` is the maximum archived text sent in one review call, initially `20000`. SQLite always lives at the selected runtime home's `inoai.sqlite`; the deployment folder is the Agent Runtime's project path. The bridge should fail at startup with a clear message if any required value is absent or unsupported.
+`DISCORD_GUILD_ID` is the fixed V1 server boundary. `DISCORD_STATUS_CHANNEL_ID` selects a status-only online-report channel; it does not restrict conversation starts to that channel. Phase 5 renames the current `DISCORD_ALLOWED_CHANNEL_ID` setting to `DISCORD_STATUS_CHANNEL_ID` with no legacy alias, so existing local `.env` files must update that key when the implementation lands. `DISCORD_OWNER_USER_ID` seeds the first active `owner` record in SQLite's `users` allowlist. `CHAT_PROVIDER` accepts only `discord`. `AGENT_PROVIDER` accepts `codex`, from Phase 5a `claude`, and from Phase 5b `opencode`; an optional `CLAUDE_MODEL` selects a Claude model and is blank by default. No `.env` key may change a runtime's permission, sandbox, or approval policy. The Codex adapter uses the CLI's configured skills, MCP servers, permission policy, and sandbox policy; inoai does not override them. `MEMORY_REVIEW_TIME` is a local host time in `HH:MM` format; `MEMORY_REVIEW_MAX_CHARS` is the maximum archived text sent in one review call, initially `20000`. SQLite always lives at the selected runtime home's `inoai.sqlite`; the deployment folder is the Agent Runtime's project path. The bridge should fail at startup with a clear message if any required value is absent or unsupported.
 
 ## Minimal architecture
 
@@ -76,12 +76,12 @@ The bridge depends on one small agent-runtime interface:
 
 ```text
 createSession(projectPath, initialPrompt) -> agentSessionId
-runTurn(agentSessionId, prompt) -> streamed events
+runTurn(agentSessionId, prompt) -> streamed events (progress, answer, and, for runtimes that assign their ID late, one session event carrying the real ID)
 cancel(agentSessionId) -> void
 health() -> runtime status
 ```
 
-`AGENT_PROVIDER` selects the Codex adapter or, from Phase 5a, the Claude adapter. The runtime selector is a simple TypeScript `switch`, not a plugin registry. Adding OpenCode later means adding one adapter that satisfies this interface and one selection branch; Discord, SQLite, queueing, dashboard, and memory code stay unchanged.
+`AGENT_PROVIDER` selects the Codex adapter, the Claude adapter (Phase 5a), or the OpenCode adapter (Phase 5b). The runtime selector is a simple TypeScript `switch`, not a plugin registry. Adding another adapter later means adding one adapter that satisfies this interface and one selection branch; Discord, SQLite, queueing, dashboard, and memory code stay unchanged.
 
 Each `.inoai-connect*` runtime home selects exactly one provider. For example, `.inoai-connect/` may use `AGENT_PROVIDER=codex` and one Discord bot token, while `.inoai-connect-claude/` uses `AGENT_PROVIDER=claude` and another token. They are separate bot instances with separate SQLite archives and agent Memory; this is deliberate rather than per-user Memory isolation.
 
@@ -98,6 +98,10 @@ The Claude adapter spawns the owner's installed `claude -p --output-format strea
 - Anthropic's Agent SDK documentation states that third-party developers may not offer claude.ai login for their products without approval. inoai offers no login: each owner runs it on their own machine with their own locally signed-in CLI.
 - Claude permission prompts fail closed exactly like Codex approval requests ([ADR 0007](adr/0007-claude-matches-codex-fail-closed-approvals.md)).
 - A Session bound to a different provider than the runtime home's current `AGENT_PROVIDER` is not resumed; the owner uses `/inoai reset` or a new thread.
+
+### OpenCode runtime (Phase 5b)
+
+The OpenCode adapter spawns the owner's installed `opencode run --format json --standalone` once per Turn in the project path, creating the Agent Session on the first Turn and resuming it with `--session` afterwards. It passes no model or provider, so OpenCode's configured default answers; today that is a free OpenCode Zen model, which sends prompts and project context to opencode.ai, and any provider the owner later configures will be used and billed as configured ([ADR 0009](adr/0009-opencode-uses-its-configured-provider.md)). OpenCode (2.0.22) ignores `instructions` config, so `agent.md` is sent as a delimited "inoai operating instructions (not a user message)" block at the start of every Turn's prompt, alongside the project's own `AGENTS.md`; inoai never edits OpenCode configuration. Headless runs auto-reject permission requests, and inoai reports them with the fixed fail-closed notice; it never passes `--auto`, `--yolo`, or `--dangerously-skip-permissions`. inoai keeps OpenCode's configured permission policy, whose built-in defaults allow shell and most tools without asking (ADR 0009). OpenCode homes use global FIFO, and a stored session that no longer exists fails closed with the `/inoai reset` notice.
 
 ### Dynamic chat transport
 

@@ -99,5 +99,12 @@ test("failure notices name the runtime and its login hint", async () => {
     assert.equal(await notice("authentication", "Claude", "claude /login"), "Claude sign-in needs attention. Run claude /login locally, then send a fresh request.");
     assert.equal(await notice("uncertain", "Claude", "claude /login"), "Claude turn ended without a confirmed answer. Please send a fresh request.");
     assert.equal(await notice("session_missing", "Claude", "claude /login"), "This thread's Claude session could not be found. Use /inoai reset to start a new session.");
+    const overridden = async (kind: RuntimeFailure["kind"]) => {
+      const runtime = { ...fakeRuntime(async function* () { throw new RuntimeFailure(kind); }, "OpenCode", "opencode auth login"), authenticationNotice: "Fixed OpenCode authentication notice." };
+      const result = await runRuntimeTurn(database, runtime, sessionId, "thread", "question");
+      return result.state === "failed" ? result.notice : "";
+    };
+    assert.equal(await overridden("authentication"), "Fixed OpenCode authentication notice.");
+    assert.equal(await overridden("usage"), "OpenCode usage is unavailable. Check your account locally, then send a fresh request.");
   });
 });

@@ -41,6 +41,7 @@
 26. **Approval controls:** deferred beyond V1. No Discord **Approve**/**Reject** buttons are posted for Codex actions; every approval request is declined with a safe notice. Do not substitute a command allowlist or blind approval. Legacy pending rows/buttons from earlier local builds must be failed and made inert during recovery.
 27. **Release platform:** accepted. V1 packages the core executable and Electron UI for macOS only. Windows and Linux artifacts are deferred until macOS deployment is proven.
 28. **Claude runtime:** accepted for Phase 5a. Claude CLI becomes a second V1 Agent Runtime with Codex parity: headless `claude -p` per Turn (ADR 0008), fail-closed permission prompts (ADR 0007), subscription sign-in verified at startup, `agent.md` appended each Turn, per-thread provider-mismatch refusal, a tool-free concurrency probe, and the same three-layer acceptance bar as Phase 5.
+29. **OpenCode runtime:** accepted for Phase 5b. OpenCode becomes a third V1 Agent Runtime with Claude-adapter parity: headless `opencode run --format json --standalone` per Turn, OpenCode's configured provider and model with no guard (ADR 0009), `agent.md` as a delimited block prepended to every Turn's prompt, native `AGENTS.md`, fail-closed permission notices for `ask` cases while keeping OpenCode's permissive default policy (owner decision, ADR 0009), `session_missing` on a vanished session, global FIFO with no probe, and fake-CLI tests plus a live Discord smoke test.
 
 ## Checks before implementation
 
