@@ -12,7 +12,7 @@ const validValues = {
   DISCORD_BOT_TOKEN: "token",
   DISCORD_GUILD_ID: "guild",
   DISCORD_OWNER_USER_ID: "owner",
-  DISCORD_ALLOWED_CHANNEL_ID: "channel",
+  DISCORD_STATUS_CHANNEL_ID: "status",
   CHAT_PROVIDER: "discord",
   AGENT_PROVIDER: "codex",
   MEMORY_REVIEW_TIME: "06:00",
@@ -34,6 +34,16 @@ test("reports every missing required setting by name", () => {
   assert.throws(() => validateConfiguration({}), (error: unknown) => {
     assert(error instanceof ConfigurationError);
     for (const key of Object.keys(validValues)) assert.match(error.message, new RegExp(key));
+    return true;
+  });
+});
+
+test("requires the status channel setting without accepting the former channel key", () => {
+  const { DISCORD_STATUS_CHANNEL_ID, ...oldValues } = validValues;
+  assert.throws(() => validateConfiguration({ ...oldValues, DISCORD_ALLOWED_CHANNEL_ID: DISCORD_STATUS_CHANNEL_ID }), (error: unknown) => {
+    assert(error instanceof ConfigurationError);
+    assert.match(error.message, /DISCORD_STATUS_CHANNEL_ID is required/);
+    assert.doesNotMatch(error.message, /token|DISCORD_ALLOWED_CHANNEL_ID/);
     return true;
   });
 });

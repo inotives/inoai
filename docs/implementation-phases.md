@@ -117,26 +117,36 @@ V1 proves a safe Discord-to-Codex conversation flow using the local CLI's config
 
 **Purpose:** deliver reliable Discord-thread conversations through the SQLite queue to the Agent Runtime.
 
+Phase 5 broadens the Phase 3 single-channel start policy: in the configured server, a new Conversation starts only from an active owner's top-level mention of this bot in an accessible channel other than the online-report channel. Ordinary top-level messages remain ignored; follow-up Messages in that bot's bound thread need no mention. The online-report channel is status-only and never starts a Conversation.
+
 ### Tasks
 
-1. Wire Transport, Database, Agent Runtime, and FIFO worker through `index.ts`.
+1. Rename `DISCORD_ALLOWED_CHANNEL_ID` to `DISCORD_STATUS_CHANNEL_ID` without a legacy alias, broaden owner top-level mention routing to accessible non-report channels in the configured server, and wire Transport, Database, Agent Runtime, and FIFO worker through `index.ts`.
 2. Persist inbound Messages before runtime work begins.
-3. Stream progress and final responses back to the source thread, splitting for transport limits.
+3. Show a compact working indicator and deliver only the completed final response to the source thread, splitting for transport limits; do not post partial assistant text or raw tool output.
 4. Persist response chunks and delivery failures.
-5. Add `/inoai status`, `/inoai cancel`, and `/inoai reset` controls.
+5. Register guild-scoped native Discord `/inoai status`, `/inoai cancel`, and `/inoai reset` slash commands and handle their owner-only interactions in bound threads; they do not require a bot mention or create Codex turns.
+6. Run a focused live Discord smoke test against a private test channel and isolated project using the owner's locally configured bot token.
 
 **Testable outcome:** an allowlisted Discord thread holds a persistent Agent Session across multiple Messages.
+
+Phase 5 acceptance requires deterministic fake-transport/runtime tests, the isolated authenticated read-only Codex concurrency probe, and a focused live Discord smoke test. Keep the token only in an ignored local runtime-home `.env`; never put it in chat, committed files, logs, or SQLite. Phase 8 still owns fresh-deployment, reconnect, crash-recovery, and full end-to-end acceptance.
 
 **Test scenarios:**
 
 - Two user Messages arriving together are answered in FIFO order.
 - Two Conversations can make progress independently while one Conversation never has overlapping runtime turns.
-- A failed concurrent-session check falls back to global serialization without dropping queued Messages.
+- An authenticated, read-only two-session Codex probe in an isolated temporary project validates cross-Conversation concurrency without a Discord bot token. Until it passes, use global serialization; a failed check keeps that fallback without dropping queued Messages.
 - A duplicate Discord gateway event produces no duplicate runtime turn.
 - Restarting the app requeues only work known not to have reached the Agent Runtime. Work whose runtime outcome is uncertain fails closed without replay; Session mapping is preserved.
 - An idle thread retains its Agent Session until an explicit `/inoai reset`.
+- `/inoai reset` cancels an active turn, fails queued Messages without running them, retains the archive, and starts a new Agent Session on the next Message; an uncertain active outcome is reported, not replayed.
+- Native `/inoai` controls work in a bound thread without `@<bot-label>` and are rejected outside the owner's bound thread; control interactions never enter the Codex Message queue.
 - A reply to an earlier Message retains its quoted context when processed later.
 - A long response is split safely and stored as linked agent Messages.
+- An ambiguous Discord send is recorded as uncertain and is not automatically resent on restart; the response remains archived in SQLite.
+- With a real bot in a private test channel, the owner can start a thread, receive a Codex answer, continue the same Agent Session, and exercise status, cancel, and reset; verify that the Discord Messages match the SQLite archive. Use only a disposable project and read-only prompts.
+- The online-report channel posts the startup health message but ignores conversation-start mentions; an owner mention in another accessible channel starts a Conversation, while unmentioned top-level Messages do not.
 
 ## Phase 6 — Daily Memory Review
 

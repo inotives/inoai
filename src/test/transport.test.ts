@@ -4,9 +4,10 @@ import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ChannelType, Events } from "discord.js";
+import { ChannelType, Events, MessageFlags } from "discord.js";
 import type { Client } from "discord.js";
 
+import type { AgentRuntime } from "../agent-runtime.js";
 import { createChatTransport, DiscordTransport } from "../transport.js";
 import type { IncomingMessage } from "../transport.js";
 import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages } from "../database.js";
@@ -15,21 +16,29 @@ import { bootstrapRuntimeHome } from "../runtime-home.js";
 
 class FakeClient extends EventEmitter {
   user = { id: "inoai" };
+  registeredCommands: unknown[] = [];
+  registeredGuild: string | undefined;
+  application = { commands: { create: async (command: unknown, guildId: string) => {
+    this.registeredCommands = [command];
+    this.registeredGuild = guildId;
+  } } };
   destroyed = false;
   failSend = false;
+  failThread = false;
   sendStarted?: () => void;
   sendGate?: Promise<void>;
   sent: unknown[] = [];
+  sentChannelIds: string[] = [];
   threadCount = 0;
   deletedThreads: string[] = [];
   editedApprovals: string[] = [];
   threadStarted?: () => void;
   threadGate?: Promise<void>;
-  channels = { fetch: async (id: string) => id === "parent" || id === "channel" ? {
+  channels = { fetch: async (id: string) => ["parent", "channel", "another-channel", "status"].includes(id) ? {
     type: ChannelType.GuildText,
     guildId: "guild",
-    threads: { create: async (options: unknown) => { this.threadStarted?.(); await this.threadGate; this.sent.push(options); return { id: ++this.threadCount === 1 ? "thread" : `thread-${this.threadCount}` }; } },
-    send: async (options: unknown) => { this.sendStarted?.(); await this.sendGate; if (this.failSend) throw new Error("send failed"); this.sent.push(options); return { id: `sent-${this.sent.length}` }; },
+    threads: { create: async (options: unknown) => { this.threadStarted?.(); await this.threadGate; if (this.failThread) throw new Error("thread creation failed"); this.sent.push(options); return { id: ++this.threadCount === 1 ? "thread" : `thread-${this.threadCount}` }; } },
+    send: async (options: unknown) => { this.sendStarted?.(); await this.sendGate; if (this.failSend) throw new Error("send failed"); this.sentChannelIds.push(id); this.sent.push(options); return { id: `sent-${this.sent.length}` }; },
   } : {
     isThread: () => id.startsWith("thread"),
     isTextBased: () => true,
@@ -72,7 +81,7 @@ test("Discord gateway lifecycle and message mapping use a fake client", async ()
   await assert.rejects(transport.publishHealth("channel", "inoai is online", "other-guild"), /configured guild/);
   assert.deepEqual(fake.sent, [
     { name: "task", startMessage: "message" },
-    { content: "answer", reply: { messageReference: "previous" } },
+    { content: "answer", allowedMentions: { parse: [], repliedUser: false }, reply: { messageReference: "previous" } },
     { content: "inoai is online" },
   ]);
 
@@ -91,6 +100,26 @@ test("Discord gateway lifecycle and message mapping use a fake client", async ()
   assert.equal(fake.destroyed, true);
   fake.emit(Events.ClientReady);
   assert.equal(transport.health().state, "stopped");
+});
+
+test("native inoai interaction is deferred privately and routed without a message event", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const controls: string[] = [];
+  const replies: unknown[] = [];
+  await transport.start(() => { throw new Error("Slash command must not enter the message queue"); }, undefined, undefined,
+    async (control) => { controls.push(`${control.command}:${control.conversationId}:${control.externalUserId}`); await control.respond("ready"); });
+  fake.emit(Events.InteractionCreate, {
+    isChatInputCommand: () => true, commandName: "inoai", options: { getSubcommand: () => "status" },
+    guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel" },
+    user: { id: "owner" },
+    deferReply: async (options: unknown) => { replies.push(options); },
+    editReply: async (options: unknown) => { replies.push(options); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(controls, ["status:thread:owner"]);
+  assert.deepEqual(replies, [{ flags: MessageFlags.Ephemeral }, { content: "ready", allowedMentions: { parse: [] } }]);
+  await transport.stop();
 });
 
 test("unrecoverable shard disconnect exposes an error", async () => {
@@ -135,12 +164,18 @@ const validEnv = [
   "DISCORD_BOT_TOKEN=token",
   "DISCORD_GUILD_ID=guild",
   "DISCORD_OWNER_USER_ID=owner",
-  "DISCORD_ALLOWED_CHANNEL_ID=channel",
+  "DISCORD_STATUS_CHANNEL_ID=status",
   "CHAT_PROVIDER=discord",
   "AGENT_PROVIDER=codex",
   "MEMORY_REVIEW_TIME=06:00",
   "MEMORY_REVIEW_MAX_CHARS=20000",
 ].join("\n");
+
+const fakeRuntime: AgentRuntime = {
+  async createSession() { return "fake-codex-thread"; }, async resumeSession() {},
+  async *runTurn() { yield { type: "answer" as const, text: "ok" }; },
+  async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+};
 
 test("plain reply pings are ignored while explicit top-level mentions create distinct threads", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-conversation-"));
@@ -152,7 +187,7 @@ test("plain reply pings are ignored while explicit top-level mentions create dis
       const fake = new FakeClient();
       const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
       const incoming = (id: string) => ({
-        guildId: "guild", channelId: "channel", id, author: { id: "owner", bot: false }, content: `<@inoai> ${id}`,
+        guildId: "guild", channelId: "another-channel", id, author: { id: "owner", bot: false }, content: `<@inoai> ${id}`,
         channel: { isThread: () => false }, reference: null,
         mentions: {
           users: new Map([["inoai", { id: "inoai", bot: true }]]),
@@ -167,6 +202,9 @@ test("plain reply pings are ignored while explicit top-level mentions create dis
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(fake.threadCount, 0);
       assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
+      fake.emit(Events.MessageCreate, { ...incoming("status-request"), channelId: "status" });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(fake.threadCount, 0);
       fake.emit(Events.MessageCreate, incoming("first"));
       fake.emit(Events.MessageCreate, incoming("first"));
       await new Promise((resolve) => setImmediate(resolve));
@@ -187,6 +225,35 @@ test("plain reply pings are ignored while explicit top-level mentions create dis
         assert.equal(messages[0]?.state, "pending");
       }
       assert.equal(fake.threadCount, 2);
+      assert.deepEqual(fake.sentChannelIds, ["status"]);
+      await transport.stop();
+    } finally {
+      await instance.release();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed Discord thread creation leaves no Session or Message", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-thread-create-failure-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(directory);
+    try {
+      const fake = new FakeClient();
+      fake.failThread = true;
+      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
+      fake.emit(Events.MessageCreate, {
+        guildId: "guild", channelId: "another-channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
+        channel: { isThread: () => false }, reference: null,
+        mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
+      assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count, 0);
+      assert.equal(fake.threadCount, 0);
       await transport.stop();
     } finally {
       await instance.release();
@@ -289,7 +356,7 @@ test("CLI shutdown drains an accepted request before closing SQLite", async () =
     const creating = new Promise<void>((resolve) => { threadStarted = resolve; });
     fake.threadGate = new Promise<void>((resolve) => { finishThread = resolve; });
     fake.threadStarted = threadStarted;
-    await run([], new DiscordTransport("token", fake as unknown as Client));
+    await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime);
     fake.emit(Events.MessageCreate, {
       guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
       channel: { isThread: () => false }, reference: null,
@@ -328,6 +395,9 @@ test("startup announces once and archives one health Event across reconnects", a
       const fake = new FakeClient();
       const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
+      assert.equal(fake.registeredGuild, "guild");
+      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset"]);
+      assert.deepEqual(fake.sentChannelIds, ["status"]);
       const event = listEvents(instance.database)[0];
       assert.equal(event.event_type, "startup_online");
       assert.equal(event.detail, "discord message sent-1");
@@ -391,8 +461,8 @@ test("legacy approval recovery fails closed once, removes old controls, and keep
       assert(!JSON.stringify(fake.sent).includes("secret-123"));
       assert.equal(typeof recovered.database.prepare("SELECT resolution_message_id FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.resolution_message_id, "number");
       assert.equal(listMessages(recovered.database, session.id).filter((message) => message.body.includes("Please make a fresh request")).length, 1);
-      assert.equal(fake.listenerCount(Events.InteractionCreate), 0);
-      fake.emit(Events.InteractionCreate, { customId: "approve:lost-json-rpc" });
+      assert.equal(fake.listenerCount(Events.InteractionCreate), 1);
+      fake.emit(Events.InteractionCreate, { customId: "approve:lost-json-rpc", isChatInputCommand: () => false });
       assert.equal(recovered.database.prepare("SELECT state FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.state, "failed");
       await transport.stop();
     } finally {
@@ -526,7 +596,7 @@ test("CLI SIGTERM during the health post releases SQLite and the runtime lock", 
     const sending = new Promise<void>((resolve) => { sendStarted = resolve; });
     fake.sendGate = new Promise<void>((resolve) => { finishSend = resolve; });
     fake.sendStarted = sendStarted;
-    const running = run([], new DiscordTransport("token", fake as unknown as Client));
+    const running = run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime);
     await sending;
     process.emit("SIGTERM");
     finishSend();
@@ -553,7 +623,7 @@ test("CLI exits and releases the runtime lock after terminal Discord failure", a
     await writeFile(home.envFile, validEnv);
     process.chdir(directory);
     const fake = new FakeClient();
-    await run([], new DiscordTransport("token", fake as unknown as Client));
+    await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime);
     fake.emit(Events.ShardDisconnect);
     for (let attempt = 0; attempt < 100; attempt++) {
       if (await stat(home.lockFile).then(() => false, () => true)) break;

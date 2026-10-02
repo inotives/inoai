@@ -1,0 +1,3 @@
+# Owner mentions start Conversations across the server
+
+The original single-channel allowlist made the online-report channel double as the only Conversation entry point. V1 instead accepts a new Conversation from the owner's top-level mention of this bot in any accessible channel of the configured server except the status-only report channel; ordinary top-level messages remain ignored, and bound-thread follow-ups need no mention. Phase 5 renames `DISCORD_ALLOWED_CHANNEL_ID` to `DISCORD_STATUS_CHANNEL_ID` without an alias because the old name implies the wrong security boundary. This broadens where an authorized request can start while retaining the server, owner, mention, and bot-owned-thread checks.

@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -58,7 +59,7 @@ CREATE TABLE IF NOT EXISTS messages (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   transport TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
-  external_message_id TEXT NOT NULL,
+  external_message_id TEXT,
   external_author_id TEXT,
   user_id INTEGER REFERENCES users(id),
   direction TEXT NOT NULL CHECK (direction IN ('user', 'agent')),
@@ -72,9 +73,13 @@ CREATE TABLE IF NOT EXISTS messages (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_by TEXT NOT NULL DEFAULT 'system',
   started_at INTEGER,
+  runtime_started_at INTEGER,
   completed_at INTEGER,
+  provisional_id TEXT UNIQUE,
+  delivery_state TEXT CHECK (delivery_state IN ('pending', 'uncertain', 'confirmed', 'failed')),
   deleted_at INTEGER,
   deleted_by TEXT,
+  CHECK (direction != 'user' OR external_message_id IS NOT NULL),
   CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS unique_external_message ON messages(transport, workspace_id, external_message_id);
@@ -164,6 +169,61 @@ export class UnsafeDatabasePathError extends Error {
   }
 }
 
+function migrateMessages(database: DatabaseSync): void {
+  const columns = database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+  if (columns.some(({ name }) => name === "delivery_state")) return;
+  database.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
+  try {
+    database.exec(`CREATE TABLE messages_v2 (
+      id INTEGER PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      transport TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      external_message_id TEXT,
+      external_author_id TEXT,
+      user_id INTEGER REFERENCES users(id),
+      direction TEXT NOT NULL CHECK (direction IN ('user', 'agent')),
+      body TEXT NOT NULL,
+      reply_to_external_message_id TEXT,
+      in_reply_to_message_id INTEGER REFERENCES messages(id),
+      state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processing', 'completed', 'failed')),
+      failure_detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      created_by TEXT NOT NULL DEFAULT 'system',
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_by TEXT NOT NULL DEFAULT 'system',
+      started_at INTEGER,
+      runtime_started_at INTEGER,
+      completed_at INTEGER,
+      provisional_id TEXT UNIQUE,
+      delivery_state TEXT CHECK (delivery_state IN ('pending', 'uncertain', 'confirmed', 'failed')),
+      deleted_at INTEGER,
+      deleted_by TEXT,
+      CHECK (direction != 'user' OR external_message_id IS NOT NULL),
+      CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+    );
+    INSERT INTO messages_v2 (id, session_id, transport, workspace_id, external_message_id, external_author_id, user_id,
+      direction, body, reply_to_external_message_id, in_reply_to_message_id, state, failure_detail,
+      created_at, created_by, updated_at, updated_by, started_at, completed_at, delivery_state, deleted_at, deleted_by)
+    SELECT id, session_id, transport, workspace_id, external_message_id, external_author_id, user_id,
+      direction, body, reply_to_external_message_id, in_reply_to_message_id, state, failure_detail,
+      created_at, created_by, updated_at, updated_by, started_at, completed_at,
+      CASE WHEN direction = 'agent' THEN 'confirmed' END, deleted_at, deleted_by FROM messages;
+    DROP TABLE messages;
+    ALTER TABLE messages_v2 RENAME TO messages;
+    CREATE UNIQUE INDEX unique_external_message ON messages(transport, workspace_id, external_message_id);
+    CREATE INDEX pending_user_messages ON messages(direction, state, id);
+    CREATE INDEX messages_by_session ON messages(session_id, id);`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+  if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("Message migration broke a foreign key");
+}
+
 export function openDatabase(home: RuntimeHome): DatabaseSync {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
@@ -175,6 +235,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
   const database = new DatabaseSync(databaseFile);
   database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
   database.exec(initialSchema);
+  migrateMessages(database);
   recoverStaleWork(database);
   recoverLegacyApprovals(database);
   return database;
@@ -219,7 +280,7 @@ export type MessageRecord = AuditColumns & {
   session_id: number;
   transport: string;
   workspace_id: string;
-  external_message_id: string;
+  external_message_id: string | null;
   external_author_id: string | null;
   user_id: number | null;
   direction: "user" | "agent";
@@ -229,7 +290,10 @@ export type MessageRecord = AuditColumns & {
   state: "pending" | "processing" | "completed" | "failed";
   failure_detail: string | null;
   started_at: number | null;
+  runtime_started_at: number | null;
   completed_at: number | null;
+  provisional_id: string | null;
+  delivery_state: "pending" | "uncertain" | "confirmed" | "failed" | null;
 };
 
 export type EventRecord = AuditColumns & {
@@ -277,7 +341,7 @@ export type MemoryReviewRecord = AuditColumns & {
 
 type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
 type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
-export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failure_detail" | "started_at" | "completed_at" | "state"> & { state?: MessageRecord["state"] };
+export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failure_detail" | "started_at" | "runtime_started_at" | "completed_at" | "provisional_id" | "delivery_state" | "state"> & { state?: MessageRecord["state"] };
 export type NewAgentResponse = Omit<NewMessage, "session_id" | "direction" | "in_reply_to_message_id" | "state">;
 export type MessageQueueMode = "per-session" | "global";
 type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
@@ -291,10 +355,13 @@ function activeRow<T>(database: DatabaseSync, sql: string, ...values: Array<stri
 export function recoverStaleWork(database: DatabaseSync, actor = "startup-recovery"): void {
   database.exec("BEGIN IMMEDIATE");
   try {
-    for (const table of ["messages", "memory_reviews"]) {
-      database.prepare(`UPDATE ${table} SET state = 'pending', updated_at = unixepoch(), updated_by = ?
-        WHERE state = 'processing' AND deleted_at IS NULL`).run(actor);
-    }
+    database.prepare(`UPDATE messages SET state = 'failed', failure_detail = 'Runtime outcome uncertain after restart',
+      completed_at = unixepoch(), updated_at = unixepoch(), updated_by = ?
+      WHERE direction = 'user' AND state = 'processing' AND runtime_started_at IS NOT NULL AND deleted_at IS NULL`).run(actor);
+    database.prepare(`UPDATE messages SET state = 'pending', updated_at = unixepoch(), updated_by = ?
+      WHERE direction = 'user' AND state = 'processing' AND runtime_started_at IS NULL AND deleted_at IS NULL`).run(actor);
+    database.prepare(`UPDATE memory_reviews SET state = 'pending', updated_at = unixepoch(), updated_by = ?
+      WHERE state = 'processing' AND deleted_at IS NULL`).run(actor);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
@@ -405,12 +472,22 @@ export function bindAgentSession(database: DatabaseSync, id: number, threadId: s
 }
 
 export function archiveMessage(database: DatabaseSync, message: NewMessage, actor = "system"): { message?: MessageRecord; inserted: boolean } {
-  const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, created_by, updated_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  if (!message.external_message_id) throw new RangeError("External message ID is required");
+  const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, failure_detail, completed_at, delivery_state, created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      CASE WHEN ? = 'user' AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = ? AND state = 'active' AND deleted_at IS NULL)
+        THEN 'failed' ELSE ? END,
+      CASE WHEN ? = 'user' AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = ? AND state = 'active' AND deleted_at IS NULL)
+        THEN 'Cancelled by reset before runtime start' ELSE NULL END,
+      CASE WHEN ? = 'user' AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = ? AND state = 'active' AND deleted_at IS NULL)
+        THEN unixepoch() ELSE NULL END,
+      ?, ?, ?)
     ON CONFLICT(transport, workspace_id, external_message_id) DO NOTHING`).run(
     message.session_id, message.transport, message.workspace_id, message.external_message_id, message.external_author_id,
     message.user_id, message.direction, message.body, message.reply_to_external_message_id, message.in_reply_to_message_id,
-    message.state ?? "pending", actor, actor,
+    message.direction, message.session_id, message.state ?? "pending",
+    message.direction, message.session_id, message.direction, message.session_id,
+    message.direction === "agent" ? "confirmed" : null, actor, actor,
   );
   return {
     message: activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE transport = ? AND workspace_id = ? AND external_message_id = ? AND deleted_at IS NULL", message.transport, message.workspace_id, message.external_message_id),
@@ -431,6 +508,7 @@ export function claimNextMessage(database: DatabaseSync, mode: MessageQueueMode,
   try {
     const message = activeRow<MessageRecord>(database, `SELECT * FROM messages AS candidate
       WHERE candidate.direction = 'user' AND candidate.state = 'pending' AND candidate.deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM sessions WHERE id = candidate.session_id AND state = 'active' AND deleted_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM messages AS processing
           WHERE processing.session_id = candidate.session_id AND processing.direction = 'user'
             AND processing.state = 'processing' AND processing.deleted_at IS NULL)
@@ -452,7 +530,124 @@ export function claimNextMessage(database: DatabaseSync, mode: MessageQueueMode,
   }
 }
 
+export function markRuntimeStarted(database: DatabaseSync, messageId: number, actor = "runtime:codex"): boolean {
+  return database.prepare(`UPDATE messages SET runtime_started_at = unixepoch(), updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND direction = 'user' AND state = 'processing' AND runtime_started_at IS NULL AND deleted_at IS NULL
+      AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND state = 'active' AND deleted_at IS NULL)`).run(actor, messageId).changes === 1;
+}
+
+export function failProcessingMessage(database: DatabaseSync, messageId: number, detail: string, actor = "system"): boolean {
+  return database.prepare(`UPDATE messages SET state = 'failed', failure_detail = ?, completed_at = unixepoch(),
+    updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND direction = 'user' AND state = 'processing' AND deleted_at IS NULL`).run(detail, actor, messageId).changes === 1;
+}
+
+export function archiveResponseChunks(database: DatabaseSync, messageId: number, bodies: string[], actor = "runtime:codex"): MessageRecord[] | undefined {
+  if (!bodies.length || bodies.some((body) => !body)) throw new RangeError("Response chunks must be nonempty");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const inbound = activeRow<MessageRecord>(database, `SELECT * FROM messages WHERE id = ? AND direction = 'user'
+      AND state = 'processing' AND runtime_started_at IS NOT NULL AND deleted_at IS NULL`, messageId);
+    if (!inbound) {
+      database.exec("COMMIT");
+      return undefined;
+    }
+    const rows: MessageRecord[] = [];
+    for (const body of bodies) {
+      const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id,
+        direction, body, in_reply_to_message_id, state, provisional_id, delivery_state, created_by, updated_by)
+        VALUES (?, ?, ?, NULL, 'agent', ?, ?, 'completed', ?, 'pending', ?, ?)`).run(
+        inbound.session_id, inbound.transport, inbound.workspace_id, body, messageId, randomUUID(), actor, actor,
+      );
+      rows.push(activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE id = ?", Number(result.lastInsertRowid))!);
+    }
+    database.prepare(`UPDATE messages SET state = 'completed', completed_at = unixepoch(), updated_at = unixepoch(), updated_by = ?
+      WHERE id = ? AND state = 'processing'`).run(actor, messageId);
+    database.exec("COMMIT");
+    return rows;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function archiveFailureNotice(database: DatabaseSync, messageId: number, body: string, actor = "conversation-worker"): MessageRecord | undefined {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const inbound = activeRow<MessageRecord>(database, `SELECT * FROM messages WHERE id = ? AND direction = 'user'
+      AND state = 'failed' AND deleted_at IS NULL`, messageId);
+    if (!inbound || database.prepare(`SELECT id FROM messages WHERE in_reply_to_message_id = ?
+      AND direction = 'agent' AND deleted_at IS NULL LIMIT 1`).get(messageId)) {
+      database.exec("COMMIT");
+      return undefined;
+    }
+    const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id,
+      direction, body, in_reply_to_message_id, state, provisional_id, delivery_state, created_by, updated_by)
+      VALUES (?, ?, ?, NULL, 'agent', ?, ?, 'completed', ?, 'pending', ?, ?)`).run(
+      inbound.session_id, inbound.transport, inbound.workspace_id, body, messageId, randomUUID(), actor, actor,
+    );
+    const notice = activeRow<MessageRecord>(database, "SELECT * FROM messages WHERE id = ?", Number(result.lastInsertRowid))!;
+    database.exec("COMMIT");
+    return notice;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function listPendingResponseChunks(database: DatabaseSync): MessageRecord[] {
+  return database.prepare(`SELECT * FROM messages WHERE direction = 'agent' AND delivery_state = 'pending'
+    AND in_reply_to_message_id IS NOT NULL AND deleted_at IS NULL ORDER BY id`).all() as MessageRecord[];
+}
+
+export function claimResponseChunk(database: DatabaseSync, id: number, actor = "transport:discord"): boolean {
+  return database.prepare(`UPDATE messages SET delivery_state = 'uncertain', updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND direction = 'agent' AND delivery_state = 'pending' AND deleted_at IS NULL`).run(actor, id).changes === 1;
+}
+
+export function confirmResponseChunk(database: DatabaseSync, id: number, externalMessageId: string, actor = "transport:discord"): boolean {
+  if (!externalMessageId) throw new RangeError("Discord message ID is required");
+  return database.prepare(`UPDATE messages SET external_message_id = ?, delivery_state = 'confirmed',
+    updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND direction = 'agent' AND delivery_state = 'uncertain' AND deleted_at IS NULL`).run(externalMessageId, actor, id).changes === 1;
+}
+
+export function failResponseChunk(database: DatabaseSync, id: number, detail: string, actor = "transport:discord"): boolean {
+  return database.prepare(`UPDATE messages SET delivery_state = 'failed', failure_detail = ?,
+    updated_at = unixepoch(), updated_by = ?
+    WHERE id = ? AND direction = 'agent' AND delivery_state = 'uncertain' AND deleted_at IS NULL`).run(detail, actor, id).changes === 1;
+}
+
+export function failRemainingResponseChunks(database: DatabaseSync, inboundMessageId: number, actor = "transport:discord"): number {
+  return Number(database.prepare(`UPDATE messages SET delivery_state = 'failed', failure_detail = 'Skipped after earlier chunk was not confirmed',
+    updated_at = unixepoch(), updated_by = ? WHERE direction = 'agent' AND in_reply_to_message_id = ?
+    AND delivery_state = 'pending' AND deleted_at IS NULL`).run(actor, inboundMessageId).changes);
+}
+
+export function resetSession(database: DatabaseSync, sessionId: number, actor = "user:owner"): boolean {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const changed = database.prepare(`UPDATE sessions SET state = 'ended', ended_at = unixepoch(),
+      updated_at = unixepoch(), updated_by = ? WHERE id = ? AND state = 'active' AND deleted_at IS NULL`).run(actor, sessionId).changes;
+    if (changed) {
+      database.prepare(`UPDATE messages SET state = 'failed', failure_detail = CASE WHEN runtime_started_at IS NULL
+        THEN 'Cancelled by reset before runtime start' ELSE 'Runtime outcome uncertain after reset' END,
+        completed_at = unixepoch(), updated_at = unixepoch(), updated_by = ?
+        WHERE session_id = ? AND direction = 'user' AND state IN ('pending', 'processing') AND deleted_at IS NULL`).run(actor, sessionId);
+      database.prepare(`UPDATE messages SET delivery_state = 'failed', failure_detail = 'Delivery cancelled by reset',
+        updated_at = unixepoch(), updated_by = ?
+        WHERE session_id = ? AND direction = 'agent' AND delivery_state = 'pending' AND deleted_at IS NULL`).run(actor, sessionId);
+    }
+    database.exec("COMMIT");
+    return changed === 1;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function completeMessageWithResponse(database: DatabaseSync, messageId: number, response: NewAgentResponse, actor = "system"): { message: MessageRecord; response: MessageRecord } | undefined {
+  if (!response.external_message_id) throw new RangeError("Delivered response ID is required");
   database.exec("BEGIN IMMEDIATE");
   try {
     const message = activeRow<MessageRecord>(database, `SELECT * FROM messages
@@ -461,8 +656,8 @@ export function completeMessageWithResponse(database: DatabaseSync, messageId: n
       database.exec("COMMIT");
       return undefined;
     }
-    const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, created_by, updated_by)
-      VALUES (?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?, 'completed', ?, ?)`).run(
+    const result = database.prepare(`INSERT INTO messages (session_id, transport, workspace_id, external_message_id, external_author_id, user_id, direction, body, reply_to_external_message_id, in_reply_to_message_id, state, delivery_state, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?, 'completed', 'confirmed', ?, ?)`).run(
       message.session_id, response.transport, response.workspace_id, response.external_message_id, response.external_author_id,
       response.user_id, response.body, response.reply_to_external_message_id, message.id, actor, actor,
     );

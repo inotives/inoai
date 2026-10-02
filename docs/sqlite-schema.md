@@ -61,7 +61,7 @@ CREATE TABLE messages (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   transport TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
-  external_message_id TEXT NOT NULL,
+  external_message_id TEXT,
   external_author_id TEXT,
   user_id INTEGER REFERENCES users(id),
   direction TEXT NOT NULL CHECK (direction IN ('user', 'agent')),
@@ -76,9 +76,13 @@ CREATE TABLE messages (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_by TEXT NOT NULL DEFAULT 'system',
   started_at INTEGER,
+  runtime_started_at INTEGER,
   completed_at INTEGER,
+  provisional_id TEXT UNIQUE,
+  delivery_state TEXT CHECK (delivery_state IN ('pending', 'uncertain', 'confirmed', 'failed')),
   deleted_at INTEGER,
   deleted_by TEXT,
+  CHECK (direction != 'user' OR external_message_id IS NOT NULL),
   CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
 );
 
@@ -188,6 +192,7 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - A transport-specific start action creates one `sessions` row and one initial `messages` row. `agent_provider` and `agent_session_id` identify the selected CLI runtime session; `conversation_id` is the transport conversation boundary (a Discord thread in v1).
 - `users` is the transport-scoped allowlist. Startup upserts the configured owner as its first active `owner` record; V1 creates no other active User records.
 - Every eligible conversation message is inserted into `messages` before it is processed and references its User. The worker claims the oldest `user`/`pending` row. Agent responses are stored as `agent` rows, one per transport message chunk, linked by `in_reply_to_message_id`.
+- Phase 5 persists each agent response chunk before Discord delivery. An unsent chunk has a local `provisional_id` and a null `external_message_id`; the latter is filled only after Discord confirms delivery. `delivery_state` moves from `pending` to `uncertain` before send, then to `confirmed` or known `failed` when the outcome is known. A chunk left `uncertain` after restart is never resent automatically; the archived body remains available locally. Legacy agent Messages with an already-known external ID migrate as `confirmed`.
 - `events` stores health checks, connection changes, session lifecycle events, and errors. Its `session_id` is nullable so `inoai is online` can be recorded without a conversation.
 - A `memory_reviews` row is a timestamped recap entry. It records the source range since that Conversation's last completed recap, its concise recap text, and any Memory actions. Only normal chat work runs ahead of it.
 - `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance only: all active Memory has the same retrieval and review behavior. Soft-delete changes state without removing history.
@@ -195,7 +200,9 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 
 ## Worker rules
 
-The Phase 2 queue moves stale `processing` rows in both `messages` and `memory_reviews` back to `pending` because no Agent Runtime is wired yet. Once Phase 5 connects runtime execution, a stale user Message may be requeued only when its turn never started or had no side effects; uncertain post-start work fails closed instead (ADR 0002). A Session processes inbound Messages FIFO, with at most one `processing` Message for that Session. Different Sessions may run independently once the Codex runtime has passed the concurrent-session check; otherwise the worker falls back to one global queue. Process a due `memory_reviews` row only when no user row is pending or processing.
+The Phase 5 queue durably sets `runtime_started_at` before invoking the Agent Runtime. On restart, stale `processing` user Messages without that boundary return to `pending`; post-boundary Messages fail closed with an uncertain-outcome detail, without dropping their Session binding or replaying the turn (ADR 0002). Stale `memory_reviews` still return to `pending`. A Session processes inbound Messages FIFO, with at most one `processing` Message for that Session. Different Sessions may run independently once the Codex runtime has passed the concurrent-session check; otherwise the worker falls back to one global queue. Process a due `memory_reviews` row only when no user row is pending or processing.
+
+Reset ends the active Session and atomically fails its still-pending and processing inbound Messages plus unsent response chunks. The archived rows and the ended Session's Agent Session ID remain for audit; a later Message may create a new active Session in the same Conversation.
 
 Use a transaction when claiming work (`pending` to `processing`) and when finalizing a response plus its inbound message. The claim must reject a Message if another Message for its Session is already `processing`. A failed Recap retries up to three times later that day, with a one-hour initial delay and exponential backoff. After that it remains `failed` until the next daily cycle. No `jobs` or lock table is needed until more than one process is intentionally supported.
 

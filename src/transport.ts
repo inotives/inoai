@@ -1,4 +1,4 @@
-import { ChannelType, Client, Events, GatewayIntentBits } from "discord.js";
+import { ChannelType, Client, Events, GatewayIntentBits, MessageFlags, SlashCommandBuilder } from "discord.js";
 import type { Message } from "discord.js";
 
 import type { Configuration } from "./config.js";
@@ -23,16 +23,29 @@ export type TransportHealth = {
   botUserId: string | null;
 };
 
+export type ThreadControl = {
+  command: "status" | "cancel" | "reset";
+  workspaceId: string | null;
+  conversationId: string;
+  parentConversationId: string | null;
+  externalUserId: string;
+  respond(text: string): Promise<void>;
+};
+
 export interface ChatTransport {
-  start(onIncomingMessage: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, onFailure?: (error: Error) => void): Promise<void>;
+  start(onIncomingMessage: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, onFailure?: (error: Error) => void, onControl?: (control: ThreadControl) => Promise<void>): Promise<void>;
+  registerThreadControls?(guildId: string): Promise<void>;
   stop(): Promise<void>;
   createConversation(parentConversationId: string, initialMessageId: string, name: string): Promise<string>;
   deleteConversation(conversationId: string): Promise<void>;
   sendMessage(conversationId: string, text: string, replyToExternalMessageId?: string): Promise<string>;
+  showWorking?(conversationId: string): Promise<void>;
   disableLegacyApprovalControls?(conversationId: string, messageId: string): Promise<void>;
   publishHealth(targetConversationId: string, text: string, workspaceId: string): Promise<string>;
   health(): TransportHealth;
 }
+
+export class KnownDeliveryFailure extends Error {}
 
 export class DiscordTransport implements ChatTransport {
   private state: TransportHealth["state"] = "idle";
@@ -43,7 +56,7 @@ export class DiscordTransport implements ChatTransport {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   })) {}
 
-  async start(onIncomingMessage: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, onFailure?: (error: Error) => void): Promise<void> {
+  async start(onIncomingMessage: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, onFailure?: (error: Error) => void, onControl?: (control: ThreadControl) => Promise<void>): Promise<void> {
     if (this.started) throw new Error("Discord transport already started");
     this.started = true;
     this.state = "connecting";
@@ -90,6 +103,20 @@ export class DiscordTransport implements ChatTransport {
         authorIsBot: message.author.bot,
       });
     });
+    this.client.on(Events.InteractionCreate, (interaction) => {
+      if (this.state !== "ready" || !onControl || !interaction.isChatInputCommand() || interaction.commandName !== "inoai") return;
+      const command = interaction.options.getSubcommand(false);
+      if (command !== "status" && command !== "cancel" && command !== "reset") return;
+      void (async () => {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await onControl({
+          command, workspaceId: interaction.guildId, conversationId: interaction.channelId,
+          parentConversationId: interaction.channel?.isThread() ? interaction.channel.parentId : null,
+          externalUserId: interaction.user.id,
+          respond: (text) => interaction.editReply({ content: text, allowedMentions: { parse: [] } }).then(() => undefined),
+        });
+      })().catch(() => { void interaction.editReply({ content: "Control unavailable. Please try again." }).catch(() => undefined); });
+    });
     try {
       await Promise.race([Promise.all([this.client.login(this.token), firstReady]), stopped]);
     } catch (error) {
@@ -101,6 +128,15 @@ export class DiscordTransport implements ChatTransport {
     } finally {
       this.cancelStartup = null;
     }
+  }
+
+  async registerThreadControls(guildId: string): Promise<void> {
+    const command = new SlashCommandBuilder().setName("inoai").setDescription("Control this inoai conversation")
+      .addSubcommand((part) => part.setName("status").setDescription("Show this conversation's state"))
+      .addSubcommand((part) => part.setName("cancel").setDescription("Stop the active turn"))
+      .addSubcommand((part) => part.setName("reset").setDescription("Start a fresh session after this turn"));
+    if (!this.client.application) throw new Error("Discord application unavailable for command registration");
+    await this.client.application.commands.create(command.toJSON(), guildId);
   }
 
   async stop(): Promise<void> {
@@ -123,10 +159,19 @@ export class DiscordTransport implements ChatTransport {
   }
 
   async sendMessage(conversationId: string, text: string, replyToExternalMessageId?: string): Promise<string> {
-    const channel = await this.client.channels.fetch(conversationId);
-    if (!channel?.isSendable()) throw new Error("Discord conversation is not sendable");
-    const message = await channel.send({ content: text, ...(replyToExternalMessageId ? { reply: { messageReference: replyToExternalMessageId } } : {}) });
+    let channel;
+    try { channel = await this.client.channels.fetch(conversationId); }
+    catch { throw new KnownDeliveryFailure("Discord conversation could not be fetched before send"); }
+    if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
+    const message = await channel.send({ content: text, allowedMentions: { parse: [], repliedUser: false },
+      ...(replyToExternalMessageId ? { reply: { messageReference: replyToExternalMessageId } } : {}) });
     return message.id;
+  }
+
+  async showWorking(conversationId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel?.isSendable()) return;
+    await channel.sendTyping();
   }
 
   async disableLegacyApprovalControls(conversationId: string, messageId: string): Promise<void> {

@@ -4,7 +4,7 @@ const requiredKeys = [
   "DISCORD_BOT_TOKEN",
   "DISCORD_GUILD_ID",
   "DISCORD_OWNER_USER_ID",
-  "DISCORD_ALLOWED_CHANNEL_ID",
+  "DISCORD_STATUS_CHANNEL_ID",
   "CHAT_PROVIDER",
   "AGENT_PROVIDER",
   "MEMORY_REVIEW_TIME",
@@ -15,7 +15,7 @@ export type Configuration = {
   discordBotToken: string;
   discordGuildId: string;
   discordOwnerUserId: string;
-  discordAllowedChannelId: string;
+  discordStatusChannelId: string;
   chatProvider: "discord";
   agentProvider: "codex";
   memoryReviewTime: string;
@@ -50,7 +50,7 @@ export function validateConfiguration(values: Record<string, string | undefined>
     discordBotToken: values.DISCORD_BOT_TOKEN!,
     discordGuildId: values.DISCORD_GUILD_ID!,
     discordOwnerUserId: values.DISCORD_OWNER_USER_ID!,
-    discordAllowedChannelId: values.DISCORD_ALLOWED_CHANNEL_ID!,
+    discordStatusChannelId: values.DISCORD_STATUS_CHANNEL_ID!,
     chatProvider: "discord",
     agentProvider: "codex",
     memoryReviewTime: values.MEMORY_REVIEW_TIME!,

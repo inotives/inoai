@@ -8,7 +8,7 @@ The bot is a remote conversation surface for a local Codex installation. It is n
 
 ## MVP outcome
 
-In a private Discord server, the owner can post a top-level `@inoai` task in the configured channel. inoai creates a dedicated Discord thread, binds a fresh Codex session to it, and replies there. Every later allowlisted user message in that thread continues the same Codex session without another mention.
+In the configured private Discord server, the owner can post a top-level `@inoai` task in a channel the bot can access, excluding the status-only online-report channel. inoai creates a dedicated Discord thread, binds a fresh Codex session to it, and replies there. Every later allowlisted user message in that thread continues the same Codex session without another mention. Ordinary top-level messages do not invoke Codex.
 
 ```text
 private Discord server
@@ -28,7 +28,7 @@ local project directory and existing ChatGPT CLI sign-in
 1. The portable core starts in a deployment folder, locates the selected `.inoai-connect*` runtime home (or creates it from its bundled template), then loads and validates its `.env` and `agent.md`.
 2. It opens that runtime home's `inoai.sqlite` and applies the initial schema.
 3. It connects to Discord using the bot token.
-4. Once Discord first reports the bot ready for this app process, it posts `inoai is online` in `DISCORD_ALLOWED_CHANNEL_ID` as the startup health check and records that event in SQLite.
+4. Once Discord first reports the bot ready for this app process, it posts `inoai is online` in `DISCORD_STATUS_CHANNEL_ID` as the startup health check and records that event in SQLite.
 5. It then remains running on Discord's gateway event loop, waiting for eligible `@inoai` mentions and replies. On each incoming event, it routes the turn to its bound Codex session and writes inbound messages, outbound answers, and lifecycle events to SQLite.
 
 If configuration, SQLite initialization, or Discord connection fails, the app must not claim to be online. It should log the local failure and exit so the process supervisor can restart it.
@@ -52,14 +52,14 @@ Keep sensitive configuration in a local `.env` file and commit a value-free `.en
 DISCORD_BOT_TOKEN=
 DISCORD_GUILD_ID=
 DISCORD_OWNER_USER_ID=
-DISCORD_ALLOWED_CHANNEL_ID=
+DISCORD_STATUS_CHANNEL_ID=
 CHAT_PROVIDER=discord
 AGENT_PROVIDER=codex
 MEMORY_REVIEW_TIME=06:00
 MEMORY_REVIEW_MAX_CHARS=20000
 ```
 
-`DISCORD_GUILD_ID` and `DISCORD_ALLOWED_CHANNEL_ID` are fixed V1 transport boundaries. `DISCORD_OWNER_USER_ID` seeds the first active `owner` record in SQLite's `users` allowlist. `CHAT_PROVIDER` and `AGENT_PROVIDER` initially accept only `discord` and `codex`. The Codex adapter uses the CLI's configured skills, MCP servers, permission policy, and sandbox policy; inoai does not override them. `MEMORY_REVIEW_TIME` is a local host time in `HH:MM` format; `MEMORY_REVIEW_MAX_CHARS` is the maximum archived text sent in one review call, initially `20000`. SQLite always lives at the selected runtime home's `inoai.sqlite`; the deployment folder is the Codex project path. The bridge should fail at startup with a clear message if any required value is absent or unsupported.
+`DISCORD_GUILD_ID` is the fixed V1 server boundary. `DISCORD_STATUS_CHANNEL_ID` selects a status-only online-report channel; it does not restrict conversation starts to that channel. Phase 5 renames the current `DISCORD_ALLOWED_CHANNEL_ID` setting to `DISCORD_STATUS_CHANNEL_ID` with no legacy alias, so existing local `.env` files must update that key when the implementation lands. `DISCORD_OWNER_USER_ID` seeds the first active `owner` record in SQLite's `users` allowlist. `CHAT_PROVIDER` and `AGENT_PROVIDER` initially accept only `discord` and `codex`. The Codex adapter uses the CLI's configured skills, MCP servers, permission policy, and sandbox policy; inoai does not override them. `MEMORY_REVIEW_TIME` is a local host time in `HH:MM` format; `MEMORY_REVIEW_MAX_CHARS` is the maximum archived text sent in one review call, initially `20000`. SQLite always lives at the selected runtime home's `inoai.sqlite`; the deployment folder is the Codex project path. The bridge should fail at startup with a clear message if any required value is absent or unsupported.
 
 ## Minimal architecture
 
@@ -173,19 +173,23 @@ Daily recaps are silent: they write their timestamped recap and outcome to SQLit
 
 | Discord action | Result |
 | --- | --- |
-| Top-level `@inoai <task>` in the configured channel | Create a Discord thread and bind a fresh Codex session to it. |
+| Owner's top-level `@inoai <task>` in an accessible non-report channel of the configured server | Create a Discord thread and bind a fresh Codex session to it. |
 | Allowlisted user message in a bound thread | Send it as the next turn without requiring `@inoai`. |
 | `/inoai status` in a bound thread | Show project, session state, and whether a turn is running. |
 | `/inoai cancel` in a bound thread | Cancel the active turn for that thread. |
-| `/inoai reset` in a bound thread | Discard that thread's Agent Session binding. |
+| `/inoai reset` in a bound thread | Cancel the active turn, fail queued Messages without running them, and discard that thread's Agent Session binding. The next Message starts a fresh Agent Session. |
+
+These are native Discord guild-scoped slash commands, not text prefixed to a bot mention. The existing bot token registers them; no second API key is required. Only the active owner may invoke them in a bound thread, and control interactions are not Codex turns.
 
 ### Future scheduled tasks (deferred)
 
 Scheduled multi-iteration Tasks are intentionally deferred. The provider-neutral Conversation and Agent Session model remains suitable for that phase, but v1 does not contain task tables, task-state prompts, or a scheduler. When introduced, a Task will use a dedicated Conversation and bounded iterations; recurrence remains out of scope until one-off tasks are proven.
 
-The bot ignores messages from bots, ignores unmentioned top-level channel messages, and never treats its own output as input. Inside a bound thread, every allowlisted user's ordinary message is input to inoai. It should acknowledge a task immediately, periodically show a compact working indicator, and split final responses to respect Discord's message limit. Tool traces and raw command output should not be mirrored by default.
+The bot ignores messages from bots, ignores unmentioned top-level channel messages, and never treats its own output as input. Inside a bound thread, every allowlisted user's ordinary message is input to inoai. It should acknowledge a task immediately, periodically show a compact working indicator, and split only the completed final response to respect Discord's message limit. Do not post live partial assistant text, tool traces, or raw command output.
 
 Every eligible inbound message, Codex response, and conversation event is written to SQLite before or alongside its Discord delivery. The bot's `inoai is online` health-check message is an event, not part of a Codex conversation.
+
+Persist each final response chunk before attempting Discord delivery. If a send is known to fail, record the delivery failure. If Discord may have accepted a chunk but inoai stopped before saving its Discord message ID, record delivery as uncertain and never resend that chunk automatically on restart. The archived response remains available locally; avoiding duplicate Discord output takes priority over guaranteed delivery.
 
 ### Concurrent messages and ordering
 
@@ -196,7 +200,9 @@ Discord can deliver a second task while Codex is answering the first. Do not run
 3. It persists Codex's completed answer, delivers it to Discord, marks the inbound message `completed`, then starts the next pending message.
 4. Before an Agent Runtime turn can start, a stale `processing` row may return to `pending` after restart. Once execution may have begun, a stale row without proof of no side effects has an uncertain outcome: record it as failed, notify the owner once, and require a fresh request rather than automatically replaying it. The Phase 2 queue initially requeues stale rows because no runtime execution is connected yet; Phase 5 must add this safety distinction when it wires in the runtime.
 
-For V1, serialize turns within a Conversation and let different Conversations run independently only after the selected Codex app-server flow passes a concurrent-session check. If that check fails or later becomes unreliable, automatically fall back to one global queue. This prevents context races and preserves service at reduced throughput.
+Reset preserves archived Messages and Events. It never replays cancelled or queued work into the new Agent Session; if the active turn's outcome is uncertain, report that uncertainty rather than claiming its side effects were undone.
+
+For V1, serialize turns within a Conversation and let different Conversations run independently only after an authenticated, read-only two-session probe of the selected Codex app-server flow passes in an isolated temporary project. The probe uses the owner's existing local Codex sign-in and does not require a Discord bot token. Until it passes, or if concurrency later becomes unreliable, use one global queue without dropping queued Messages. This prevents context races and preserves service at reduced throughput.
 
 When a user replies to an older Discord message after newer work is queued, treat that reply as the next turn when it reaches the worker. Store its Discord reply reference and include a compact quoted reference to the replied-to message in the Codex prompt. This preserves the user's intended target without attempting to rewind an already-advanced Codex session.
 
@@ -259,6 +265,8 @@ In V1, every Codex approval request is declined through the live app-server prot
 No new approval stays pending in SQLite. If an earlier local build left a pending approval row or Discord controls, recovery fails that row and makes the controls inert; a saved row cannot restore a live runtime request. Never replay an interrupted turn from SQLite alone.
 
 ## Acceptance checks
+
+Phase 5 includes deterministic fake-transport/runtime tests, an isolated authenticated read-only Codex concurrency probe, and a focused live Discord smoke test in a private test channel against a disposable project. The bot token stays in the ignored local runtime-home `.env`, never in chat or committed files. Phase 8 retains fresh-deployment and failure/recovery end-to-end acceptance.
 
 - With no OpenAI API key configured, an allowlisted user can create a thread session and get a Codex response through Discord.
 - A second message in that thread is treated as a continuation, not an unrelated task.
