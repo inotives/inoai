@@ -34,12 +34,13 @@ test("late replies quote only their archived target while retaining the Agent Se
       add("future", "The format is Markdown.");
       const prompts: string[] = [];
       const runtime: AgentRuntime = {
+        displayName: "Codex", loginHint: "codex login",
         async createSession() { throw new Error("Unexpected new Agent Session"); },
         async resumeSession(id) { assert.equal(id, "codex-thread"); },
         async *runTurn(_id, prompt) { prompts.push(prompt); yield { type: "answer" as const, text: "ok" }; },
         async cancel() {}, health() { return { state: "ready" }; }, async close() {},
       };
-      const worker = new ConversationWorker(database, home, runtime);
+      const worker = new ConversationWorker(database, home, runtime, "codex");
       try { worker.wake(); await worker.idle(); } finally { await worker.stop(); }
       assert.equal(prompts.length, 6);
       assert.match(prompts[2]!, /Earlier message being replied to.*\n> The original design uses blue\./);

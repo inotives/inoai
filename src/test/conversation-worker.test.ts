@@ -20,6 +20,7 @@ class FakeTransport implements ChatTransport {
   private incoming?: (message: IncomingMessage) => void;
   private onControl?: (control: ThreadControl) => Promise<void>;
   private count = 0;
+  readonly sent: string[] = [];
   start(onIncoming: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, _onFailure?: (error: Error) => void, onControl?: (control: ThreadControl) => Promise<void>): Promise<void> {
     this.incoming = onIncoming;
     this.onControl = onControl;
@@ -29,14 +30,14 @@ class FakeTransport implements ChatTransport {
   async control(command: ThreadControl["command"], overrides: Partial<ThreadControl> = {}): Promise<string> {
     let answer = "";
     await this.onControl?.({ command, workspaceId: "guild", conversationId: "thread-a",
-      parentConversationId: "channel", externalUserId: "owner",
+      parentConversationId: "channel", externalUserId: "owner", conversationOwnedByBot: true,
       respond: async (text) => { answer = text; }, ...overrides });
     return answer;
   }
   async stop(): Promise<void> {}
   async createConversation(): Promise<string> { return `thread-${++this.count}`; }
   async deleteConversation(): Promise<void> {}
-  async sendMessage(): Promise<string> { return "sent"; }
+  async sendMessage(_conversationId: string, text: string): Promise<string> { this.sent.push(text); return `sent-${this.sent.length}`; }
   async publishHealth(): Promise<string> { return "online"; }
   health(): TransportHealth { return { state: "ready", botUserId: "inoai" }; }
 }
@@ -69,6 +70,7 @@ test("transport wakes one global FIFO worker; duplicates do not run twice", asyn
     let maxActive = 0;
     let created = 0;
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { return `codex-${++created}`; }, async resumeSession() {},
       async *runTurn(_sessionId, prompt): AsyncGenerator<RuntimeEvent> {
         active++; maxActive = Math.max(maxActive, active); turns.push(prompt);
@@ -78,7 +80,7 @@ test("transport wakes one global FIFO worker; duplicates do not run twice", asyn
       async cancel() { releaseFirst(); }, health() { return { state: "ready" }; }, async close() {},
     };
     const transport = new FakeTransport();
-    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime);
+    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, "codex");
     try {
       await startTransport(instance, undefined, transport, undefined, worker);
       transport.emit(incoming("first", "channel"));
@@ -124,6 +126,7 @@ test("thread controls authorize the owner, isolate cancellation, and reset witho
     const turns: string[] = [];
     const cancels: string[] = [];
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { return "new-codex-session"; }, async resumeSession() {},
       async *runTurn(_id, prompt) {
         turns.push(prompt);
@@ -133,7 +136,7 @@ test("thread controls authorize the owner, isolate cancellation, and reset witho
       async cancel(id) { cancels.push(id); }, health() { return { state: "ready" }; }, async close() {},
     };
     const transport = new FakeTransport();
-    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime);
+    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, "codex");
     try {
       worker.enablePerSessionConcurrency();
       await startTransport(instance, undefined, transport, undefined, worker);
@@ -142,7 +145,12 @@ test("thread controls authorize the owner, isolate cancellation, and reset witho
       assert.match(await transport.control("status"), /Queued: 1; running: 1/);
       assert.match(await transport.control("status", { externalUserId: "intruder" }), /only in your active/);
       assert.match(await transport.control("reset", { parentConversationId: "status" }), /only in your active/);
-      assert.match(await transport.control("cancel", { conversationId: "other-bot-thread" }), /only in your active/);
+      assert.match(await transport.control("cancel", { conversationId: "unbound-own-thread" }), /only in your active/);
+      const wrongBot = "This thread belongs to another inoai bot. Choose that bot's /inoai command to control it.";
+      assert.equal(await transport.control("reset", { conversationId: "other-bot-thread", conversationOwnedByBot: false }), wrongBot);
+      assert.equal(await transport.control("status", { conversationId: "other-bot-thread", conversationOwnedByBot: false }), wrongBot);
+      assert.match(await transport.control("cancel", { conversationId: "other-bot-thread", conversationOwnedByBot: false, externalUserId: "intruder" }), /only in your active/);
+      assert.match(await transport.control("status", { conversationId: "other-bot-thread", conversationOwnedByBot: false, parentConversationId: "status" }), /only in your active/);
       assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM messages WHERE direction = 'user'").get()?.count, before);
       assert.match(await transport.control("cancel"), /Cancellation requested/);
       assert.deepEqual(cancels, ["codex-a1"]);
@@ -196,12 +204,13 @@ test("restart requeues only pre-start work and preserves post-start Session iden
     const recovered = openDatabase(home);
     const turns: string[] = [];
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { throw new Error("Should not create a new Agent Session"); },
       async resumeSession(id) { assert.equal(id, "codex-before"); },
       async *runTurn(_id, prompt) { turns.push(prompt); yield { type: "answer" as const, text: "ok" }; },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(recovered, home, runtime);
+    const worker = new ConversationWorker(recovered, home, runtime, "codex");
     try {
       worker.wake();
       await worker.idle();
@@ -228,6 +237,7 @@ test("terminal runtime failure is recorded once and does not block the next turn
       external_message_id: id, external_author_id: "owner", user_id: owner.id, direction: "user", body: id,
       reply_to_external_message_id: null, in_reply_to_message_id: null });
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
       async *runTurn(_id, prompt) {
         if (prompt === "fail") throw new RuntimeFailure("usage");
@@ -235,7 +245,7 @@ test("terminal runtime failure is recorded once and does not block the next turn
       },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime);
+    const worker = new ConversationWorker(database, home, runtime, "codex");
     try {
       worker.wake();
       await worker.idle();
@@ -243,6 +253,121 @@ test("terminal runtime failure is recorded once and does not block the next turn
       assert.deepEqual(rows.filter((row) => row.direction === "user").map((row) => row.state), ["failed", "completed"]);
       assert.match(rows[0]?.failure_detail ?? "", /Runtime usage/);
       assert.equal(database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'turn_failed'").get()?.count, 1);
+    } finally { await worker.stop(); database.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a Session from another provider is refused without a runtime call until reset starts a configured-provider Session", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-mismatch-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, env.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=claude"));
+    const instance = await start(directory);
+    const old = createSession(instance.database, { user_id: instance.owner.id, transport: "discord", workspace_id: "guild",
+      parent_conversation_id: "channel", conversation_id: "thread-a", initiating_external_message_id: "m1",
+      agent_provider: "codex", agent_session_id: "codex-thread", project_path: directory });
+    archiveMessage(instance.database, { session_id: old.id, transport: "discord", workspace_id: "guild",
+      external_message_id: "m1", external_author_id: "owner", user_id: instance.owner.id, direction: "user", body: "m1",
+      reply_to_external_message_id: null, in_reply_to_message_id: null });
+    const calls: string[] = [];
+    const runtime: AgentRuntime = {
+      displayName: "Claude", loginHint: "claude /login",
+      async createSession() { calls.push("create"); return "claude-session"; },
+      async resumeSession(id) { calls.push(`resume:${id}`); },
+      async *runTurn(id, prompt) { calls.push(`turn:${id}`); yield { type: "answer" as const, text: `answer:${prompt.includes("m3") ? "m3" : "?"}` }; },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const transport = new FakeTransport();
+    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {}, transport);
+    const notice = "This thread belongs to a Codex session. Use /inoai reset to start a new Claude session here, or start a new thread.";
+    try {
+      await startTransport(instance, undefined, transport, undefined, worker);
+      await worker.idle();
+      transport.emit(incoming("m2", "thread-a", "channel"));
+      await worker.idle();
+      assert.deepEqual(calls, []);
+      const refused = listMessages(instance.database, old.id);
+      assert.deepEqual(refused.filter((row) => row.direction === "user").map((row) => [row.body, row.state, row.failure_detail, row.runtime_started_at]),
+        [["m1", "failed", "Agent provider mismatch; replay_safe=false", null], ["m2", "failed", "Agent provider mismatch; replay_safe=false", null]]);
+      assert.deepEqual(refused.filter((row) => row.direction === "agent").map((row) => [row.body, row.delivery_state]),
+        [[notice, "confirmed"], [notice, "confirmed"]]);
+      assert.deepEqual(transport.sent, [notice, notice]);
+      assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'turn_failed' AND detail = 'reason=provider_mismatch; attempts=0'").get()?.count, 2);
+
+      assert.match(await transport.control("reset"), /Session reset/);
+      transport.emit(incoming("m3", "thread-a", "channel"));
+      await until(() => calls.length === 2);
+      await worker.idle();
+      assert.deepEqual(calls, ["create", "turn:claude-session"]);
+      const sessions = instance.database.prepare("SELECT id, state, agent_provider, agent_session_id, deleted_at FROM sessions WHERE conversation_id = 'thread-a' ORDER BY id").all() as Array<Record<string, unknown>>;
+      assert.equal(sessions.length, 2);
+      assert.deepEqual([sessions[0]?.state, sessions[0]?.agent_provider, sessions[0]?.deleted_at], ["ended", "codex", null]);
+      assert.deepEqual([sessions[1]?.state, sessions[1]?.agent_provider, sessions[1]?.agent_session_id], ["active", "claude", "claude-session"]);
+      assert.equal(listMessages(instance.database, old.id).length, 4); // The old archive is retained.
+      assert.equal(listMessages(instance.database, Number(sessions[1]?.id)).find((row) => row.body === "m3")?.state, "completed");
+      assert.equal(transport.sent.at(-1), "answer:m3");
+    } finally { await worker.stop(); await transport.stop(); await instance.release(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("an unrecognized stored provider is never echoed into the mismatch notice", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-unknown-provider-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    const database = openDatabase(home);
+    const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner",
+      display_name: null, role: "owner", state: "active" })!;
+    const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild",
+      parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "m1",
+      agent_provider: "@everyone toString", agent_session_id: "pending:m1", project_path: directory });
+    archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild",
+      external_message_id: "m1", external_author_id: "owner", user_id: owner.id, direction: "user", body: "m1",
+      reply_to_external_message_id: null, in_reply_to_message_id: null });
+    const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
+      async createSession() { throw new Error("Unexpected create"); }, async resumeSession() { throw new Error("Unexpected resume"); },
+      async *runTurn() { throw new Error("Unexpected turn"); },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const worker = new ConversationWorker(database, home, runtime, "codex");
+    try {
+      worker.wake();
+      await worker.idle();
+      assert.equal(listMessages(database, session.id).find((row) => row.direction === "agent")?.body,
+        "This thread belongs to a session from a different agent provider. Use /inoai reset to start a new Codex session here, or start a new thread.");
+    } finally { await worker.stop(); database.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a missing runtime session fails once and tells the owner to reset", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-missing-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    const database = openDatabase(home);
+    const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner",
+      display_name: null, role: "owner", state: "active" })!;
+    const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild",
+      parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "lost",
+      agent_provider: "claude", agent_session_id: "claude-session", project_path: directory });
+    archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild",
+      external_message_id: "lost", external_author_id: "owner", user_id: owner.id, direction: "user", body: "lost",
+      reply_to_external_message_id: null, in_reply_to_message_id: null });
+    let attempts = 0;
+    const runtime: AgentRuntime = {
+      displayName: "Claude", loginHint: "claude /login",
+      async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
+      async *runTurn() { attempts++; throw new RuntimeFailure("session_missing"); },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const worker = new ConversationWorker(database, home, runtime, "claude");
+    try {
+      worker.wake();
+      await worker.idle();
+      assert.equal(attempts, 1);
+      const rows = listMessages(database, session.id);
+      assert.match(rows.find((row) => row.direction === "user")?.failure_detail ?? "", /Runtime session_missing; replay_safe=false/);
+      assert.equal(rows.find((row) => row.direction === "agent")?.body,
+        "This thread's Claude session could not be found. Use /inoai reset to start a new session.");
     } finally { await worker.stop(); database.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -265,11 +390,12 @@ test("shutdown cancels the active turn and leaves later pending input for restar
     let cancel!: () => void;
     const cancelled = new Promise<void>((resolve) => { cancel = resolve; });
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
       async *runTurn() { entered(); await cancelled; throw new RuntimeFailure("cancelled"); },
       async cancel() { cancel(); }, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime);
+    const worker = new ConversationWorker(database, home, runtime, "codex");
     worker.wake();
     await running;
     await worker.stop();
@@ -295,6 +421,7 @@ test("shutdown during a replay-safe backoff never retries after runtime close", 
     let closed = false;
     let retryAfterClose = false;
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
       async *runTurn() {
         attempts++;
@@ -303,7 +430,7 @@ test("shutdown during a replay-safe backoff never retries after runtime close", 
       },
       async cancel() {}, health() { return { state: "ready" }; }, async close() { closed = true; },
     };
-    const worker = new ConversationWorker(database, home, runtime);
+    const worker = new ConversationWorker(database, home, runtime, "codex");
     worker.wake();
     await until(() => database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'runtime_failure'").get()?.count === 1);
     await worker.stop();
@@ -339,6 +466,7 @@ test("validated cross-session overlap keeps Session FIFO and falls back globally
     const active = new Map<string, number>();
     let sameSessionOverlap = false;
     const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
       async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
       async *runTurn(sessionId, prompt) {
         turns.push(prompt);
@@ -353,7 +481,7 @@ test("validated cross-session overlap keeps Session FIFO and falls back globally
       },
       async cancel() { releaseA(); releaseB(); }, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime);
+    const worker = new ConversationWorker(database, home, runtime, "codex");
     try {
       assert.equal(worker.concurrencyMode(), "global");
       worker.wake();
@@ -375,8 +503,35 @@ test("validated cross-session overlap keeps Session FIFO and falls back globally
       assert.equal(sameSessionOverlap, false);
       assert.deepEqual(listMessages(database, a.id).filter((row) => row.direction === "user").map((row) => row.state), ["failed", "completed"]);
     } finally { await worker.stop(); }
-    const restarted = new ConversationWorker(database, home, runtime);
+    const restarted = new ConversationWorker(database, home, runtime, "codex");
     assert.equal(restarted.concurrencyMode(), "global");
     database.close();
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("concurrency fallback log names the runtime", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-runtime-name-"));
+  const warn = console.warn;
+  const warnings: unknown[] = [];
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    const database = openDatabase(home);
+    const runtime: AgentRuntime = {
+      displayName: "Claude", loginHint: "claude /login",
+      async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
+      async *runTurn() { throw new Error("Unexpected turn"); },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const worker = new ConversationWorker(database, home, runtime, "codex");
+    console.warn = (message: unknown) => { warnings.push(message); };
+    worker.enablePerSessionConcurrency();
+    worker.fallbackToGlobal();
+    console.warn = warn;
+    assert.deepEqual(warnings, ["Claude cross-session concurrency disabled; using global FIFO"]);
+    await worker.stop();
+    database.close();
+  } finally {
+    console.warn = warn;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

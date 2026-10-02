@@ -2,15 +2,15 @@
 
 inoai is a local personal-agent bridge: it connects a Discord bot to a locally authenticated coding-agent CLI, beginning with Codex CLI and the owner’s ChatGPT subscription. It stores conversation history and durable agent Memory in SQLite, without using the OpenAI API.
 
-> **Status:** Phase 1 scaffolding is implemented. Discord, Codex, SQLite persistence, and the Electron app itself remain later work.
+> **Status:** Phases 1–5 and 5a are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, and the end-to-end conversation worker. Phase 5a adds Claude CLI as a second runtime. Daily Memory Review, the Electron app, and V1 hardening remain later work.
 
 ## V1 in brief
 
-- TypeScript core, Discord transport, and Codex CLI runtime.
+- TypeScript core, Discord transport, and Codex CLI runtime, with Claude CLI as a second runtime from Phase 5a.
 - Discord `@inoai` starts a dedicated thread; follow-up messages in that thread continue the same Agent Session.
 - SQLite persists users, sessions, messages, events, approvals, daily recaps, and shared agent Memory.
 - Memory Review configuration is validated locally; scheduled review execution is deferred.
-- Codex capability, MCP, sandbox, and approval settings come from the local Codex CLI environment. Permission requests become Discord **Approve** / **Reject** buttons.
+- Codex capability, MCP, sandbox, and approval settings come from the local Codex CLI environment. In V1, every permission request is declined with a fixed safe notice; Discord **Approve** / **Reject** buttons are deferred. Claude follows the same rules with its own local settings.
 - A separate macOS Electron app provides analytics and manual Memory management by opening SQLite directly.
 
 ## Deployment layout
@@ -30,7 +30,7 @@ my-project/
 
 On first start, the core creates `.inoai-connect/` from bundled templates. It never overwrites an existing runtime home.
 
-`agent.md` defines the role and personality for that deployment. A project-level `AGENTS.md`, if present, remains normal project guidance for Codex.
+`agent.md` defines the role and personality for that deployment. A project-level `AGENTS.md`, if present, remains normal project guidance for Codex; Claude reads the project's `CLAUDE.md` instead.
 
 ## Agent Instances
 
@@ -40,7 +40,7 @@ One `.inoai-connect*` directory is one independent Agent Instance. Each has sepa
 .inoai-connect/           # general Codex agent
 .inoai-connect-planner/   # planner role
 .inoai-connect-designer/  # designer role
-.inoai-connect-claude/    # future Claude CLI adapter
+.inoai-connect-claude/    # Claude CLI adapter (Phase 5a)
 ```
 
 Run a named instance with its runtime home:
@@ -85,7 +85,7 @@ cp .env.sample .inoai-connect/.env
 npm run validate
 ```
 
-`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex`, local `HH:MM` review time, and a positive review limit. It does not contact Discord or Codex.
+`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex` or `claude`, a well-formed optional `CLAUDE_MODEL`, local `HH:MM` review time, and a positive review limit. It does not contact Discord, Codex, or Claude.
 
 Start the local core after validation:
 
@@ -129,6 +129,59 @@ npm start -- ui
 npm start -- ui --connect-dir .inoai-connect-planner
 ```
 
+## Claude runtime
+
+A runtime home can drive the owner's local Claude Code CLI instead of Codex. inoai runs `claude -p` headlessly for each Turn and never uses the Anthropic API ([ADR 0008](docs/adr/0008-drive-claude-through-headless-cli.md)).
+
+### Prerequisites
+
+- Node.js 22 or newer.
+- Claude Code CLI installed as `claude` and signed in with your Claude subscription: run `claude`, then `/login`.
+- A Discord bot for this Agent Instance (see [Running alongside Codex](#running-alongside-codex)).
+
+### Setup
+
+```sh
+# This creates a blank .inoai-connect-claude/.env and reports missing settings.
+npm run validate -- --connect-dir .inoai-connect-claude
+cp .env.sample .inoai-connect-claude/.env
+# Edit .inoai-connect-claude/.env: set AGENT_PROVIDER=claude and your local Discord values.
+npm run validate -- --connect-dir .inoai-connect-claude
+npm start -- --connect-dir .inoai-connect-claude
+```
+
+`CLAUDE_MODEL` is optional. Leave it blank to use the CLI's default model, or set a model name or alias such as `sonnet`. It must start with a letter or digit and contain only letters, digits, and `. _ : - [ ]`. Codex homes ignore it.
+
+`npm run validate` stays offline and does not check the Claude sign-in. The credential guard runs at `npm start`.
+
+### Credential guard
+
+inoai accepts only the interactive Claude subscription login (`/login`). At startup it asks the CLI which credential it will use (`claude auth status`) and refuses to start, naming the source, if any of these would take over:
+
+- an API key, such as `ANTHROPIC_API_KEY` or a Console key;
+- an auth token or Anthropic profile, such as `ANTHROPIC_AUTH_TOKEN` or a token in Claude settings;
+- `CLAUDE_CODE_OAUTH_TOKEN` in the environment;
+- an `apiKeyHelper`;
+- a cloud provider or gateway.
+
+Each Turn checks again: if the CLI reports a non-subscription credential, the Turn fails and the thread gets a notice to run `claude /login`. inoai never reads credential files and never edits your shell, settings, or credentials. To fix a refusal, unset the variable or remove the setting locally, run `claude /login` if needed, and restart.
+
+### Subscription login policy
+
+Anthropic's [Agent SDK documentation](https://code.claude.com/docs/en/agent-sdk/overview) says that, unless previously approved, third-party developers may not offer claude.ai login or rate limits for their products. inoai offers no login. Each owner runs it on their own machine against their own locally signed-in CLI, and inoai never handles a Claude credential.
+
+### Behavior
+
+- Permission prompts fail closed. The CLI denies any action your Claude settings do not already allow, and the thread gets a fixed notice to use local Claude for the blocked action ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)). Your Claude settings, MCP servers, skills, and permission rules apply unchanged.
+- Project guidance comes from Claude's own `CLAUDE.md` loading. inoai does not pass `AGENTS.md` to Claude.
+- `agent.md` is sent on every Turn, so edits apply from the next Turn, including in existing threads.
+- At startup a concurrency probe runs two short, tool-free `haiku` calls in a disposable folder, which count against your subscription usage. If it fails, inoai processes all Turns in one global FIFO queue; startup logs which mode is active.
+- A thread started under a different provider is not resumed, and its notice offers `/inoai reset` or a new thread. If the thread's Claude session can no longer be found, the notice asks you to run `/inoai reset`.
+
+### Running alongside Codex
+
+Give each concurrently running Agent Instance its own Discord bot and token, for example one for `.inoai-connect/` (Codex) and another for `.inoai-connect-claude/`. Reusing one bot token across runtime homes is only safe when just one of them runs at a time.
+
 ## Documentation
 
 - [Proposal](docs/discord-codex-cli-harness-proposal.md) — end-to-end behavior and boundaries.
@@ -140,7 +193,7 @@ npm start -- ui --connect-dir .inoai-connect-planner
 
 ## Deferred after V1
 
-- Claude CLI, OpenCode, Slack, and Telegram adapters.
+- OpenCode, Slack, and Telegram adapters.
 - Family access, remote Electron UI access, and cross-Agent-Instance Memory sharing.
 - Scheduled multi-step Tasks.
 - Cross-machine backups and Windows/Linux release packages.

@@ -55,6 +55,37 @@ test("rejects unsupported providers and invalid review settings", () => {
   );
 });
 
+test("accepts the Claude provider with a blank or well-formed optional model", () => {
+  const blank = validateConfiguration({ ...validValues, AGENT_PROVIDER: "claude", CLAUDE_MODEL: "" });
+  assert.equal(blank.agentProvider, "claude");
+  assert.equal(blank.claudeModel, undefined);
+  assert.equal(validateConfiguration({ ...validValues, AGENT_PROVIDER: "claude" }).claudeModel, undefined);
+  for (const model of ["opus", "haiku", "sonnet", "claude-opus-5-5", "claude-sonnet-5-5[1m]", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "claude-opus-5-5[1m]", "us.anthropic.claude:1"]) {
+    assert.equal(validateConfiguration({ ...validValues, AGENT_PROVIDER: "claude", CLAUDE_MODEL: model }).claudeModel, model);
+  }
+});
+
+test("rejects a malformed Claude model and names unsupported agent providers", () => {
+  for (const model of ["opus 4", "sonnet;rm", "$(id)", "a|b", "`x`", "m&n", "x>y", "'q'", "--dangerously-skip-permissions", "-p", "--settings"]) {
+    assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: "claude", CLAUDE_MODEL: model }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /CLAUDE_MODEL must start with a letter or digit and contain only/);
+      return true;
+    });
+  }
+  assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: "opencode" }), (error: unknown) => {
+    assert(error instanceof ConfigurationError);
+    assert.match(error.message, /AGENT_PROVIDER must be codex or claude/);
+    return true;
+  });
+});
+
+test("ignores CLAUDE_MODEL for a Codex home", () => {
+  const configuration = validateConfiguration({ ...validValues, CLAUDE_MODEL: "opus 4" });
+  assert.equal(configuration.agentProvider, "codex");
+  assert.equal(configuration.claudeModel, undefined);
+});
+
 test("rejects an unsupported provider before acquiring the runtime lock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {

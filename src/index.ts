@@ -2,10 +2,11 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { AgentRuntime } from "./agent-runtime.js";
-import { ApprovalRelay } from "./approval-relay.js";
+import { ApprovalRelay, claudePermissionDenialNotifier } from "./approval-relay.js";
+import { ClaudeRuntime } from "./claude-runtime.js";
 import { CodexAppServer } from "./codex-app-server.js";
 import { CodexRuntime } from "./codex-runtime.js";
-import { probeCodexConcurrency } from "./concurrency-probe.js";
+import { probeClaudeConcurrency, probeCodexConcurrency } from "./concurrency-probe.js";
 import { loadConfiguration } from "./config.js";
 import { archiveMessage, bootstrapOwner, claimLegacyApprovalNotice, createEvent, createMemory, createSession, legacyApprovalNotices, listMemories, openDatabase, resetSession, resolveLegacyApprovalNotice, softDeleteMemory } from "./database.js";
 import type { MemoryRecord } from "./database.js";
@@ -21,6 +22,7 @@ export * from "./config.js";
 export * from "./agent-runtime.js";
 export * from "./agent-session.js";
 export * from "./approval-relay.js";
+export * from "./claude-runtime.js";
 export * from "./codex-app-server.js";
 export * from "./codex-runtime.js";
 export * from "./conversation-worker.js";
@@ -188,7 +190,11 @@ export async function startTransport(
         AND users.external_user_id = ? AND users.role = 'owner' AND users.state = 'active' AND users.deleted_at IS NULL`).get(
       request.workspaceId, request.conversationId, request.parentConversationId, request.externalUserId,
     ) as { id: number; agent_session_id: string; project_path: string } | undefined;
-    if (!session) { await request.respond(denied); return; }
+    if (!session) {
+      await request.respond(request.conversationOwnedByBot ? denied
+        : "This thread belongs to another inoai bot. Choose that bot's /inoai command to control it.");
+      return;
+    }
     if (request.command === "status") {
       const counts = instance.database.prepare(`SELECT
         SUM(CASE WHEN direction = 'user' AND state = 'pending' THEN 1 ELSE 0 END) AS queued,
@@ -328,25 +334,38 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   const transport = suppliedTransport ?? createChatTransport(instance.configuration);
   let runtime = suppliedRuntime;
   let approvalRelay: ApprovalRelay | undefined;
+  // A supplied test runtime, or a failed or unavailable probe, leaves the worker in its safe global mode.
+  let probeConcurrency = async () => false;
   try {
     if (!runtime) {
-      const server = await CodexAppServer.connect();
-      runtime = new CodexRuntime(server);
-      approvalRelay = new ApprovalRelay(instance.database, server, transport);
+      switch (instance.configuration.agentProvider) {
+        case "codex": {
+          const server = await CodexAppServer.connect();
+          runtime = new CodexRuntime(server);
+          approvalRelay = new ApprovalRelay(instance.database, server, transport);
+          probeConcurrency = probeCodexConcurrency;
+          break;
+        }
+        case "claude":
+          // The CLI denies prompts itself; the notifier only reports denials. A failed probe keeps global FIFO.
+          runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
+            onPermissionDenied: claudePermissionDenialNotifier(instance.database, transport) });
+          probeConcurrency = () => probeClaudeConcurrency();
+          break;
+      }
     }
   } catch (error) {
     await instance.release();
     throw error;
   }
-  const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, () => {
+  const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {
     console.error("Conversation worker failed; stopping to preserve queue state");
     void shutdown(1).catch((failure: unknown) => {
       console.error(failure instanceof Error ? failure.message : failure);
       process.exitCode = 1;
     });
   }, transport);
-  // A failed or unavailable probe leaves the worker in its safe global mode.
-  const concurrentSessionsValidated = suppliedRuntime ? false : await probeCodexConcurrency();
+  const concurrentSessionsValidated = await probeConcurrency();
   let keepAlive: NodeJS.Timeout | undefined;
   let startup: Promise<ChatTransport> | undefined;
   let cleanup: Promise<void> | undefined;
@@ -393,7 +412,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     }, worker);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
-    if (!suppliedRuntime) console.log(`Codex cross-session concurrency: ${concurrentSessionsValidated ? "enabled" : "unavailable; using global FIFO"}`);
+    if (!suppliedRuntime) console.log(`${runtime.displayName} cross-session concurrency: ${concurrentSessionsValidated ? "enabled" : "unavailable; using global FIFO"}`);
   } catch (error) {
     await shutdown(1);
     if (signaled) return;

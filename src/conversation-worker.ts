@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AgentRuntime } from "./agent-runtime.js";
 import { resumeAgentSession, startAgentSession } from "./agent-session.js";
 import { archiveFailureNotice, archiveResponseChunks, claimNextMessage, claimResponseChunk, confirmResponseChunk, createEvent, failProcessingMessage, failRemainingResponseChunks, failResponseChunk, getSession, listPendingResponseChunks, markRuntimeStarted } from "./database.js";
+import type { Configuration } from "./config.js";
 import type { MessageRecord } from "./database.js";
 import type { RuntimeHome } from "./runtime-home.js";
 import { composeTurnPrompt } from "./prompt-context.js";
@@ -12,6 +13,13 @@ import type { ChatTransport } from "./transport.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
+// A fixed map keeps an arbitrary stored provider value out of the notice text.
+const providerNames: Record<string, string> = { codex: "Codex", claude: "Claude" };
+
+function providerMismatchNotice(storedProvider: string, currentDisplayName: string): string {
+  const owner = Object.hasOwn(providerNames, storedProvider) ? `a ${providerNames[storedProvider]} session` : "a session from a different agent provider";
+  return `This thread belongs to ${owner}. Use /inoai reset to start a new ${currentDisplayName} session here, or start a new thread.`;
+}
 
 export function splitFinalAnswer(answer: string, limit = 2000): string[] {
   if (!answer.trim() || limit < 2) throw new RangeError("Final answer must be nonblank and have a usable limit");
@@ -42,6 +50,7 @@ export class ConversationWorker {
     private readonly database: DatabaseSync,
     private readonly home: RuntimeHome,
     private readonly runtime: AgentRuntime,
+    private readonly agentProvider: Configuration["agentProvider"],
     private readonly onFailure: (error: Error) => void = () => {},
     private readonly transport?: Pick<ChatTransport, "sendMessage" | "showWorking">,
   ) {}
@@ -89,7 +98,7 @@ export class ConversationWorker {
   }
 
   fallbackToGlobal(): void {
-    if (this.mode === "per-session") console.warn("Codex cross-session concurrency disabled; using global FIFO");
+    if (this.mode === "per-session") console.warn(`${this.runtime.displayName} cross-session concurrency disabled; using global FIFO`);
     this.mode = "global";
     this.wake();
   }
@@ -133,6 +142,14 @@ export class ConversationWorker {
     indicator?.unref();
     try {
       if (!session || session.state !== "active") return;
+      if (session.agent_provider !== this.agentProvider) {
+        // Never start or resume another provider's Session; the owner resets or opens a new thread.
+        if (!failProcessingMessage(this.database, message.id, "Agent provider mismatch; replay_safe=false", "conversation-worker")) return;
+        createEvent(this.database, { session_id: session.id, message_id: message.id,
+          event_type: "turn_failed", detail: "reason=provider_mismatch; attempts=0" }, "conversation-worker");
+        archiveFailureNotice(this.database, message.id, providerMismatchNotice(session.agent_provider, this.runtime.displayName));
+        return;
+      }
       const agentSessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.database, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
@@ -160,8 +177,8 @@ export class ConversationWorker {
         if (!failProcessingMessage(this.database, message.id, `Runtime ${outcome.reason}; replay_safe=${outcome.replaySafe}`, "conversation-worker")) return;
         createEvent(this.database, { session_id: session.id, message_id: message.id,
           event_type: "turn_failed", detail: `reason=${outcome.reason}; attempts=${outcome.attempts}` }, "conversation-worker");
-        archiveFailureNotice(this.database, message.id,
-          outcome.reason === "uncertain" || outcome.reason === "timed_out" ? uncertainNotice : failureNotice);
+        archiveFailureNotice(this.database, message.id, outcome.reason === "session_missing" ? outcome.notice
+          : outcome.reason === "uncertain" || outcome.reason === "timed_out" ? uncertainNotice : failureNotice);
       }
     } catch {
       this.fallbackToGlobal();

@@ -40,6 +40,7 @@
 25. **One agent per new request:** accepted. A top-level request mentioning multiple agent bots is unsupported in V1. No bot creates a Session or thread, selects a winner, or splits the request; the user sends separate top-level messages instead.
 26. **Approval controls:** deferred beyond V1. No Discord **Approve**/**Reject** buttons are posted for Codex actions; every approval request is declined with a safe notice. Do not substitute a command allowlist or blind approval. Legacy pending rows/buttons from earlier local builds must be failed and made inert during recovery.
 27. **Release platform:** accepted. V1 packages the core executable and Electron UI for macOS only. Windows and Linux artifacts are deferred until macOS deployment is proven.
+28. **Claude runtime:** accepted for Phase 5a. Claude CLI becomes a second V1 Agent Runtime with Codex parity: headless `claude -p` per Turn (ADR 0008), fail-closed permission prompts (ADR 0007), subscription sign-in verified at startup, `agent.md` appended each Turn, per-thread provider-mismatch refusal, a tool-free concurrency probe, and the same three-layer acceptance bar as Phase 5.
 
 ## Checks before implementation
 

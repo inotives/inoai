@@ -29,6 +29,8 @@ export type ThreadControl = {
   conversationId: string;
   parentConversationId: string | null;
   externalUserId: string;
+  /** Whether this bot created the conversation; another inoai bot's thread is not. */
+  conversationOwnedByBot: boolean;
   respond(text: string): Promise<void>;
 };
 
@@ -113,6 +115,7 @@ export class DiscordTransport implements ChatTransport {
           command, workspaceId: interaction.guildId, conversationId: interaction.channelId,
           parentConversationId: interaction.channel?.isThread() ? interaction.channel.parentId : null,
           externalUserId: interaction.user.id,
+          conversationOwnedByBot: interaction.channel?.isThread() === true && interaction.channel.ownerId === this.client.user?.id,
           respond: (text) => interaction.editReply({ content: text, allowedMentions: { parse: [] } }).then(() => undefined),
         });
       })().catch(() => { void interaction.editReply({ content: "Control unavailable. Please try again." }).catch(() => undefined); });
