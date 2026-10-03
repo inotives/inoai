@@ -252,6 +252,21 @@ Phase 6 acceptance requires deterministic fake-runtime tests and one live seeded
 - A review runs in a throwaway session with tools disabled and never in the thread's own Agent Session; Codex and OpenCode homes record a skip and keep their cursors.
 - Live: a seeded Claude archive with an owner "remember X", a quoted fake instruction, a fake secret, and a tool-triggering phrase yields Memory for X with provenance, ignores the rest, and runs no tool.
 
+## Phase 6b — Codex Memory Review verification
+
+**Purpose:** verify the Phase 6 review path against the real Codex CLI without weakening its fail-closed security boundary.
+
+Phase 6b uses synthetic, secret-free archived Messages and no Discord run. The probe includes instruction-like and tool-triggering transcript text. The 2026-10-03 probe against `codex-cli 0.159.3` observed 11 MCP startup notifications (6 `starting`, 5 `ready`) in the authenticated read-only, approval-`never`, ephemeral app-server session. Although the turn made no tool request and changed no disposable project files, MCP absence was not proven, so Codex review support remains disabled. The existing wiring records a non-secret skip and leaves the review cursor unchanged. If a future probe proves a tool/MCP-free session, the boundary can be revisited.
+
+### Tasks
+
+1. Probe the installed Codex CLI with a synthetic injection-like review fixture and capture whether its effective session is tool/MCP-free.
+2. If the probe is safe, enable and test Codex review execution; otherwise preserve the existing skip path and document the blocker.
+3. Run the Phase 6 review-engine acceptance suite against Codex-compatible behavior, including cursor preservation on failure and no secret leakage.
+4. Update the runtime documentation and ADR with the verified result.
+
+**Testable outcome:** Codex Memory Review remains explicitly skipped with evidence and an unchanged cursor until a tool/MCP-free throwaway session is proven; no Discord access is required.
+
 ## Phase 7 — Separate Electron analytics UI
 
 **Purpose:** provide a separately started Electron UI to inspect archived conversations, Memory, queue health, and review results, and to manage Manual Memory Entries.

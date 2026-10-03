@@ -224,7 +224,7 @@ Reviews are silent: they never post to Discord. Until the Phase 7 UI, inspect Me
 Runtime support:
 
 - **Claude** is the only runtime that reviews in V1. Each review is a throwaway, text-only `claude -p` run in a temporary folder with no tools, no MCP servers, no saved session, `--safe-mode`, and a fixed inoai system prompt, so your `CLAUDE.md`, skills, plugins, hooks, and Claude memory are not used. A run that still reports tools, MCP servers, or memory paths fails. Reviews count against your Claude subscription usage.
-- **Codex** review code is present but disabled until a check confirms Codex can run reviews with MCP servers off.
+- **Codex** review code is present but disabled. The 2026-10-03 probe against `codex-cli 0.159.3` saw 11 MCP startup notifications (6 `starting`, 5 `ready`) in the authenticated throwaway app-server session, so it did not prove MCP-free execution. No tool request or disposable-project file change occurred, but a correct-looking answer is insufficient to enable reviews; see [ADR 0011](docs/adr/0011-codex-memory-reviews-need-tool-free-proof.md).
 - **OpenCode** reviews are not supported.
 
 Codex and OpenCode homes record a `memory_review_skipped` Event and keep their review cursors, so no Messages are marked reviewed without a review.
