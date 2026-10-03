@@ -17,15 +17,20 @@ class FakeServer {
   interruptCompletes = true;
   interruptFails = false;
   rejectDuplicateInterrupt = false;
+  rejectTurnStart = false;
+  private state: "ready" | "stopped" = "ready";
   private notices = new Set<(method: string, params: unknown) => void>();
   private failures = new Set<(error: Error) => void>();
-  health(): { state: "ready" } { return { state: "ready" }; }
-  async close(): Promise<void> { this.closes++; }
+  health(): { state: "ready" | "stopped" } { return { state: this.state }; }
+  async close(): Promise<void> { this.closes++; this.state = "stopped"; }
   async request(method: string, params: Record<string, unknown>): Promise<unknown> {
     this.sent.push({ method, params });
     if (method === "thread/start") return { thread: { id: "real-thread" } };
     if (method === "thread/resume") return { thread: { id: params.threadId } };
-    if (method === "turn/start") return { turn: { id: `turn-${this.sent.filter((entry) => entry.method === "turn/start").length}` } };
+    if (method === "turn/start") {
+      if (this.rejectTurnStart) { this.state = "stopped"; throw new Error("Codex app-server exited"); }
+      return { turn: { id: `turn-${this.sent.filter((entry) => entry.method === "turn/start").length}` } };
+    }
     if (method === "turn/interrupt") {
       if (this.rejectDuplicateInterrupt && this.sent.filter((entry) => entry.method === "turn/interrupt").length > 1) throw new Error("Duplicate interruption rejected");
       if (this.interruptFails) throw new Error("Codex interruption failed");
@@ -136,15 +141,63 @@ test("failed interruption after early stream closure leaves the Session locked",
   await assert.rejects(runtime.runTurn("real-thread", "overlap")[Symbol.asyncIterator]().next(), /active turn/);
 });
 
-test("silent post-start stream times out without releasing its active Session", async () => {
+test("silent post-start stream times out without replaying the uncertain Turn", async () => {
   const fake = new FakeServer();
   const runtime = new CodexRuntime(fake.client(), 20);
   await runtime.createSession("/project", "personality");
   const first = runtime.runTurn("real-thread", "first")[Symbol.asyncIterator]();
   await assert.rejects(first.next(), (error: unknown) => error instanceof RuntimeFailure && error.kind === "timed_out" && !error.replaySafe);
   assert.equal(fake.closes, 1);
-  await assert.rejects(runtime.runTurn("real-thread", "overlap")[Symbol.asyncIterator]().next(), /active turn/);
   assert.equal(fake.sent.filter(({ method }) => method === "turn/start").length, 1);
+});
+
+test("reconnects after timeout and resumes the persisted Session without replaying the failed Turn", async () => {
+  const first = new FakeServer();
+  let replacement: FakeServer | undefined;
+  let reconnects = 0;
+  const runtime = new CodexRuntime(first.client(), 20, 600_000, false, async () => {
+    reconnects++;
+    replacement = new FakeServer();
+    return replacement.client();
+  });
+  await runtime.createSession("/project", "personality");
+  const failed = runtime.runTurn("real-thread", "first")[Symbol.asyncIterator]();
+  await assert.rejects(failed.next(), (error: unknown) => error instanceof RuntimeFailure && error.kind === "timed_out" && !error.replaySafe);
+
+  await runtime.resumeSession("real-thread", "/project", "personality");
+  const resumed = runtime.runTurn("real-thread", "second")[Symbol.asyncIterator]();
+  const answer = resumed.next();
+  replacement!.emit("item/completed", { threadId: "real-thread", turnId: "turn-1", item: { type: "agentMessage", text: "recovered" } });
+  replacement!.emit("turn/completed", { threadId: "real-thread", turn: { id: "turn-1", status: "completed" } });
+  assert.deepEqual((await answer).value, { type: "answer", text: "recovered" });
+  assert.equal(reconnects, 1);
+  assert.equal(first.sent.filter(({ method }) => method === "turn/start").length, 1);
+  assert.equal(replacement!.sent.filter(({ method }) => method === "thread/resume").length, 1);
+  assert.equal(replacement!.sent.filter(({ method }) => method === "turn/start").length, 1);
+  await resumed.next();
+});
+
+test("releases the Session guard when the server dies before returning a Turn ID", async () => {
+  const first = new FakeServer();
+  first.rejectTurnStart = true;
+  let replacement: FakeServer | undefined;
+  const runtime = new CodexRuntime(first.client(), 20, 600_000, false, async () => {
+    replacement = new FakeServer();
+    return replacement.client();
+  });
+  await runtime.createSession("/project", "personality");
+  const failed = runtime.runTurn("real-thread", "uncertain")[Symbol.asyncIterator]();
+  await assert.rejects(failed.next(), /app-server exited/);
+
+  await runtime.resumeSession("real-thread", "/project", "personality");
+  const resumed = runtime.runTurn("real-thread", "later")[Symbol.asyncIterator]();
+  const answer = resumed.next();
+  replacement!.emit("item/completed", { threadId: "real-thread", turnId: "turn-1", item: { type: "agentMessage", text: "recovered" } });
+  replacement!.emit("turn/completed", { threadId: "real-thread", turn: { id: "turn-1", status: "completed" } });
+  assert.deepEqual((await answer).value, { type: "answer", text: "recovered" });
+  assert.equal(first.sent.filter(({ method }) => method === "turn/start").length, 1);
+  assert.equal(replacement!.sent.filter(({ method }) => method === "turn/start").length, 1);
+  await resumed.next();
 });
 
 test("cancel then early stream closure shares one interrupt and releases after terminal notice", async () => {

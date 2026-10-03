@@ -1,6 +1,6 @@
 # inoai implementation phases
 
-V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
+V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. Phase 6c adds an optional analytics-sync scheduler; it does not make cloud access an operational dependency or accept remote UI access.
 
 ## Phase 1 — Scaffolding
 
@@ -266,6 +266,24 @@ Phase 6b uses synthetic, secret-free archived Messages and no Discord run. The p
 4. Update the runtime documentation and ADR with the verified result.
 
 **Testable outcome:** Codex Memory Review remains explicitly skipped with evidence and an unchanged cursor until a tool/MCP-free throwaway session is proven; no Discord access is required.
+
+## Phase 6c — BigQuery analytics sync
+
+**Purpose:** export an analytics-safe, one-way copy of local SQLite data to BigQuery without making cloud access an operational dependency.
+
+SQLite remains the operational source of truth. Sync is optional, asynchronous, and configurable; an instance without BigQuery configuration or Google Application Default Credentials continues to run normally. Multiple runtime homes share BigQuery tables and identify their rows with a stable generated `agent_instance_id` and a non-unique `agent_name` (defaulting to the runtime-home folder name). Exported text uses the existing secret-redaction rules; raw tool input/output and credentials are never exported. Soft deletes are represented as tombstones rather than physical deletes. Sync failures are recorded locally and retried without delaying Discord Turns or Memory Reviews.
+
+### Tasks
+
+1. Add persistent runtime metadata for `agent_instance_id` and configurable `agent_name`.
+2. Add optional BigQuery configuration and an incremental, idempotent exporter for Conversations, Sessions, Messages, Memory, Recaps, and non-secret Events.
+3. Add local sync watermarks, retry/backoff, soft-delete propagation, and non-blocking failure events.
+4. Document Google ADC setup for repository clones and verify the exporter with a disposable BigQuery test project or documented offline fallback.
+5. Add analytics schema/partitioning conventions using a configurable project and dataset, with tables clustered by `agent_instance_id`.
+
+**Testable outcome:** configured instances incrementally export redacted analytics data to BigQuery; unconfigured or unavailable BigQuery never prevents normal local operation.
+
+**Current implementation boundary:** local metadata, configuration validation, table definitions, exporter, watermarks, retry state, scheduler, and fake-sink acceptance are implemented. The production `@google-cloud/bigquery` client uses ADC and is constructed from configured project settings; `src/index.ts` starts the scheduler after transport startup and stops it during shutdown. No live cloud credentials are required by the offline test suite; a live export still requires host ADC, IAM, project, and dataset setup.
 
 ## Phase 7 — Separate Electron analytics UI
 

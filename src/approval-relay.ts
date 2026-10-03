@@ -15,29 +15,37 @@ export const legacyApprovalNotice = "A saved Codex approval could not be resumed
 const notice = permissionDeclinedNotice("Codex");
 
 export class ApprovalRelay {
-  private readonly removeRequest: () => void;
+  private server: CodexAppServer;
+  private removeRequest = (): void => {};
 
   constructor(
     private readonly database: DatabaseSync,
-    private readonly server: CodexAppServer,
+    server: CodexAppServer,
     private readonly transport: ChatTransport,
   ) {
+    this.server = server;
+    this.bind(server);
+  }
+
+  bind(server: CodexAppServer): void {
+    this.removeRequest();
+    this.server = server;
     this.removeRequest = server.addRequestListener((method, params, id) => {
       const request = params as Request | null;
       if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-        void this.decline(id, request?.threadId, { decision: "decline" }).catch(() => {});
+        void this.decline(server, id, request?.threadId, { decision: "decline" }).catch(() => {});
       } else if (method === "item/permissions/requestApproval") {
-        void this.decline(id, request?.threadId, { permissions: {}, scope: "turn" }).catch(() => {});
+        void this.decline(server, id, request?.threadId, { permissions: {}, scope: "turn" }).catch(() => {});
       } else if (method === "applyPatchApproval" || method === "execCommandApproval") {
-        void this.decline(id, request?.conversationId, { decision: { denied: { rejection: "Approval unavailable via Discord" } } }).catch(() => {});
+        void this.decline(server, id, request?.conversationId, { decision: { denied: { rejection: "Approval unavailable via Discord" } } }).catch(() => {});
       }
     });
   }
 
   close(): void { this.removeRequest(); }
 
-  private async decline(requestId: number | string, threadId: string | undefined, response: unknown): Promise<void> {
-    try { this.server.respond(requestId, response); } catch { return; }
+  private async decline(server: CodexAppServer, requestId: number | string, threadId: string | undefined, response: unknown): Promise<void> {
+    try { server.respond(requestId, response); } catch { return; }
     if (typeof threadId !== "string") return;
     const session = this.database.prepare(`SELECT id FROM sessions WHERE agent_provider = 'codex' AND agent_session_id = ?
       AND state = 'active' AND deleted_at IS NULL`).get(threadId) as { id: number } | undefined;

@@ -25,6 +25,7 @@ import {
   listMessages,
   messagesForMemoryReview,
   openDatabase,
+  getAgentInstanceMetadata,
   markRuntimeStarted,
   resetSession,
   softDeleteMemory,
@@ -192,7 +193,7 @@ test("creates the documented v1 schema safely on each open", async () => {
       const objects = database.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as Array<{ name: string }>;
       const names = new Set(objects.map(({ name }) => name));
       for (const name of [
-        "users", "sessions", "messages", "events", "memories", "memory_reviews", "approvals",
+        "agent_instance_metadata", "users", "sessions", "messages", "events", "memories", "memory_reviews", "approvals",
         "one_active_session_per_conversation", "unique_initiating_message", "unique_agent_session",
         "unique_external_message", "pending_user_messages", "messages_by_session", "events_by_session",
         "pending_approvals_by_session", "due_memory_reviews", "active_memories",
@@ -201,6 +202,36 @@ test("creates the documented v1 schema safely on each open", async () => {
       database.close();
     }
     openDatabase(home).close();
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("persists one stable Agent Instance metadata row per runtime home", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const firstHome = await bootstrapRuntimeHome(deployment, ".inoai-connect-planner");
+    const first = openDatabase(firstHome, { agentProvider: "codex", agentName: "planner" });
+    const firstMetadata = getAgentInstanceMetadata(first);
+    assert.equal(firstMetadata.agent_name, "planner");
+    assert.equal(firstMetadata.runtime_provider, "codex");
+    assert.equal(firstMetadata.runtime_home_name, ".inoai-connect-planner");
+    assert.match(firstMetadata.agent_instance_id, /^[0-9a-f-]{36}$/);
+    assert.equal((first.prepare("SELECT COUNT(*) AS count FROM agent_instance_metadata").get() as { count: number }).count, 1);
+    first.close();
+
+    const restarted = openDatabase(firstHome);
+    assert.equal(getAgentInstanceMetadata(restarted).agent_instance_id, firstMetadata.agent_instance_id);
+    assert.equal(getAgentInstanceMetadata(restarted).runtime_provider, "codex");
+    restarted.close();
+
+    const secondHome = await bootstrapRuntimeHome(deployment, ".inoai-connect-claude");
+    const second = openDatabase(secondHome, { agentProvider: "claude" });
+    const secondMetadata = getAgentInstanceMetadata(second);
+    assert.notEqual(secondMetadata.agent_instance_id, firstMetadata.agent_instance_id);
+    assert.equal(secondMetadata.agent_name, ".inoai-connect-claude");
+    assert.equal(secondMetadata.runtime_provider, "claude");
+    second.close();
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }
