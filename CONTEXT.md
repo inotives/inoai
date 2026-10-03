@@ -45,11 +45,11 @@ A reviewed, durable fact or preference supplied to relevant Agent Sessions.
 _Avoid_: Transcript, message log
 
 **Memory Review**:
-A low-priority distillation of new Conversation history into Memory actions.
+A low-priority distillation of one Agent Session's newly archived Messages into a Recap and Memory actions.
 _Avoid_: Summary, replay
 
 **Recap**:
-A timestamped summary of one Conversation's archived Messages since its prior Recap.
+A timestamped summary of one Agent Session's archived Messages since that Session's prior Recap. After a reset, the ended Session and the new Session in the same Conversation are recapped separately.
 _Avoid_: Memory, transcript
 
 **Memory Signal**:

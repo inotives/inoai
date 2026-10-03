@@ -13,6 +13,7 @@ import type { IncomingMessage } from "../transport.js";
 import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages } from "../database.js";
 import { run, start, startTransport } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
+import type { SchedulerClock } from "../memory-review-scheduler.js";
 
 class FakeClient extends EventEmitter {
   user = { id: "inoai" };
@@ -175,6 +176,12 @@ const validEnv = [
   "MEMORY_REVIEW_TIME=06:00",
   "MEMORY_REVIEW_MAX_CHARS=20000",
 ].join("\n");
+
+// Wired run() tests pin the review scheduler before the 06:00 review time with no timer, so no cycle or review can
+// start whatever the time of day.
+const beforeReviewTime = { schedulerClock: {
+  now: () => new Date(2026, 9, 3, 5, 0), setInterval: () => undefined, clearInterval: () => {},
+} satisfies SchedulerClock };
 
 const fakeRuntime: AgentRuntime = {
   displayName: "Codex", loginHint: "codex login",
@@ -362,7 +369,7 @@ test("CLI shutdown drains an accepted request before closing SQLite", async () =
     const creating = new Promise<void>((resolve) => { threadStarted = resolve; });
     fake.threadGate = new Promise<void>((resolve) => { finishThread = resolve; });
     fake.threadStarted = threadStarted;
-    await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime);
+    await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime, beforeReviewTime);
     fake.emit(Events.MessageCreate, {
       guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
       channel: { isThread: () => false }, reference: null,
@@ -602,7 +609,7 @@ test("CLI SIGTERM during the health post releases SQLite and the runtime lock", 
     const sending = new Promise<void>((resolve) => { sendStarted = resolve; });
     fake.sendGate = new Promise<void>((resolve) => { finishSend = resolve; });
     fake.sendStarted = sendStarted;
-    const running = run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime);
+    const running = run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime, beforeReviewTime);
     await sending;
     process.emit("SIGTERM");
     finishSend();
@@ -629,7 +636,7 @@ test("CLI exits and releases the runtime lock after terminal Discord failure", a
     await writeFile(home.envFile, validEnv);
     process.chdir(directory);
     const fake = new FakeClient();
-    await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime);
+    await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime, beforeReviewTime);
     fake.emit(Events.ShardDisconnect);
     for (let attempt = 0; attempt < 100; attempt++) {
       if (await stat(home.lockFile).then(() => false, () => true)) break;
@@ -791,7 +798,7 @@ test("Claude startup with the subscription login wires the runtime and a denied 
     console.log = (...args: unknown[]) => { logged.push(args); };
     console.error = (...args: unknown[]) => { logged.push(args); };
     try {
-      await run([], new DiscordTransport("token", fake as unknown as Client));
+      await run([], new DiscordTransport("token", fake as unknown as Client), undefined, beforeReviewTime);
       fake.emit(Events.MessageCreate, {
         guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
         channel: { isThread: () => false }, reference: null,
@@ -818,6 +825,8 @@ test("Claude startup with the subscription login wires the runtime and a denied 
     try {
       const events = listEvents(restarted.database);
       assert.equal(events.filter((event) => event.event_type === "approval_unsupported").length, 1);
+      // The pinned scheduler clock keeps the daily cycle from running against the fake CLI.
+      assert.equal(events.some((event) => event.event_type.startsWith("memory_review")), false);
       assert.equal(/sentinel|rm -rf/i.test(JSON.stringify(restarted.database.prepare("SELECT * FROM events").all())), false);
       assert.equal(restarted.database.prepare("SELECT agent_provider FROM sessions").get()?.agent_provider, "claude");
     } finally { await restarted.release(); }
@@ -870,7 +879,7 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
     const logged: unknown[] = [];
     console.log = (...args: unknown[]) => { logged.push(args); };
     console.error = (...args: unknown[]) => { logged.push(args); };
-    await run([], new DiscordTransport("token", fake as unknown as Client));
+    await run([], new DiscordTransport("token", fake as unknown as Client), undefined, beforeReviewTime);
     fake.emit(Events.MessageCreate, {
       guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
       channel: { isThread: () => false }, reference: null,

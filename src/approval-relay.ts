@@ -6,7 +6,13 @@ import type { ChatTransport } from "./transport.js";
 
 type Request = { threadId?: string; conversationId?: string };
 
-const notice = "Codex permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local Codex for the blocked action.";
+export function permissionDeclinedNotice(name: string): string {
+  return `${name} permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local ${name} for the blocked action.`;
+}
+
+export const legacyApprovalNotice = "A saved Codex approval could not be resumed after restart. No action was approved. Please make a fresh request.";
+
+const notice = permissionDeclinedNotice("Codex");
 
 export class ApprovalRelay {
   private readonly removeRequest: () => void;
@@ -51,7 +57,7 @@ export class ApprovalRelay {
 // The headless Claude and OpenCode CLIs deny prompts themselves; this only reports each denied Turn once.
 // It receives a count, never tool names or input, so nothing raw can reach SQLite or Discord.
 function permissionDenialNotifier(database: DatabaseSync, transport: ChatTransport, provider: "claude" | "opencode", name: string): (agentSessionId: string, count: number) => void {
-  const notice = `${name} permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local ${name} for the blocked action.`;
+  const notice = permissionDeclinedNotice(name);
   return (agentSessionId, count) => {
     const session = database.prepare(`SELECT id FROM sessions WHERE agent_provider = ? AND agent_session_id = ?
       AND state = 'active' AND deleted_at IS NULL`).get(provider, agentSessionId) as { id: number } | undefined;

@@ -217,7 +217,8 @@ export function killProbe(child: ChildProcess): void {
 }
 
 // Deletes the folder only when it holds nothing but an empty `memory/` directory (no session .jsonl or anything else).
-async function removeProbeProjectFolder(folder: string): Promise<void> {
+// A missing folder is fine. Also used by Claude Memory Reviews, which run in the same kind of disposable cwd.
+export async function removeProbeProjectFolder(folder: string): Promise<void> {
   let stats;
   try { stats = await lstat(folder); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
