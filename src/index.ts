@@ -8,6 +8,7 @@ import { CodexAppServer } from "./codex-app-server.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "./concurrency-probe.js";
 import { loadConfiguration } from "./config.js";
+import { BigQuerySyncScheduler, createBigQueryClient, type BigQueryClient, type BigQuerySyncClock } from "./bigquery.js";
 import { archiveMessage, bootstrapOwner, claimLegacyApprovalNotice, createEvent, createMemory, createSession, legacyApprovalNotices, listMemories, openDatabase, resetSession, resolveLegacyApprovalNotice, softDeleteMemory } from "./database.js";
 import type { MemoryRecord } from "./database.js";
 import { ConversationWorker } from "./conversation-worker.js";
@@ -23,6 +24,7 @@ import { launchUi } from "./ui.js";
 export const appName = "inoai";
 export * from "./config.js";
 export * from "./agent-runtime.js";
+export * from "./bigquery.js";
 export * from "./agent-session.js";
 export * from "./approval-relay.js";
 export * from "./claude-runtime.js";
@@ -40,8 +42,8 @@ export * from "./ui.js";
 
 // Owner decision D2: only Claude homes review in V1. The wired Codex runtime never enables its review method, so the
 // Memory Review engine skips Codex homes like OpenCode ones.
-export function createCodexRuntime(server: CodexAppServer): CodexRuntime {
-  return new CodexRuntime(server);
+export function createCodexRuntime(server: CodexAppServer, reconnect?: () => Promise<CodexAppServer>, onServerChange?: (server: CodexAppServer) => void): CodexRuntime {
+  return new CodexRuntime(server, 300_000, 600_000, false, reconnect, onServerChange);
 }
 
 export async function validate(launchDirectory = process.cwd(), connectDirectory?: string) {
@@ -50,12 +52,16 @@ export async function validate(launchDirectory = process.cwd(), connectDirectory
   return { runtimeHome, configuration };
 }
 
-export async function start(launchDirectory = process.cwd(), connectDirectory?: string) {
+export type StartDependencies = { bigQueryClient?: BigQueryClient; bigQueryClock?: BigQuerySyncClock };
+
+export async function start(launchDirectory = process.cwd(), connectDirectory?: string, dependencies: StartDependencies = {}) {
   const { runtimeHome, configuration } = await validate(launchDirectory, connectDirectory);
   const release = await acquireRuntimeHomeLock(runtimeHome);
   try {
-    const database = openDatabase(runtimeHome);
+    const database = openDatabase(runtimeHome, { agentName: configuration.agentName, agentProvider: configuration.agentProvider });
     const owner = bootstrapOwner(database, configuration);
+    const bigQueryClient = dependencies.bigQueryClient ?? (configuration.bigQuery ? createBigQueryClient(configuration.bigQuery) : undefined);
+    const bigQueryScheduler = new BigQuerySyncScheduler(database, configuration.bigQuery, bigQueryClient, { clock: dependencies.bigQueryClock });
     const pendingIngestion = new Set<Promise<void>>();
     const instance = {
       runtimeHome,
@@ -63,10 +69,12 @@ export async function start(launchDirectory = process.cwd(), connectDirectory?: 
       database,
       owner,
       pendingIngestion,
+      bigQueryScheduler,
       closing: false,
       release: async () => {
         instance.closing = true;
         await Promise.allSettled([...pendingIngestion]);
+        await bigQueryScheduler.stop();
         database.close();
         await release();
       },
@@ -326,7 +334,7 @@ function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "dele
 }
 
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.
-export type RunDependencies = { schedulerClock?: SchedulerClock };
+export type RunDependencies = { schedulerClock?: SchedulerClock; bigQueryClock?: BigQuerySyncClock; bigQueryClient?: BigQueryClient };
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {
@@ -345,7 +353,10 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     console.log(`inoai configuration is valid: ${runtimeHome.directory}`);
     return;
   }
-  const instance = await start(process.cwd(), parseConnectDirectory(args));
+  const instance = await start(process.cwd(), parseConnectDirectory(args), {
+    bigQueryClock: supplied.bigQueryClock,
+    bigQueryClient: supplied.bigQueryClient,
+  });
   const transport = suppliedTransport ?? createChatTransport(instance.configuration);
   let runtime = suppliedRuntime;
   let approvalRelay: ApprovalRelay | undefined;
@@ -356,7 +367,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       switch (instance.configuration.agentProvider) {
         case "codex": {
           const server = await CodexAppServer.connect();
-          runtime = createCodexRuntime(server);
+          runtime = createCodexRuntime(server, () => CodexAppServer.connect(), (replacement) => approvalRelay?.bind(replacement));
           approvalRelay = new ApprovalRelay(instance.database, server, transport);
           probeConcurrency = probeCodexConcurrency;
           break;
@@ -443,6 +454,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();
+    instance.bigQueryScheduler.start();
     if (!suppliedRuntime) console.log(`${runtime.displayName} cross-session concurrency: ${concurrentSessionsValidated ? "enabled" : "unavailable; using global FIFO"}`);
   } catch (error) {
     await shutdown(1);
