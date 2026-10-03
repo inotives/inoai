@@ -2,14 +2,14 @@
 
 inoai is a local personal-agent bridge: it connects a Discord bot to a locally authenticated coding-agent CLI, beginning with Codex CLI and the owner’s ChatGPT subscription. It stores conversation history and durable agent Memory in SQLite, without using the OpenAI API.
 
-> **Status:** Phases 1–5, 5a, and 5b are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, and the end-to-end conversation worker. Phase 5a adds Claude CLI and Phase 5b adds OpenCode as further runtimes. Daily Memory Review, the Electron app, and V1 hardening remain later work.
+> **Status:** Phases 1–6 (including 5a and 5b) are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, and the end-to-end conversation worker. Phase 5a adds Claude CLI and Phase 5b adds OpenCode as further runtimes. Phase 6 adds the silent Daily Memory Review (Claude homes only in V1). The Electron app and V1 hardening remain later work.
 
 ## V1 in brief
 
 - TypeScript core, Discord transport, and Codex CLI runtime, with Claude CLI (Phase 5a) and OpenCode (Phase 5b) as further runtimes.
 - Discord `@inoai` starts a dedicated thread; follow-up messages in that thread continue the same Agent Session.
 - SQLite persists users, sessions, messages, events, approvals, daily recaps, and shared agent Memory.
-- Memory Review configuration is validated locally; scheduled review execution is deferred.
+- A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory. In V1 only Claude homes run reviews (see [Daily Memory Review](#daily-memory-review)).
 - Codex capability, MCP, sandbox, and approval settings come from the local Codex CLI environment. In V1, every permission request is declined with a fixed safe notice; Discord **Approve** / **Reject** buttons are deferred. Claude and OpenCode follow the same rules with their own local settings.
 - A separate macOS Electron app provides analytics and manual Memory management by opening SQLite directly.
 
@@ -86,7 +86,7 @@ cp .env.sample .inoai-connect/.env
 npm run validate
 ```
 
-`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex`, `claude`, or `opencode`, a well-formed optional `CLAUDE_MODEL`, local `HH:MM` review time, and a positive review limit. It does not contact Discord, Codex, Claude, or OpenCode.
+`npm run validate` is offline: it checks required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER=codex`, `claude`, or `opencode`, a well-formed optional `CLAUDE_MODEL`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord, Codex, Claude, or OpenCode.
 
 Start the local core after validation:
 
@@ -129,6 +129,46 @@ The macOS UI bundle is a sibling deployment artifact, not runtime-home data. Fro
 npm start -- ui
 npm start -- ui --connect-dir .inoai-connect-planner
 ```
+
+## Daily Memory Review
+
+Once a day, inoai reviews each Agent Session's Messages since that Session's last review. The review writes one Recap and may add, update, or delete Memory entries ([ADR 0010](docs/adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)).
+
+### What a review keeps
+
+- A new Memory needs an explicit request in one of your own Messages, such as "remember that…", "please note…", or "keep this in mind", or the same pattern in at least two earlier Recaps.
+- Quoted, fenced, or inline-code text and agent replies never count as your request, and secret-like text is always dropped; the model is told to leave out one-off requests. Pasted text without quotes that contains a request like "Remember to…" cannot be told apart from your own request and may still count.
+- Deleting a review-made Memory needs evidence: one of your Messages in the reviewed range or at least two earlier Recaps. Replacing one needs the same evidence as a new Memory.
+- Reviews never change Manual Memory Entries. inoai checks every action the model proposes and drops the ones that fail.
+
+### When it runs
+
+- After `MEMORY_REVIEW_TIME` (local `HH:MM`, sample `06:00`), at most once per local date. A missed time is caught up at startup or after the machine wakes.
+- Chat comes first. A review starts only when no chat Message is waiting or being answered, and a new chat Message interrupts it. An interrupted review goes back in the queue without using a retry; after five interruptions in a day it waits for the next day's run.
+- A failed review is retried after 1, 2, and 4 hours, then waits for the next day's run.
+- `MEMORY_REVIEW_MAX_CHARS` sets how much text the model reads at a time; long ranges are split into chronological parts.
+
+### Checking results
+
+Reviews are silent: they never post to Discord. Until the Phase 7 UI, list active Memory with:
+
+```sh
+npm start -- memory list
+```
+
+Each entry shows `origin` (`manual` or `review`), and review-made entries carry their `review_id` and `source_message_id`. `npm start -- memory delete <id>` removes either kind. Recaps (`memory_reviews`) and non-secret outcome Events (`memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, `memory_review_skipped`) are in `inoai.sqlite`.
+
+### Runtime support
+
+- **Claude:** the only runtime that reviews in V1. Each review is a throwaway, text-only `claude -p` run in a temporary folder: no tools, no MCP servers, no saved session, `--safe-mode`, and a fixed inoai system prompt. Your `CLAUDE.md`, skills, plugins, hooks, and Claude memory are not used, and a run that still reports tools, MCP servers, or memory paths fails. Reviews count against your Claude subscription usage.
+- **Codex:** review code is present but disabled until a check confirms Codex can run reviews with MCP servers off.
+- **OpenCode:** reviews are not supported.
+
+Codex and OpenCode homes record a `memory_review_skipped` Event and keep their review cursors where they are, so no Messages are marked reviewed without a review.
+
+### Data flow
+
+A review sends archived Message text, current Memory, and recent Recaps to the runtime's provider (Anthropic, for Claude homes). Lines with secret-like text are replaced with `[redacted: secret-like text]` first. inoai stores only the Recap and accepted Memory entries, never the prompt or the model's raw reply.
 
 ## Claude runtime
 
@@ -173,7 +213,7 @@ Anthropic's [Agent SDK documentation](https://code.claude.com/docs/en/agent-sdk/
 
 ### Behavior
 
-- Permission prompts fail closed. The CLI denies any action your Claude settings do not already allow, and the thread gets a fixed notice to use local Claude for the blocked action ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)). Your Claude settings, MCP servers, skills, and permission rules apply unchanged.
+- Permission prompts fail closed. The CLI denies any action your Claude settings do not already allow, and the thread gets a fixed notice to use local Claude for the blocked action ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)). Your Claude settings, MCP servers, skills, and permission rules apply unchanged to Turns; Memory Reviews run without them (see [Daily Memory Review](#daily-memory-review)).
 - Project guidance comes from Claude's own `CLAUDE.md` loading. inoai does not pass `AGENTS.md` to Claude.
 - `agent.md` is sent on every Turn, so edits apply from the next Turn, including in existing threads.
 - At startup a concurrency probe runs two short, tool-free `haiku` calls in a disposable folder, which count against your subscription usage. If it fails, inoai processes all Turns in one global FIFO queue; startup logs which mode is active.
@@ -235,9 +275,25 @@ Give each concurrently running Agent Instance its own Discord bot and token, for
 - [Proposal](docs/discord-codex-cli-harness-proposal.md) — end-to-end behavior and boundaries.
 - [Implementation phases](docs/implementation-phases.md) — delivery plan and test scenarios.
 - [SQLite schema](docs/sqlite-schema.md) — persisted data model and audit rules.
-- [Repository structure](docs/repository-structure.md) — source and deployment layout.
+- [Repository structure](docs/repository-structure.md) — the initial planned source and deployment layout (see the current source map below).
 - [Plan review](docs/plan-review.md) — accepted product decisions.
 - [Domain language](CONTEXT.md) — shared terminology.
+- [Architecture decisions](docs/adr/) — ADRs 0001–0010, including provider seams, fail-closed approvals, the headless Claude and OpenCode adapters, and text-only Memory Reviews.
+- CLI spike records — verified headless contracts for [Claude](docs/phase-5a-claude-cli-spike.md), [OpenCode](docs/phase-5b-opencode-cli-spike.md), and [Claude Memory Reviews](docs/phase-6-claude-review-spike.md).
+
+### Current source map
+
+- `src/index.ts`: CLI entry, startup and shutdown wiring, provider switch, Manual Memory commands.
+- `src/config.ts`, `src/runtime-home.ts`: `.env` validation and runtime-home bootstrap and lock.
+- `src/transport.ts`, `src/inbound-policy.ts`: Discord transport and inbound routing rules.
+- `src/conversation-worker.ts`, `src/runtime-turn.ts`, `src/agent-session.ts`, `src/prompt-context.ts`: per-Session FIFO worker, Turn retries and notices, Agent Session binding, and Memory context.
+- `src/agent-runtime.ts`: the provider-neutral runtime seam.
+- `src/codex-runtime.ts`, `src/codex-app-server.ts`, `src/claude-runtime.ts`, `src/opencode-runtime.ts`: the three runtime adapters.
+- `src/approval-relay.ts`: fail-closed permission notices.
+- `src/concurrency-probe.ts`: startup concurrency probes.
+- `src/memory-review.ts`, `src/memory-review-scheduler.ts`: Daily Memory Review engine and scheduler.
+- `src/database.ts`: SQLite schema and persisted state.
+- `src/ui.ts`: launcher for the separate Electron UI.
 
 ## Deferred after V1
 

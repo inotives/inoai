@@ -26,12 +26,17 @@ const authenticationErrors = new Set(["provider.auth"]);
 const usageErrors = new Set(["provider.rate-limit", "provider.quota"]);
 // The fixed text of a headless auto-rejection. stderr echoes the same rejections with raw resources and is never read.
 const permissionRejection = "This non-interactive run cannot ask the user for permission";
+// Exported so the Memory Review can recognise this archived notice by its exact text.
+export const openCodeAuthenticationNotice = "OpenCode could not authenticate with its configured provider, or the free tier refused the request. Check opencode auth login locally, then send a fresh request.";
 
 export class OpenCodeRuntime implements AgentRuntime {
   readonly displayName = "OpenCode";
   readonly loginHint = "opencode auth login";
   // A free-tier refusal also surfaces as provider.auth, so the login hint alone would mislead (see the Phase 5b spike).
-  readonly authenticationNotice = "OpenCode could not authenticate with its configured provider, or the free tier refused the request. Check opencode auth login locally, then send a fresh request.";
+  readonly authenticationNotice = openCodeAuthenticationNotice;
+  // Memory Reviews are unsupported: OpenCode has no proven tool-free mode, and its defaults allow shell (ADR 0010).
+  // Callers skip the review before doing any work; nothing is spawned.
+  readonly review = undefined;
   private readonly sessions = new Map<string, SessionState>();
   private readonly active = new Map<string, ActiveTurn>();
   private readonly executable: string;

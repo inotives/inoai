@@ -112,3 +112,32 @@ test("unsupported Codex approvals fail closed without leaking arbitrary literals
     } finally { relay.close(); await server.close(); database.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("approval requests for a Codex review thread are declined without touching SQLite Sessions or Discord", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-approval-review-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    const database = openDatabase(home);
+    const fake = new FakeProcess();
+    const server = await CodexAppServer.connect({ spawnProcess: () => fake.child() });
+    const runtime = new CodexRuntime(server, undefined, undefined, true);
+    const discord = new FakeDiscord();
+    const relay = new ApprovalRelay(database, server, discord.transport());
+    try {
+      const counts = () => JSON.stringify(["sessions", "messages", "events", "approvals"].map((table) =>
+        (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count));
+      const before = counts();
+      const review = runtime.review!("review prompt");
+      while (!fake.sent.some((entry) => entry.method === "turn/start")) await tick();
+      await tick();
+      fake.reply({ id: "rpc-review", method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", itemId: "c", command: "touch pwned.txt" } });
+      await tick();
+      assert.deepEqual(fake.sent.find((entry) => entry.id === "rpc-review"), { id: "rpc-review", result: { decision: "decline" } });
+      fake.reply({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", text: "{}" } } });
+      fake.reply({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
+      assert.equal(await review, "{}");
+      assert.equal(counts(), before);
+      assert.deepEqual(discord.messages, []);
+    } finally { relay.close(); await server.close(); database.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

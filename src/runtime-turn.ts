@@ -9,7 +9,7 @@ export type RuntimeTurnOutcome =
   | { state: "failed"; reason: RuntimeFailure["kind"]; notice: string; attempts: number; replaySafe: boolean };
 
 const maxAttempts = 3;
-function failureNotice(kind: RuntimeFailure["kind"], { displayName: name, loginHint, authenticationNotice }: AgentRuntime): string {
+function failureNotice(kind: RuntimeFailure["kind"], { displayName: name, loginHint, authenticationNotice }: Pick<AgentRuntime, "displayName" | "loginHint" | "authenticationNotice">): string {
   switch (kind) {
     case "authentication": return authenticationNotice ?? `${name} sign-in needs attention. Run ${loginHint} locally, then send a fresh request.`;
     case "usage": return `${name} usage is unavailable. Check your account locally, then send a fresh request.`;
@@ -20,6 +20,8 @@ function failureNotice(kind: RuntimeFailure["kind"], { displayName: name, loginH
     case "session_missing": return `This thread's ${name} session could not be found. Use /inoai reset to start a new session.`;
   }
 }
+
+export { failureNotice as runtimeFailureNotice };
 
 function failureKind(error: unknown): { reason: RuntimeFailure["kind"]; replaySafe: boolean } {
   if (error instanceof RuntimeFailure) return { reason: error.kind, replaySafe: error.replaySafe };

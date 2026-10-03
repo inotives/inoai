@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { AgentRuntime } from "./agent-runtime.js";
-import { ApprovalRelay, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "./approval-relay.js";
+import { ApprovalRelay, claudePermissionDenialNotifier, legacyApprovalNotice, openCodePermissionDenialNotifier } from "./approval-relay.js";
 import { ClaudeRuntime } from "./claude-runtime.js";
 import { CodexAppServer } from "./codex-app-server.js";
 import { CodexRuntime } from "./codex-runtime.js";
@@ -12,6 +12,8 @@ import { archiveMessage, bootstrapOwner, claimLegacyApprovalNotice, createEvent,
 import type { MemoryRecord } from "./database.js";
 import { ConversationWorker } from "./conversation-worker.js";
 import { classifyIncomingMessage } from "./inbound-policy.js";
+import { MemoryReviewScheduler } from "./memory-review-scheduler.js";
+import type { SchedulerClock } from "./memory-review-scheduler.js";
 import { OpenCodeRuntime } from "./opencode-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "./runtime-home.js";
 import { createChatTransport } from "./transport.js";
@@ -29,10 +31,18 @@ export * from "./codex-runtime.js";
 export * from "./conversation-worker.js";
 export * from "./database.js";
 export * from "./inbound-policy.js";
+export * from "./memory-review.js";
+export * from "./memory-review-scheduler.js";
 export * from "./runtime-home.js";
 export * from "./runtime-turn.js";
 export * from "./transport.js";
 export * from "./ui.js";
+
+// Owner decision D2: only Claude homes review in V1. The wired Codex runtime never enables its review method, so the
+// Memory Review engine skips Codex homes like OpenCode ones.
+export function createCodexRuntime(server: CodexAppServer): CodexRuntime {
+  return new CodexRuntime(server);
+}
 
 export async function validate(launchDirectory = process.cwd(), connectDirectory?: string) {
   const runtimeHome = await bootstrapRuntimeHome(launchDirectory, connectDirectory);
@@ -229,7 +239,7 @@ export async function startTransport(
         }
         // Claim before the network send: a crash may omit this notice, but cannot duplicate it.
         if (!claimLegacyApprovalNotice(instance.database, approval.id)) continue;
-        const notice = "A saved Codex approval could not be resumed after restart. No action was approved. Please make a fresh request.";
+        const notice = legacyApprovalNotice;
         const externalMessageId = await transport.sendMessage(approval.conversation_id, notice);
         instance.database.exec("BEGIN IMMEDIATE");
         try {
@@ -315,7 +325,11 @@ function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "dele
   throw new Error("Usage: inoai memory <add <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
 }
 
-export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime): Promise<void> {
+// Tests may supply a scheduler clock so a wired run never depends on the time of day.
+export type RunDependencies = { schedulerClock?: SchedulerClock };
+
+export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
+  supplied: RunDependencies = {}): Promise<void> {
   if (args[0] === "memory") {
     const { operation, argument, connectDirectory } = parseMemoryCommand(args.slice(1));
     const result = await manageMemory(operation, argument, process.cwd(), connectDirectory);
@@ -342,7 +356,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       switch (instance.configuration.agentProvider) {
         case "codex": {
           const server = await CodexAppServer.connect();
-          runtime = new CodexRuntime(server);
+          runtime = createCodexRuntime(server);
           approvalRelay = new ApprovalRelay(instance.database, server, transport);
           probeConcurrency = probeCodexConcurrency;
           break;
@@ -371,6 +385,14 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       process.exitCode = 1;
     });
   }, transport);
+  // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
+  // chat always runs first.
+  const scheduler = new MemoryReviewScheduler(instance.database, runtime, {
+    reviewTime: instance.configuration.memoryReviewTime, maxChars: instance.configuration.memoryReviewMaxChars,
+    clock: supplied.schedulerClock,
+    onFailure: () => console.error("Memory review scheduler failed; the review stays queued"),
+  });
+  worker.onQueueChange(() => scheduler.poke());
   const concurrentSessionsValidated = await probeConcurrency();
   let keepAlive: NodeJS.Timeout | undefined;
   let startup: Promise<ChatTransport> | undefined;
@@ -382,6 +404,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         instance.closing = true;
         await Promise.allSettled([...instance.pendingIngestion]);
         await transport.stop();
+        // Abort an active review and let it settle before the worker closes the runtime.
+        await scheduler.stop();
         await worker.stop();
       } finally {
         await startup?.catch(() => undefined);
@@ -418,6 +442,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     }, worker);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
+    scheduler.start();
     if (!suppliedRuntime) console.log(`${runtime.displayName} cross-session concurrency: ${concurrentSessionsValidated ? "enabled" : "unavailable; using global FIFO"}`);
   } catch (error) {
     await shutdown(1);

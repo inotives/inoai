@@ -223,28 +223,34 @@ Phase 5b acceptance requires deterministic fake-CLI tests and the live Discord s
 
 **Purpose:** distill stable preferences and project decisions from the local archive without adding chat noise.
 
+A Recap covers one Agent Session's archived Messages since that Session's prior Recap. Reviews run text-only in throwaway runtime sessions ([ADR 0010](adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)). Claude is fully supported and live-verified. Codex review support is implemented with the read-only sandbox and approval policy `never` settings but disabled, because a Codex review thread still loads the owner's MCP servers; Codex and OpenCode homes skip reviews and record the skip without moving any cursor.
+
 ### Tasks
 
-1. Schedule a local 06:00 host-time maintenance timer.
-2. Enqueue one review per Conversation with new archived Messages.
-3. Supply the transcript range since the prior recap in chronological 20,000-character windows, plus existing relevant Memory, to the Agent Runtime; aggregate its bounded internal notes at the end.
-4. Compare the recap with relevant prior Recaps and active Memory; persist one timestamped recap plus validated Memory actions transactionally only when an explicit Memory Signal or useful recurrence exists.
-5. Retry a failed Recap up to three times later that day with bounded backoff, then record its final state silently in SQLite.
+1. Spike the installed Claude CLI's text-only review mode in a disposable project: all tools disabled, no MCP servers, no session persistence, the review prompt on stdin, and how reliably a real model returns the required JSON (including fenced or prefixed output). Confirm no tool runs when the transcript contains tool-triggering or instruction-like text.
+2. Add one narrow `AgentRuntime` review method for a single text-only, throwaway prompt returning text. Implement it for Claude (restricting flags from the spike, plus `--safe-mode` and `--system-prompt` with inoai's fixed review instructions replacing the default prompt, failing closed if init still reports memory paths, MCP servers, or tools; owner decisions) and Codex (ephemeral thread, read-only sandbox, approval policy `never`); OpenCode reports reviews as unsupported. Never use a thread's own Agent Session.
+3. Build the review engine: select completed owner and agent Messages in the Session's range (excluding inoai's fixed notices), redact secret-like text, split into chronological `MEMORY_REVIEW_MAX_CHARS` windows with role labels, collect bounded per-window notes in memory, then run a final aggregation with the notes, the owner's explicit memory requests detected by inoai's own signal rule (redacted and bounded, so a request dropped from the notes is not lost), active Memory, and recent agent-wide Recaps within a fixed character budget. Parse a JSON result of one Recap plus `add`, `update`, `delete`, or `ignore` actions.
+4. Validate every action deterministically: an explicit Memory Signal must cite an owner-authored Message in range containing a remember-style phrase; a recurrence must cite at least two prior completed Recaps; `update`/`delete` must name an existing active `origin = review` Memory (Manual Memory Entries are read-only to reviews); source IDs must be in range; bodies are length-capped and pass the secret filter. Drop failing actions as `ignored` with a non-secret reason and apply the rest. Commit the Recap, Memory changes, provenance, and cursor in one transaction.
+5. Schedule the daily cycle: after `MEMORY_REVIEW_TIME` local time, run at most one cycle per local date (recorded as a `memory_review_cycle` Event), catching up once at startup or wake if the time has passed. Enqueue one review per Session with new completed Messages, including ended Sessions with an unreviewed tail. Start a review only when no user Message is pending or processing; a user Message arriving mid-review cancels it and returns it to `pending` without consuming an attempt (recorded as a deferral; after five deferrals in a day the review waits for the next cycle). Retry failed attempts up to three times that day after 1, 2, and 4 hours, then leave the review `failed` until the next cycle. Reviews never post to the chat transport.
+6. Update the README and status for Memory Review behavior, data flow, and per-runtime support.
+7. Run a live seeded review on Claude against a disposable archive.
 
 **Testable outcome:** new archive content can update durable Memory once per day, while ordinary chat work remains higher priority.
 
+Phase 6 acceptance requires deterministic fake-runtime tests and one live seeded Claude review; no Discord run is required because reviews are silent.
+
 **Test scenarios:**
 
-- A Conversation with no new Messages creates no recap.
-- A recap covers only Messages newer than the prior completed recap.
-- An oversized archive range is reviewed in chronological windows and advances the recap cursor only after all windows succeed.
-- A review can add a user-confirmed preference with source provenance.
-- A user request to remember, take note of, or treat a fact as important becomes a Memory candidate during the next recap.
-- An ordinary one-off recap item does not become Memory; a useful repeated pattern may.
-- A secret-like value, transient request, quoted instruction, or unconfirmed model claim is ignored.
-- When a user Message arrives at 06:00, it runs before the review.
-- A failed review remains retryable and creates no Discord message.
-- A failed review retries no more than three times in the same day.
+- A Session with no new Messages creates no Recap; a cycle runs at most once per local date across restarts, and a missed scheduled time is caught up once at startup.
+- A Recap covers only Messages newer than that Session's prior completed Recap; after a reset the ended Session's tail and the new Session are recapped separately.
+- An oversized range is reviewed in chronological windows and advances the cursor only after the whole review commits.
+- An owner's explicit "remember" request becomes Memory with source provenance; quoted or agent-authored "remember" text does not.
+- An ordinary one-off item does not become Memory; a pattern cited across at least two prior Recaps may.
+- A secret-like value, transient request, quoted instruction, or unconfirmed model claim is ignored; a proposed change to a Manual Memory Entry is ignored with a reason.
+- A user Message at the scheduled time runs before the review; a user Message mid-review defers it without consuming an attempt.
+- A failed or unparseable review retries no more than three times in the same day and creates no Discord message.
+- A review runs in a throwaway session with tools disabled and never in the thread's own Agent Session; Codex and OpenCode homes record a skip and keep their cursors.
+- Live: a seeded Claude archive with an owner "remember X", a quoted fake instruction, a fake secret, and a tool-triggering phrase yields Memory for X with provenance, ignores the rest, and runs no tool.
 
 ## Phase 7 — Separate Electron analytics UI
 

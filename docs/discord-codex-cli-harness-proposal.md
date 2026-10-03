@@ -79,6 +79,7 @@ createSession(projectPath, initialPrompt) -> agentSessionId
 runTurn(agentSessionId, prompt) -> streamed events (progress, answer, and, for runtimes that assign their ID late, one session event carrying the real ID)
 cancel(agentSessionId) -> void
 health() -> runtime status
+review?(prompt) -> text   (optional; text-only in a throwaway session per ADR 0010; a runtime without it does not review)
 ```
 
 `AGENT_PROVIDER` selects the Codex adapter, the Claude adapter (Phase 5a), or the OpenCode adapter (Phase 5b). The runtime selector is a simple TypeScript `switch`, not a plugin registry. Adding another adapter later means adding one adapter that satisfies this interface and one selection branch; Discord, SQLite, queueing, dashboard, and memory code stay unchanged.
@@ -172,15 +173,15 @@ Important information can also bypass the daily Recap as a Manual Memory Entry. 
 
 inoai also distills useful memory from everyday conversation automatically. This is a separate, low-priority queue job:
 
-1. Once per day at `MEMORY_REVIEW_TIME` in the host's local time zone, enqueue a `memory review` job for each Conversation with messages since its last successful recap.
-2. The normal message worker always runs first. A review runs only when no user message is pending or processing.
-3. The review processes the new message range in chronological `MEMORY_REVIEW_MAX_CHARS` windows and creates bounded internal notes. A final aggregation with those notes, active Memory, and relevant prior Recaps outputs one concise recap plus `add`, `update`, `delete`, or `ignore` actions. New Memory requires an explicit Memory Signal or a useful recurring pattern across Recaps.
-4. The bridge validates that output and applies it transactionally to SQLite, preserving the source message IDs, recap text, and completion timestamp.
+1. Once per local day, at or after `MEMORY_REVIEW_TIME` (caught up once at startup if missed), enqueue a `memory review` job for each Agent Session with completed messages since its last successful recap, including an ended Session's unreviewed tail.
+2. The normal message worker always runs first. A review starts only when no user message is pending or processing; a user message arriving mid-review cancels it and returns it to `pending` without consuming an attempt. Each review runs text-only in a throwaway runtime session, never the thread's own Agent Session ([ADR 0010](adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)); only Claude homes run reviews in V1; Codex and OpenCode homes skip them and keep their cursors.
+3. The review processes the new message range in chronological `MEMORY_REVIEW_MAX_CHARS` windows and creates bounded internal notes. A final aggregation with those notes, the owner's explicit memory requests detected by inoai's signal rule, active Memory, and relevant prior Recaps outputs one concise recap plus `add`, `update`, `delete`, or `ignore` actions. New Memory requires an explicit Memory Signal or a useful recurring pattern across Recaps.
+4. The bridge validates each action deterministically (owner-authored explicit signal, recurrence across at least two prior Recaps, existing IDs, in-range sources, length and secret filters; Manual Memory Entries are read-only to reviews), drops failing actions as `ignored`, and applies the rest transactionally to SQLite, preserving the source message IDs, recap text, and completion timestamp.
 5. It advances the review cursor only after the transaction completes. A failed review remains retryable and does not block conversation.
 
 The review may promote only durable, user-confirmed preferences, confirmed project decisions, and stable facts that meet the Memory Signal rule. It must ignore secrets, credentials, transient tasks, speculation, model-generated claims that the user did not confirm, and instruction-like content quoted from conversation. Each active memory remains editable through the explicit memory controls above.
 
-The daily review is a local timer, not chat-transport polling. If normal work is active at the scheduled time, the due review waits until it is safe to run. A Conversation without new archived messages receives no review. Oversized history is reviewed in chronological windows; the recap cursor advances only after the full range succeeds, so no archive content is silently skipped.
+The daily review is a local timer, not chat-transport polling. If normal work is active at the scheduled time, the due review waits until it is safe to run. An Agent Session without new archived messages receives no review. Oversized history is reviewed in chronological windows; a review's cursor advances only when its whole committed range succeeds, and if a very large range hits the window cap the review commits up to a whole message and a follow-up review covers the rest, so no archive content is silently skipped.
 
 Daily recaps are silent: they write their timestamped recap and outcome to SQLite for later inspection in the separate local UI and never post routine updates to the chat transport. A failed review retries up to three times later that day with bounded backoff, then remains recorded locally until the next daily cycle. It never interrupts a conversation.
 

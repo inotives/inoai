@@ -6,7 +6,9 @@ import type { MessageRecord } from "./database.js";
 const contextLimit = 6_000;
 const quoteLimit = 800;
 const stopWords = new Set(["about", "after", "again", "also", "could", "from", "have", "into", "just", "more", "please", "that", "their", "them", "there", "these", "this", "those", "what", "when", "where", "which", "with", "would", "your"]);
-const secretLike = /\b[\w-]*(?:password|passwd|secret|token|api[_-]?key|authorization)[\w-]*\s*(?:[:=]|\bis\b)|\bBearer\s+\S+|\b(?:sk-[\w-]{12,}|gh[opurs]_[\w-]{20,}|[\w-]{24,}\.[\w-]{6,}\.[\w-]{20,})\b/i;
+// A secret label with its separator (an optional closing quote allows JSON keys such as "password": "x"), a bearer
+// value, a known token shape, or the start of a PEM private key.
+export const secretLike = /\b[\w-]*(?:password|passwd|secret|token|api[_-]?key|authorization)[\w-]*["']?\s*(?:[:=]|\bis\b)|\bBearer\s+\S+|\b(?:sk-[\w-]{12,}|gh[opurs]_[\w-]{20,}|[\w-]{24,}\.[\w-]{6,}\.[\w-]{20,})\b|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i;
 
 function terms(text: string): Set<string> {
   return new Set((text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).filter((word) => !stopWords.has(word)));

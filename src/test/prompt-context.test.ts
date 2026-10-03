@@ -103,3 +103,29 @@ test("Memory is locally ranked, bounded, and excludes deleted, irrelevant, and s
     } finally { database.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("Memory filtering also excludes JSON-key and PEM private key secrets but keeps nearby wording", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-prompt-json-secret-"));
+  try {
+    const database = openDatabase(await bootstrapRuntimeHome(directory));
+    try {
+      const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner",
+        display_name: null, role: "owner", state: "active" })!;
+      const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild",
+        parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "ask",
+        agent_provider: "codex", agent_session_id: "codex-thread", project_path: directory });
+      const addMemory = (body: string) => createMemory(database, { body, source_message_id: null,
+        created_by_user_id: owner.id, review_id: null, origin: "manual" });
+      addMemory('SQLite archive config {"password": "do-not-inject-json"}');
+      addMemory("SQLite archive config {'api_key': 'do-not-inject-single'}");
+      addMemory("SQLite archive key -----BEGIN OPENSSH PRIVATE KEY----- do-not-inject-pem");
+      addMemory("SQLite archive token budget stays small.");
+      const message = archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild",
+        external_message_id: "ask", external_author_id: "owner", user_id: owner.id, direction: "user",
+        body: "How is the SQLite archive configured?", reply_to_external_message_id: null, in_reply_to_message_id: null }).message!;
+      const prompt = composeTurnPrompt(database, message);
+      assert.doesNotMatch(prompt, /do-not-inject/);
+      assert.match(prompt, /- SQLite archive token budget stays small\./);
+    } finally { database.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
