@@ -1,8 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-labelledby="title desc">
   <title id="title">inoai logo</title>
-  <desc id="desc">A chat bubble holding a terminal prompt: a chat thread bridged to a local coding-agent CLI.</desc>
+  <desc id="desc">A chat bubble holding a terminal prompt followed by the Morse sequence dot-dash, dot, dot: a chat thread bridged to a local coding-agent CLI.</desc>
   <rect width="240" height="240" rx="48" fill="#000"/>
   <path d="M60 64h120a20 20 0 0 1 20 20v62a20 20 0 0 1-20 20h-58l-30 26v-26H60a20 20 0 0 1-20-20V84a20 20 0 0 1 20-20z" fill="none" stroke="#fff" stroke-width="10" stroke-linejoin="round"/>
-  <path d="M78 98l24 18-24 18" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M116 136h42" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+  <path d="M74 98l24 18-24 18" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#fff">
+    <circle cx="116" cy="116" r="5"/>
+    <rect x="126" y="111" width="24" height="10" rx="5"/>
+    <circle cx="164" cy="116" r="5"/>
+    <circle cx="180" cy="116" r="5"/>
+  </g>
 </svg>
