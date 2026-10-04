@@ -41,11 +41,11 @@ It drives the CLI you already use instead of calling a model API. Codex runs on 
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
 - A separate macOS Electron app (Phase 7) will provide analytics and Manual Memory management by opening SQLite directly.
 
-Status: Phases 1–6 (including 5a and 5b) are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, the end-to-end conversation worker, Claude CLI and OpenCode as further runtimes, and the Daily Memory Review (Claude homes only in V1). Phase 6c has the local metadata, configuration, schema, exporter, ADC-backed production client, scheduler lifecycle wiring, and offline acceptance boundary. The Electron app and V1 hardening remain.
+Status: Phases 1–6 (including 5a and 5b) are implemented: scaffolding, the SQLite archive and queue, the Discord transport, the Codex runtime, the end-to-end conversation worker, Claude CLI and OpenCode as further runtimes, and the Daily Memory Review (Claude homes only in V1). The Electron app and V1 hardening remain.
 
 ## Core Model
 
-Deploy inoai into the folder it should assist. Each `.inoai-connect*` directory is one independent Agent Instance with its own configuration, Discord identity, Agent Sessions, SQLite archive, and Memory. Set optional `AGENT_NAME` to give it a human-readable analytics label; when blank, the runtime-home folder name is used:
+Deploy inoai into the folder it should assist. Each `.inoai-connect*` directory is one independent Agent Instance with its own configuration, Discord identity, Agent Sessions, SQLite archive, and Memory:
 
 ```text
 my-project/
@@ -102,101 +102,9 @@ npm run validate
 npm start
 ```
 
-### Optional macOS launchd supervisor
-
-Manual startup remains supported. For unattended operation on macOS, install an
-optional per-runtime `launchd` user agent. It restarts the core after a process
-crash or machine restart; the runtime home's lock still prevents two cores from
-using the same SQLite archive. Do not install a supervisor for a runtime home
-while also running that home manually.
-
-From the repository root, replace the six placeholders in the template with
-absolute paths and the selected direct-child runtime-home name. The template
-contains no environment variables or credentials:
-
-```bash
-INOAI_ROOT="$PWD"
-CONNECT_DIR="$INOAI_ROOT/.inoai-connect-planner"
-LABEL="com.inotives.inoai.planner"
-NODE_BIN="$(command -v node)"
-LOG_DIR="$HOME/Library/Logs/inoai"
-PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
-sed -e "s|__LABEL__|$LABEL|g" \
-    -e "s|__NODE_BIN__|$NODE_BIN|g" \
-    -e "s|__INOAI_ROOT__|$INOAI_ROOT|g" \
-    -e "s|__CONNECT_DIR__|$CONNECT_DIR|g" \
-    -e "s|__STDOUT_LOG__|$LOG_DIR/$LABEL.out.log|g" \
-    -e "s|__STDERR_LOG__|$LOG_DIR/$LABEL.err.log|g" \
-    launchd/com.inotives.inoai.plist.template > "$PLIST"
-plutil -lint "$PLIST"
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-launchctl enable "gui/$(id -u)/$LABEL"
-```
-
-Use one distinct `LABEL` and runtime home per concurrently running Agent
-Instance. Verify the generated plist contains only executable, project, runtime
-home, and log paths; never add `DISCORD_BOT_TOKEN` or any other `.env` value.
-The app reads the ignored runtime home's `.env` itself.
-
-Stop and remove the supervisor before starting the same home manually:
-
-```bash
-launchctl bootout "gui/$(id -u)/$LABEL"
-rm "$PLIST"
-```
-
-`bootout` stops the managed process and disables KeepAlive. The log files are
-ordinary local diagnostics and may be removed separately after checking them.
-If `launchctl bootstrap` reports that the label is already loaded, boot it out
-first; do not start a second copy against the same runtime home.
-Live `launchctl` KeepAlive behavior was not exercised in this non-GUI
-environment; validate the generated plist on the target macOS machine.
-
 Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it never starts conversations. The older `DISCORD_ALLOWED_CHANNEL_ID` key is no longer accepted; update existing local runtime-home `.env` files before starting this version. The bot needs access to the status channel and to every channel where you start conversations, including permission to create threads.
 
 `npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
-
-### Optional BigQuery analytics
-
-BigQuery sync is optional and never required for normal Discord or Memory Review operation. The Phase 6c implementation bundles the Google BigQuery client, creates an ADC-backed client when configuration is present, and starts/stops the asynchronous scheduler with the core. Setting these values enables uploads; leaving them blank keeps analytics disabled.
-
-Create a BigQuery project and dataset, then set these non-secret values in the runtime home's `.env`:
-
-```dotenv
-BIGQUERY_PROJECT_ID=your-gcp-project-id
-BIGQUERY_DATASET_ID=inoai_analytics
-BIGQUERY_SYNC_INTERVAL_MINUTES=60
-```
-
-inoai is designed to use Google Application Default Credentials (ADC); it does not accept or store service-account private keys. Set up ADC for a cloned checkout:
-
-1. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install); this provides both `gcloud` and `bq`.
-2. Sign in for local ADC: `gcloud auth application-default login`.
-3. Select the project used for BigQuery: `gcloud config set project YOUR_GCP_PROJECT_ID`.
-4. If Google asks for a quota project, set it explicitly: `gcloud auth application-default set-quota-project YOUR_GCP_PROJECT_ID`.
-5. In Google Cloud IAM, grant the ADC account the minimum BigQuery permissions needed by your deployment (typically BigQuery Job User on the project and BigQuery Data Editor on the dataset).
-6. Verify ADC without printing the credential: `gcloud auth application-default print-access-token >/dev/null`.
-7. To create the dataset with `bq`, authenticate the CLI separately with `gcloud auth login`, then run `bq --location=asia-southeast1 mk --dataset YOUR_GCP_PROJECT_ID:inoai_analytics`.
-8. Verify the dataset with `bq ls --project_id=YOUR_GCP_PROJECT_ID inoai_analytics`.
-9. Run `npm run validate -- --connect-dir .inoai-connect` to check the local configuration.
-
-Leave the three settings blank to keep sync disabled. A malformed optional setting disables only the analytics path and is reported without printing its value. ADC files remain managed by the Google Cloud CLI; inoai never copies them into the runtime home, SQLite, logs, or Discord. The exporter is asynchronous and non-blocking; local chat operation does not depend on BigQuery availability. A missing ADC account or unavailable cloud is a sync failure/defer condition, not a core startup failure.
-
-Each runtime home has one local `agent_instance_metadata` row containing a stable generated `agent_instance_id` and a non-unique `agent_name` (default: the runtime-home folder name). Two homes can therefore share one BigQuery dataset without colliding:
-
-```text
-.inoai-connect-planner/inoai.sqlite  ->  550e... | planner
-.inoai-connect-claude/inoai.sqlite   ->  7b21... | claude-reviewer
-```
-
-The analytics schema has six tables: `agent_instances`, `sessions`, `messages`, `memory_reviews`, `memories`, and `events`. Every row carries `agent_instance_id`, `agent_name`, `source_id`, `source_created_at`, `source_updated_at`, optional `source_deleted_at`, and audit fields. Rows are partitioned by `source_updated_at`, clustered by `agent_instance_id`, and upserted by `(agent_instance_id, source_id)`. Message, Memory, Recap, failure, and Event text uses the existing secret redaction rules; credentials, environment values, approval details, and raw tool input/output are not exported. Soft deletes remain as tombstones.
-
-Sync uses a local per-table watermark with a one-second overlap, so equal timestamps and retries are safe. The default interval is 60 minutes when BigQuery is configured; `BIGQUERY_SYNC_INTERVAL_MINUTES` changes it. Failed uploads record non-secret local events and bounded retry state without delaying Turns or Memory Reviews. Configure BigQuery table or dataset expiration and review partition usage for retention and cost control; BigQuery is an analytics sink, not a replacement for local SQLite.
-
-The production client uses Google Application Default Credentials and the scheduler performs an initial sync after core startup, then repeats at the configured interval. The offline test suite uses a fake sink; live cloud uploads require the local ADC, IAM, project, and dataset setup above.
-
-Codex runtime recovery is automatic: after a timeout or app-server exit, inoai marks that Turn uncertain without replaying it, reconnects with bounded backoff, and resumes later queued Turns from their persisted Agent Sessions. If the whole process crashes, the optional launchd supervisor above can restart it. A runtime-home lock prevents manual startup and launchd from running two cores against the same SQLite archive.
 
 Any named runtime home works the same way with `--connect-dir` (a packaged deployment runs `inoai --connect-dir <home>` and `inoai ui --connect-dir <home>`):
 
@@ -271,6 +179,8 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- memory add "<text>"` | Add a Manual Memory Entry without starting an Agent Runtime. |
 | `npm start -- memory list` | List active Memory with `origin` (`manual` or `review`); review-made entries also show `review_id` and `source_message_id`. |
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
+| `npm run allowlist:add -- --connect-dir .inoai-connect-planner --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
+| `npm run allowlist:disable -- --connect-dir .inoai-connect-planner --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
 | `npm start -- ui` | Launch the sibling Electron UI with the selected `inoai.sqlite` path only. |
 | `npm test` | Build and run the test suite. |
 | `npm run typecheck` | Type-check without emitting. |
@@ -279,6 +189,17 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `/inoai reset` | End the session, cancel queued work, keep the archive, and start a fresh session with the next message. |
 
 The `/inoai` slash commands are owner-only, work in a thread the bot owns, and reply privately.
+
+Allowlist commands use the selected runtime home's PostgreSQL configuration and
+never print credentials. The configured owner cannot be changed by these
+commands. Inspect changes in DBeaver with:
+
+```sql
+SELECT external_user_id, display_name, role, state
+FROM agent_inoai_planner.users
+WHERE transport = 'discord'
+ORDER BY id;
+```
 
 ## Runtime Behavior
 
@@ -334,8 +255,7 @@ A review sends archived Message text, current Memory, and recent Recaps to the r
 5a. Claude runtime
 5b. OpenCode runtime
 6.  Daily Memory Review
-6c. BigQuery analytics sync                 (current)
-7.  Separate Electron analytics UI
+7.  Separate Electron analytics UI        (next)
 8.  V1 acceptance and operational hardening
 ```
 
@@ -358,7 +278,7 @@ For each phase, follow the workflow in [AGENTS.md](AGENTS.md): grill the phase d
 ```text
 inoai/
 ├── docs/
-│   ├── adr/                                  # architecture decisions 0001–0012
+│   ├── adr/                                  # architecture decisions 0001–0010
 │   ├── discord-codex-cli-harness-proposal.md
 │   ├── implementation-phases.md
 │   ├── sqlite-schema.md

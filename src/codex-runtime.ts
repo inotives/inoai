@@ -17,44 +17,17 @@ export class CodexRuntime implements AgentRuntime {
   readonly loginHint = "codex login";
   private readonly sessions = new Map<string, string>();
   private readonly active = new Map<string, ActiveTurn>();
-  private reconnecting: Promise<void> | undefined;
-  private closed = false;
 
   // Owner decision D2: Codex reviews stay off unless enableReview is set, because a Codex review thread still loads
   // the owner's MCP servers (ADR 0010). index.ts never sets it; tests exercise the implementation directly.
   readonly review?: (prompt: string, options?: ReviewOptions) => Promise<string>;
 
-  constructor(private server: CodexAppServer, private readonly idleTimeoutMs = 300_000, private readonly reviewTimeoutMs = 600_000, enableReview = false, private readonly reconnect?: () => Promise<CodexAppServer>, private readonly onServerChange?: (server: CodexAppServer) => void) {
+  constructor(private readonly server: CodexAppServer, private readonly idleTimeoutMs = 300_000, private readonly reviewTimeoutMs = 600_000, enableReview = false) {
     if (enableReview) this.review = (prompt, options) => this.runReview(prompt, options);
   }
 
   health(): { state: "ready" | "stopped" | "error" } { return this.server.health(); }
-  async close(): Promise<void> {
-    this.closed = true;
-    await this.server.close();
-  }
-
-  private async ensureServer(): Promise<void> {
-    if (this.closed) throw new RuntimeFailure("pre_start", true);
-    if (this.server.health().state === "ready") return;
-    if (!this.reconnect) throw new RuntimeFailure("pre_start", true);
-    this.reconnecting ??= (async () => {
-      let lastError: unknown;
-      for (const delay of [0, 100, 250]) {
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-        try {
-          const server = await this.reconnect!();
-          if (server.health().state !== "ready") throw new Error("Codex app-server is unavailable");
-          this.server = server;
-          this.onServerChange?.(server);
-          return;
-        } catch (error) { lastError = error; }
-      }
-      throw lastError instanceof Error ? lastError : new Error("Codex runtime recovery failed");
-    })().finally(() => { this.reconnecting = undefined; });
-    try { await this.reconnecting; }
-    catch { throw new RuntimeFailure("pre_start", true); }
-  }
+  close(): Promise<void> { return this.server.close(); }
 
   async hasActiveTurn(sessionId: string, turnId: string): Promise<boolean> {
     const active = this.active.get(sessionId);
@@ -62,7 +35,6 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async createSession(projectPath: string, instructions: string): Promise<string> {
-    if (this.server.health().state !== "ready") await this.ensureServer();
     const result = await this.server.request("thread/start", { cwd: projectPath, developerInstructions: instructions }) as { thread?: { id?: string } };
     const id = result?.thread?.id;
     if (!id) throw new Error("Codex did not return a thread ID");
@@ -72,7 +44,6 @@ export class CodexRuntime implements AgentRuntime {
 
   async resumeSession(sessionId: string, projectPath: string, instructions: string): Promise<void> {
     if (this.active.has(sessionId)) throw new Error("Agent Session has an active turn");
-    if (this.server.health().state !== "ready") await this.ensureServer();
     const result = await this.server.request("thread/resume", { threadId: sessionId, cwd: projectPath, developerInstructions: instructions }) as { thread?: { id?: string } };
     if (result?.thread?.id !== sessionId) throw new Error("Codex resumed a different thread");
     this.sessions.set(sessionId, projectPath);
@@ -82,7 +53,7 @@ export class CodexRuntime implements AgentRuntime {
     const projectPath = this.sessions.get(sessionId);
     if (!projectPath) throw new Error("Agent Session must be started or resumed first");
     if (this.active.has(sessionId)) throw new Error("Agent Session has an active turn");
-    if (this.server.health().state !== "ready") await this.ensureServer();
+    if (this.server.health().state !== "ready") throw new RuntimeFailure("pre_start", true);
 
     const notices: TurnNotice[] = [];
     let wake: (() => void) | undefined;
@@ -112,12 +83,7 @@ export class CodexRuntime implements AgentRuntime {
     const active: ActiveTurn = { started };
     this.active.set(sessionId, active);
     try {
-      try {
-        turnId = await started;
-      } catch (error) {
-        failure = error instanceof Error ? error : new Error("Codex turn could not start");
-        throw failure;
-      }
+      turnId = await started;
       idleTimer = setTimeout(() => {
         failure = new RuntimeFailure("timed_out");
         void this.server.close().catch(() => {});
@@ -170,15 +136,7 @@ export class CodexRuntime implements AgentRuntime {
       }
       removeNotice();
       removeFailure();
-      // An uncertain turn is never replayed, but a dead server must not poison the
-      // persisted Agent Session. The next queued turn resumes the same thread after
-      // ensureServer() reconnects it. A live server still keeps the guard until its
-      // terminal interruption notice arrives.
-      // A request that failed before yielding a Turn ID cannot be resumed or
-      // interrupted. Release its guard even when the transport still reports
-      // ready; a dead transport is the usual cause, but no active Turn exists
-      // in either case.
-      if (settled || (failure && (!turnId || this.server.health().state !== "ready"))) this.active.delete(sessionId);
+      if (settled) this.active.delete(sessionId);
       if (cleanupError) throw cleanupError;
       if (!settled && failure) throw failure;
     }

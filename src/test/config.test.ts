@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { ConfigurationError, loadConfiguration, validateConfiguration } from "../config.js";
-import type { BigQueryUpsertRequest } from "../bigquery.js";
 import { start } from "../index.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "../runtime-home.js";
 
@@ -16,6 +15,13 @@ const validValues = {
   DISCORD_STATUS_CHANNEL_ID: "status",
   CHAT_PROVIDER: "discord",
   AGENT_PROVIDER: "codex",
+  POSTGRES_URL: "postgresql://inoai_sync:secret@example.test:5432/app",
+  POSTGRES_ISOLATION_MODE: "application",
+  AGENT_INSTANCE_ID: "agent-inoai-planner",
+  POSTGRES_POOL_MAX: "2",
+  POSTGRES_CONNECT_TIMEOUT_MS: "5000",
+  POSTGRES_IDLE_TIMEOUT_MS: "10000",
+  POSTGRES_QUERY_TIMEOUT_MS: "30000",
   MEMORY_REVIEW_TIME: "06:00",
   MEMORY_REVIEW_MAX_CHARS: "20000",
 };
@@ -34,7 +40,7 @@ test("loads a complete local configuration without external services", async () 
 test("reports every missing required setting by name", () => {
   assert.throws(() => validateConfiguration({}), (error: unknown) => {
     assert(error instanceof ConfigurationError);
-    for (const key of Object.keys(validValues)) assert.match(error.message, new RegExp(key));
+    for (const key of ["DISCORD_BOT_TOKEN", "DISCORD_GUILD_ID", "DISCORD_OWNER_USER_ID", "DISCORD_STATUS_CHANNEL_ID", "CHAT_PROVIDER", "AGENT_PROVIDER", "POSTGRES_URL", "AGENT_INSTANCE_ID", "MEMORY_REVIEW_TIME", "MEMORY_REVIEW_MAX_CHARS"]) assert.match(error.message, new RegExp(key));
     return true;
   });
 });
@@ -54,6 +60,49 @@ test("rejects unsupported providers and invalid review settings", () => {
     () => validateConfiguration({ ...validValues, CHAT_PROVIDER: "slack", AGENT_PROVIDER: "other", MEMORY_REVIEW_TIME: "25:00", MEMORY_REVIEW_MAX_CHARS: "0" }),
     ConfigurationError,
   );
+});
+
+test("validates PostgreSQL settings without echoing connection details", () => {
+  const configuration = validateConfiguration(validValues);
+  assert.equal(configuration.agentInstanceId, "agent-inoai-planner");
+  assert.equal(configuration.postgresIsolationMode, "application");
+  assert.equal(configuration.postgresPoolMax, 2);
+  assert.equal(configuration.postgresConnectTimeoutMs, 5000);
+  assert.equal(configuration.postgresQueryTimeoutMs, 30000);
+  assert.equal(configuration.postgresLeaseTtlMs, 30000);
+  assert.equal(configuration.postgresLeaseRefreshMs, 10000);
+
+  for (const value of ["postgres://", "https://user:secret@example.test/db", "postgresql://[invalid"]) {
+    assert.throws(() => validateConfiguration({ ...validValues, POSTGRES_URL: value }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /POSTGRES_URL must be a valid PostgreSQL URL/);
+      assert.doesNotMatch(error.message, /secret|example\.test/);
+      return true;
+    });
+  }
+});
+
+test("defaults isolation to application and rejects unsupported database enforcement", () => {
+  const { POSTGRES_ISOLATION_MODE: _ignored, ...withoutMode } = validValues;
+  assert.equal(validateConfiguration(withoutMode).postgresIsolationMode, "application");
+  assert.throws(() => validateConfiguration({ ...validValues, POSTGRES_ISOLATION_MODE: "database" }), (error: unknown) => {
+    assert(error instanceof ConfigurationError);
+    assert.match(error.message, /POSTGRES_ISOLATION_MODE must be application/);
+    return true;
+  });
+});
+
+test("enforces the normalized Agent Instance slug and bounded pool settings", () => {
+  for (const value of ["agent-Inoai", "inoai-planner", "agent-", "agent_planner", `agent-${"a".repeat(60)}`]) {
+    assert.throws(() => validateConfiguration({ ...validValues, AGENT_INSTANCE_ID: value }), ConfigurationError);
+  }
+  for (const [key, value] of [["POSTGRES_POOL_MAX", "0"], ["POSTGRES_POOL_MAX", "11"], ["POSTGRES_CONNECT_TIMEOUT_MS", "999"], ["POSTGRES_QUERY_TIMEOUT_MS", "120001"], ["POSTGRES_LEASE_TTL_MS", "4999"], ["POSTGRES_LEASE_REFRESH_MS", "30000"]]) {
+    assert.throws(() => validateConfiguration({ ...validValues, [key]: value }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, new RegExp(key));
+      return true;
+    });
+  }
 });
 
 test("accepts the Claude provider with a blank or well-formed optional model", () => {
@@ -89,95 +138,10 @@ test("accepts the OpenCode provider without a model setting", () => {
   assert.equal(configuration.claudeModel, undefined);
 });
 
-test("accepts an optional non-secret Agent Instance name and rejects unsafe values", () => {
-  assert.equal(validateConfiguration({ ...validValues, AGENT_NAME: " planner " }).agentName, "planner");
-  assert.equal(validateConfiguration({ ...validValues, AGENT_NAME: "" }).agentName, undefined);
-  assert.throws(() => validateConfiguration({ ...validValues, AGENT_NAME: "bad\nname" }), ConfigurationError);
-  assert.throws(() => validateConfiguration({ ...validValues, AGENT_NAME: "x".repeat(101) }), ConfigurationError);
-});
-
-test("normal startup persists the configured Agent Instance name", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
-  try {
-    const home = await bootstrapRuntimeHome(directory);
-    await writeFile(home.envFile, Object.entries({ ...validValues, AGENT_NAME: "planner" }).map(([key, value]) => `${key}=${value}`).join("\n"));
-    const instance = await start(directory);
-    assert.equal(instance.configuration.agentName, "planner");
-    assert.equal((instance.database.prepare("SELECT agent_name FROM agent_instance_metadata WHERE id = 1").get() as { agent_name: string }).agent_name, "planner");
-    await instance.release();
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("configured BigQuery sync is wired into startup and release", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
-  try {
-    const home = await bootstrapRuntimeHome(directory);
-    await writeFile(home.envFile, Object.entries({ ...validValues,
-      BIGQUERY_PROJECT_ID: "inoai-agents", BIGQUERY_DATASET_ID: "inoai_analytics", BIGQUERY_SYNC_INTERVAL_MINUTES: "60",
-    }).map(([key, value]) => `${key}=${value}`).join("\n"));
-    const calls: BigQueryUpsertRequest[] = [];
-    let cleared = false;
-    const instance = await start(directory, undefined, {
-      bigQueryClient: { upsertRows: async (request) => { calls.push(request); } },
-      bigQueryClock: {
-        now: () => new Date(2_000_000_000_000),
-        setInterval: (callback) => callback,
-        clearInterval: () => { cleared = true; },
-      },
-    });
-    instance.bigQueryScheduler.start();
-    await instance.release();
-    assert.equal(instance.configuration.bigQuery?.projectId, "inoai-agents");
-    assert.equal(calls.length, 1);
-    assert.equal(cleared, true);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
 test("ignores CLAUDE_MODEL for a Codex home", () => {
   const configuration = validateConfiguration({ ...validValues, CLAUDE_MODEL: "opus 4" });
   assert.equal(configuration.agentProvider, "codex");
   assert.equal(configuration.claudeModel, undefined);
-});
-
-test("keeps BigQuery disabled by default and parses optional settings", () => {
-  const disabled = validateConfiguration(validValues);
-  assert.equal(disabled.bigQuery, undefined);
-  assert.equal(disabled.bigQueryIssue, undefined);
-  const enabled = validateConfiguration({
-    ...validValues,
-    BIGQUERY_PROJECT_ID: "inoai-prod-123",
-    BIGQUERY_DATASET_ID: "analytics",
-    BIGQUERY_SYNC_INTERVAL_MINUTES: "15",
-  });
-  assert.deepEqual(enabled.bigQuery, { projectId: "inoai-prod-123", datasetId: "analytics", syncIntervalMinutes: 15 });
-});
-
-test("keeps the copied sample configuration cleanly disabled", async () => {
-  const optionalValues = Object.fromEntries(
-    (await readFile(new URL("../../.env.sample", import.meta.url), "utf8"))
-      .split(/\r?\n/)
-      .filter((line) => /^(BIGQUERY_PROJECT_ID|BIGQUERY_DATASET_ID|BIGQUERY_SYNC_INTERVAL_MINUTES)=/.test(line))
-      .map((line) => line.split("=", 2) as [string, string]),
-  );
-  const configuration = validateConfiguration({ ...validValues, ...optionalValues });
-  assert.equal(configuration.bigQuery, undefined);
-  assert.equal(configuration.bigQueryIssue, undefined);
-});
-
-test("disables only the optional BigQuery path for invalid settings without exposing values", () => {
-  const configuration = validateConfiguration({
-    ...validValues,
-    BIGQUERY_PROJECT_ID: "bad project secret-token",
-    BIGQUERY_DATASET_ID: "bad.dataset",
-    BIGQUERY_SYNC_INTERVAL_MINUTES: "0",
-  });
-  assert.equal(configuration.bigQuery, undefined);
-  assert.match(configuration.bigQueryIssue ?? "", /BigQuery sync disabled: invalid project id, dataset id, sync interval/);
-  assert.doesNotMatch(configuration.bigQueryIssue ?? "", /secret-token|bad project/);
 });
 
 test("rejects an unsupported provider before acquiring the runtime lock", async () => {

@@ -15,6 +15,8 @@ import {
   UnsafeRuntimeHomeError,
 } from "../runtime-home.js";
 import { start } from "../index.js";
+import { openDatabase } from "../database.js";
+import { sqliteStore } from "./sqlite-store.js";
 
 async function temporaryDeployment(): Promise<string> {
   return mkdtemp(join(tmpdir(), "inoai-test-"));
@@ -27,6 +29,8 @@ const validEnv = [
   "DISCORD_STATUS_CHANNEL_ID=channel",
   "CHAT_PROVIDER=discord",
   "AGENT_PROVIDER=codex",
+  "POSTGRES_URL=postgresql://inoai_sync:secret@example.test:5432/app",
+  "AGENT_INSTANCE_ID=agent-test",
   "MEMORY_REVIEW_TIME=06:00",
   "MEMORY_REVIEW_MAX_CHARS=20000",
 ].join("\n");
@@ -35,7 +39,8 @@ test("bootstraps and preserves an isolated default runtime home", async () => {
   const deployment = await temporaryDeployment();
   try {
     const home = await bootstrapRuntimeHome(deployment);
-    await Promise.all([home.envFile, home.agentFile, home.databaseFile].map((file) => readFile(file)));
+    await Promise.all([home.envFile, home.agentFile].map((file) => readFile(file)));
+    await assert.rejects(stat(home.databaseFile));
     assert.equal(await readFile(home.envFile, "utf8"), "");
     assert.equal((await stat(home.directory)).mode & 0o777, 0o700);
     assert.equal((await stat(home.envFile)).mode & 0o777, 0o600);
@@ -90,12 +95,14 @@ test("startup bootstraps and locks the default runtime home", async () => {
   try {
     const home = await bootstrapRuntimeHome(deployment);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(deployment);
+    const database = openDatabase(home);
+    const instance = await start(deployment, undefined, () => sqliteStore(database));
     try {
       assert.equal(instance.runtimeHome.directory, join(deployment, ".inoai-connect"));
       await assert.rejects(start(deployment), RuntimeHomeLockedError);
     } finally {
       await instance.release();
+      database.close();
     }
   } finally {
     await rm(deployment, { recursive: true, force: true });

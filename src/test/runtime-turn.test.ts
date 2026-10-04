@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
 import { createSession, listEvents, openDatabase, upsertUser } from "../database.js";
@@ -38,7 +40,7 @@ function fakeRuntime(run: (attempt: number) => AsyncIterable<RuntimeEvent>, disp
 test("only proven-safe attempts retry, at most three times, and report one final outcome", async () => {
   await withSession(async (database, sessionId) => {
     const runtime = fakeRuntime(async function* () { throw new RuntimeFailure("pre_start", true); });
-    const outcome = await runRuntimeTurn(database, runtime, sessionId, "thread", "question");
+    const outcome = await runRuntimeTurn(sqliteStore(database), runtime, sessionId, "thread", "question");
     assert.deepEqual({ state: outcome.state, attempts: outcome.attempts, replaySafe: outcome.replaySafe }, { state: "failed", attempts: 3, replaySafe: true });
     assert.equal(runtime.attempts, 3);
     assert.equal(listEvents(database, sessionId).filter((event) => event.event_type === "runtime_failure").length, 3);
@@ -54,7 +56,7 @@ test("uncertain failure after possible side effect never replays or publishes pa
       throw new Error("token=secret-123 raw tool trace");
     });
     const progress: string[] = [];
-    const outcome = await runRuntimeTurn(database, runtime, sessionId, "thread", "question", (text) => progress.push(text));
+    const outcome = await runRuntimeTurn(sqliteStore(database), runtime, sessionId, "thread", "question", (text) => progress.push(text));
     assert.equal(runtime.attempts, 1);
     assert.deepEqual(progress, ["partial"]);
     assert.equal(outcome.state, "failed");
@@ -71,10 +73,10 @@ test("safe transient recovery returns exactly one confirmed answer; auth and usa
       if (attempt === 1) throw new RuntimeFailure("pre_start", true);
       yield { type: "answer", text: "done" };
     });
-    assert.deepEqual(await runRuntimeTurn(database, runtime, sessionId, "thread", "question"), { state: "completed", answer: "done", attempts: 2, replaySafe: false });
+    assert.deepEqual(await runRuntimeTurn(sqliteStore(database), runtime, sessionId, "thread", "question"), { state: "completed", answer: "done", attempts: 2, replaySafe: false });
     for (const kind of ["authentication", "usage", "cancelled", "timed_out", "session_missing"] as const) {
       const failed = fakeRuntime(async function* () { throw new RuntimeFailure(kind); });
-      const result = await runRuntimeTurn(database, failed, sessionId, "thread", "question");
+      const result = await runRuntimeTurn(sqliteStore(database), failed, sessionId, "thread", "question");
       assert.equal(result.state, "failed");
       assert.equal(result.state === "failed" ? result.reason : "", kind);
       assert.equal(failed.attempts, 1);
@@ -85,7 +87,7 @@ test("safe transient recovery returns exactly one confirmed answer; auth and usa
 test("failure notices name the runtime and its login hint", async () => {
   await withSession(async (database, sessionId) => {
     const notice = async (kind: RuntimeFailure["kind"], displayName?: string, loginHint?: string) => {
-      const result = await runRuntimeTurn(database, fakeRuntime(async function* () { throw new RuntimeFailure(kind); }, displayName, loginHint), sessionId, "thread", "question");
+      const result = await runRuntimeTurn(sqliteStore(database), fakeRuntime(async function* () { throw new RuntimeFailure(kind); }, displayName, loginHint), sessionId, "thread", "question");
       return result.state === "failed" ? result.notice : "";
     };
     assert.deepEqual(await Promise.all((["authentication", "usage", "pre_start", "timed_out", "cancelled", "uncertain"] as const).map((kind) => notice(kind))), [
@@ -101,7 +103,7 @@ test("failure notices name the runtime and its login hint", async () => {
     assert.equal(await notice("session_missing", "Claude", "claude /login"), "This thread's Claude session could not be found. Use /inoai reset to start a new session.");
     const overridden = async (kind: RuntimeFailure["kind"]) => {
       const runtime = { ...fakeRuntime(async function* () { throw new RuntimeFailure(kind); }, "OpenCode", "opencode auth login"), authenticationNotice: "Fixed OpenCode authentication notice." };
-      const result = await runRuntimeTurn(database, runtime, sessionId, "thread", "question");
+      const result = await runRuntimeTurn(sqliteStore(database), runtime, sessionId, "thread", "question");
       return result.state === "failed" ? result.notice : "";
     };
     assert.equal(await overridden("authentication"), "Fixed OpenCode authentication notice.");

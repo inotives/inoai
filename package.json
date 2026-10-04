@@ -8,6 +8,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "postgres:migrate": "npm run build && node dist/postgres-migrations.js",
+    "postgres:provision": "npm run build && node dist/postgres-provision.js",
+    "postgres:test": "npm run build && node dist/postgres-connection-test.js",
+    "postgres:integration": "npm run build && node --test dist/test/postgres.integration.test.js",
+    "allowlist:add": "npm run build && node dist/index.js allowlist:add",
+    "allowlist:disable": "npm run build && node dist/index.js allowlist:disable",
     "start": "node dist/index.js",
     "test": "npm run build && node --test dist/test/*.test.js",
     "typecheck": "tsc --noEmit",
@@ -15,10 +21,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@google-cloud/bigquery": "^9.1.0",
-    "discord.js": "^14.27.0"
+    "discord.js": "^14.27.0",
+    "pg": "^8.23.1"
   }
 }

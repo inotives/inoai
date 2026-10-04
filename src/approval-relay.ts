@@ -1,7 +1,5 @@
-import type { DatabaseSync } from "node:sqlite";
-
 import type { CodexAppServer } from "./codex-app-server.js";
-import { archiveMessage, createEvent, getSession } from "./database.js";
+import type { OperationalStore } from "./operational-store.js";
 import type { ChatTransport } from "./transport.js";
 
 type Request = { threadId?: string; conversationId?: string };
@@ -15,45 +13,37 @@ export const legacyApprovalNotice = "A saved Codex approval could not be resumed
 const notice = permissionDeclinedNotice("Codex");
 
 export class ApprovalRelay {
-  private server: CodexAppServer;
-  private removeRequest = (): void => {};
+  private readonly removeRequest: () => void;
 
   constructor(
-    private readonly database: DatabaseSync,
-    server: CodexAppServer,
+    private readonly database: OperationalStore,
+    private readonly server: CodexAppServer,
     private readonly transport: ChatTransport,
   ) {
-    this.server = server;
-    this.bind(server);
-  }
-
-  bind(server: CodexAppServer): void {
-    this.removeRequest();
-    this.server = server;
     this.removeRequest = server.addRequestListener((method, params, id) => {
       const request = params as Request | null;
       if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-        void this.decline(server, id, request?.threadId, { decision: "decline" }).catch(() => {});
+        void this.decline(id, request?.threadId, { decision: "decline" }).catch(() => {});
       } else if (method === "item/permissions/requestApproval") {
-        void this.decline(server, id, request?.threadId, { permissions: {}, scope: "turn" }).catch(() => {});
+        void this.decline(id, request?.threadId, { permissions: {}, scope: "turn" }).catch(() => {});
       } else if (method === "applyPatchApproval" || method === "execCommandApproval") {
-        void this.decline(server, id, request?.conversationId, { decision: { denied: { rejection: "Approval unavailable via Discord" } } }).catch(() => {});
+        void this.decline(id, request?.conversationId, { decision: { denied: { rejection: "Approval unavailable via Discord" } } }).catch(() => {});
       }
     });
   }
 
   close(): void { this.removeRequest(); }
 
-  private async decline(server: CodexAppServer, requestId: number | string, threadId: string | undefined, response: unknown): Promise<void> {
-    try { server.respond(requestId, response); } catch { return; }
+  private async decline(requestId: number | string, threadId: string | undefined, response: unknown): Promise<void> {
+    try { this.server.respond(requestId, response); } catch { return; }
     if (typeof threadId !== "string") return;
-    const session = this.database.prepare(`SELECT id FROM sessions WHERE agent_provider = 'codex' AND agent_session_id = ?
-      AND state = 'active' AND deleted_at IS NULL`).get(threadId) as { id: number } | undefined;
+    const session = await this.database.findSessionByAgentSession("codex", threadId);
     if (!session) return;
-    const bound = getSession(this.database, session.id)!;
-    createEvent(this.database, { session_id: session.id, message_id: null, event_type: "approval_unsupported", detail: "declined: no safe action preview" }, "runtime:codex");
+    const bound = await this.database.getSession(session.id);
+    if (!bound) return;
+    await this.database.createEvent({ session_id: session.id, message_id: null, event_type: "approval_unsupported", detail: "declined: no safe action preview" }, "runtime:codex");
     const messageId = await this.transport.sendMessage(bound.conversation_id, notice);
-    archiveMessage(this.database, {
+    await this.database.archiveMessage({
       session_id: session.id, transport: bound.transport, workspace_id: bound.workspace_id,
       external_message_id: messageId, external_author_id: null, user_id: null,
       direction: "agent", body: notice, reply_to_external_message_id: null, in_reply_to_message_id: null,
@@ -64,29 +54,30 @@ export class ApprovalRelay {
 
 // The headless Claude and OpenCode CLIs deny prompts themselves; this only reports each denied Turn once.
 // It receives a count, never tool names or input, so nothing raw can reach SQLite or Discord.
-function permissionDenialNotifier(database: DatabaseSync, transport: ChatTransport, provider: "claude" | "opencode", name: string): (agentSessionId: string, count: number) => void {
+function permissionDenialNotifier(database: OperationalStore, transport: ChatTransport, provider: "claude" | "opencode", name: string): (agentSessionId: string, count: number) => void {
   const notice = permissionDeclinedNotice(name);
   return (agentSessionId, count) => {
-    const session = database.prepare(`SELECT id FROM sessions WHERE agent_provider = ? AND agent_session_id = ?
-      AND state = 'active' AND deleted_at IS NULL`).get(provider, agentSessionId) as { id: number } | undefined;
-    if (!session) return;
-    const bound = getSession(database, session.id)!;
-    createEvent(database, { session_id: session.id, message_id: null, event_type: "approval_unsupported", detail: `declined: no safe action preview; denials=${count}` }, `runtime:${provider}`);
-    void transport.sendMessage(bound.conversation_id, notice).then((messageId) => {
-      archiveMessage(database, {
+    void (async () => {
+      const session = await database.findSessionByAgentSession(provider, agentSessionId);
+      if (!session) return;
+      const bound = await database.getSession(session.id);
+      if (!bound) return;
+      await database.createEvent({ session_id: session.id, message_id: null, event_type: "approval_unsupported", detail: `declined: no safe action preview; denials=${count}` }, `runtime:${provider}`);
+      const messageId = await transport.sendMessage(bound.conversation_id, notice);
+      await database.archiveMessage({
         session_id: session.id, transport: bound.transport, workspace_id: bound.workspace_id,
         external_message_id: messageId, external_author_id: null, user_id: null,
         direction: "agent", body: notice, reply_to_external_message_id: null, in_reply_to_message_id: null,
         state: "completed",
       }, "transport:discord");
-    }).catch(() => {});
+    })().catch(() => {});
   };
 }
 
-export function claudePermissionDenialNotifier(database: DatabaseSync, transport: ChatTransport): (agentSessionId: string, count: number) => void {
+export function claudePermissionDenialNotifier(database: OperationalStore, transport: ChatTransport): (agentSessionId: string, count: number) => void {
   return permissionDenialNotifier(database, transport, "claude", "Claude");
 }
 
-export function openCodePermissionDenialNotifier(database: DatabaseSync, transport: ChatTransport): (agentSessionId: string, count: number) => void {
+export function openCodePermissionDenialNotifier(database: OperationalStore, transport: ChatTransport): (agentSessionId: string, count: number) => void {
   return permissionDenialNotifier(database, transport, "opencode", "OpenCode");
 }

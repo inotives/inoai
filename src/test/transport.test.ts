@@ -4,16 +4,18 @@ import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { DatabaseSync } from "node:sqlite";
 import { ChannelType, Events, MessageFlags } from "discord.js";
 import type { Client } from "discord.js";
 
 import type { AgentRuntime } from "../agent-runtime.js";
 import { createChatTransport, DiscordTransport } from "../transport.js";
 import type { IncomingMessage } from "../transport.js";
-import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages } from "../database.js";
+import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages, openDatabase } from "../database.js";
 import { run, start, startTransport } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import type { SchedulerClock } from "../memory-review-scheduler.js";
+import { sqliteStore } from "./sqlite-store.js";
 
 class FakeClient extends EventEmitter {
   user = { id: "inoai" };
@@ -173,6 +175,8 @@ const validEnv = [
   "DISCORD_STATUS_CHANNEL_ID=status",
   "CHAT_PROVIDER=discord",
   "AGENT_PROVIDER=codex",
+  "POSTGRES_URL=postgresql://inoai_sync:secret@example.test:5432/app",
+  "AGENT_INSTANCE_ID=agent-test",
   "MEMORY_REVIEW_TIME=06:00",
   "MEMORY_REVIEW_MAX_CHARS=20000",
 ].join("\n");
@@ -181,7 +185,7 @@ const validEnv = [
 // start whatever the time of day.
 const beforeReviewTime = { schedulerClock: {
   now: () => new Date(2026, 9, 3, 5, 0), setInterval: () => undefined, clearInterval: () => {},
-} satisfies SchedulerClock };
+} satisfies SchedulerClock, storeFactory: (_pool: unknown, home: Awaited<ReturnType<typeof start>>["runtimeHome"]) => sqliteStore(openDatabase(home)) };
 
 const fakeRuntime: AgentRuntime = {
   displayName: "Codex", loginHint: "codex login",
@@ -190,15 +194,25 @@ const fakeRuntime: AgentRuntime = {
   async cancel() {}, health() { return { state: "ready" }; }, async close() {},
 };
 
+async function startWithTestStore(directory: string): Promise<Awaited<ReturnType<typeof start>> & { database: DatabaseSync }> {
+  const home = await bootstrapRuntimeHome(directory);
+  const database = openDatabase(home);
+  const instance = await start(directory, undefined, () => sqliteStore(database));
+  const release = instance.release;
+  instance.release = async () => { await release(); database.close(); };
+  return Object.assign(instance, { database });
+}
+
 test("plain reply pings are ignored while explicit top-level mentions create distinct threads", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-conversation-"));
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
+    const { database } = instance;
     try {
       const fake = new FakeClient();
-      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, instance.store);
       const incoming = (id: string) => ({
         guildId: "guild", channelId: "another-channel", id, author: { id: "owner", bot: false }, content: `<@inoai> ${id}`,
         channel: { isThread: () => false }, reference: null,
@@ -214,7 +228,7 @@ test("plain reply pings are ignored while explicit top-level mentions create dis
       });
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(fake.threadCount, 0);
-      assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
+      assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
       fake.emit(Events.MessageCreate, { ...incoming("status-request"), channelId: "status" });
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(fake.threadCount, 0);
@@ -223,15 +237,15 @@ test("plain reply pings are ignored while explicit top-level mentions create dis
       await new Promise((resolve) => setImmediate(resolve));
       fake.emit(Events.MessageCreate, incoming("first"));
       fake.emit(Events.MessageCreate, incoming("second"));
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-      const sessions = instance.database.prepare("SELECT * FROM sessions ORDER BY id").all() as Array<{ id: number; conversation_id: string; initiating_external_message_id: string; project_path: string }>;
+      const sessions = database.prepare("SELECT * FROM sessions ORDER BY id").all() as Array<{ id: number; conversation_id: string; initiating_external_message_id: string; project_path: string }>;
       assert.deepEqual(sessions.map(({ conversation_id, initiating_external_message_id }) => [conversation_id, initiating_external_message_id]), [
         ["thread", "first"], ["thread-2", "second"],
       ]);
       assert(sessions.every((session) => session.project_path === directory));
       for (const session of sessions) {
-        const messages = listMessages(instance.database, session.id);
+        const messages = listMessages(database, session.id);
         assert.equal(messages.length, 1);
         assert.equal(messages[0]?.external_message_id, session.initiating_external_message_id);
         assert.equal(messages[0]?.body, `<@inoai> ${session.initiating_external_message_id}`);
@@ -253,11 +267,11 @@ test("failed Discord thread creation leaves no Session or Message", async () => 
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     try {
       const fake = new FakeClient();
       fake.failThread = true;
-      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       fake.emit(Events.MessageCreate, {
         guildId: "guild", channelId: "another-channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
         channel: { isThread: () => false }, reference: null,
@@ -281,10 +295,10 @@ test("owned thread messages queue once without a mention and keep cross-agent me
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     try {
       const fake = new FakeClient();
-      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       const owner = { id: "owner", bot: false };
       const ownBot = { id: "inoai", bot: true };
       const otherBot = { id: "other-bot", bot: true };
@@ -303,6 +317,7 @@ test("owned thread messages queue once without a mention and keep cross-agent me
       fake.emit(Events.MessageCreate, incoming("foreign-thread", "other-thread", "channel"));
       fake.emit(Events.MessageCreate, incoming("bot-authored", "thread", "channel", ownBot));
       fake.emit(Events.MessageCreate, incoming("wrong-user", "thread", "channel", { id: "stranger", bot: false }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
       const sessions = instance.database.prepare("SELECT id FROM sessions").all() as Array<{ id: number }>;
       assert.equal(sessions.length, 1);
@@ -326,10 +341,10 @@ test("failed persistence removes the new thread so redelivery creates one bound 
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     try {
       const fake = new FakeClient();
-      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       const incoming = {
         guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
         channel: { isThread: () => false }, reference: null,
@@ -337,12 +352,12 @@ test("failed persistence removes the new thread so redelivery creates one bound 
       };
       instance.database.exec("CREATE TEMP TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(FAIL, 'session failed'); END");
       fake.emit(Events.MessageCreate, incoming);
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
       assert.deepEqual(fake.deletedThreads, ["thread"]);
       instance.database.exec("DROP TRIGGER fail_session");
       fake.emit(Events.MessageCreate, incoming);
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(fake.threadCount, 2);
       assert.equal(instance.database.prepare("SELECT conversation_id FROM sessions").get()?.conversation_id, "thread-2");
       assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count, 1);
@@ -384,7 +399,7 @@ test("CLI shutdown drains an accepted request before closing SQLite", async () =
     }
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
     assert.deepEqual(fake.deletedThreads, []);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     try {
       assert.equal(restarted.database.prepare("SELECT conversation_id FROM sessions").get()?.conversation_id, "thread");
       assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count, 1);
@@ -403,10 +418,10 @@ test("startup announces once and archives one health Event across reconnects", a
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     try {
       const fake = new FakeClient();
-      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(fake.registeredGuild, "guild");
       assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset"]);
@@ -430,12 +445,12 @@ test("startup announces once and archives one health Event across reconnects", a
   }
 });
 
-test("legacy approval recovery fails closed once, removes old controls, and keeps the Session usable", async () => {
+test("legacy approval recovery is deferred with the SQLite UI archive", { skip: "operational startup no longer reads SQLite approvals" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-legacy-approval-"));
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const first = await start(directory);
+    const first = await startWithTestStore(directory);
     const session = createSession(first.database, {
       user_id: first.owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
       conversation_id: "thread", initiating_external_message_id: "initial", agent_provider: "codex",
@@ -457,7 +472,7 @@ test("legacy approval recovery fails closed once, removes old controls, and keep
       VALUES (?, 'previously-failed', ?, 'another unsafe preview', unixepoch() + 3600, 'failed')`).run(session.id, userMessage.message!.id);
     await first.release();
 
-    const recovered = await start(directory);
+    const recovered = await startWithTestStore(directory);
     try {
       const approval = recovered.database.prepare("SELECT state, summary, resolution_message_id FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get();
       assert.equal(approval?.state, "failed");
@@ -467,7 +482,7 @@ test("legacy approval recovery fails closed once, removes old controls, and keep
       assert.equal(listMessages(recovered.database, session.id).find((message) => message.external_message_id === "ordinary-user")?.body, "ordinary user request");
       assert.equal(listEvents(recovered.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
       const fake = new FakeClient();
-      const transport = await startTransport(recovered, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(recovered, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(recovered.database));
       assert.deepEqual(fake.editedApprovals, ["old-control"]);
       assert.deepEqual(fake.sent[0], { content: "A saved Codex approval could not be resumed after restart. No action was approved.", components: [] });
       assert(fake.sent.some((message) => JSON.stringify(message).includes("Please make a fresh request")));
@@ -482,10 +497,10 @@ test("legacy approval recovery fails closed once, removes old controls, and keep
       await recovered.release();
     }
 
-    const again = await start(directory);
+    const again = await startWithTestStore(directory);
     try {
       const fake = new FakeClient();
-      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(again.database));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(listEvents(again.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
       assert.equal(again.database.prepare("SELECT state FROM sessions WHERE id = ?").get(session.id)?.state, "active");
@@ -493,6 +508,7 @@ test("legacy approval recovery fails closed once, removes old controls, and keep
         guildId: "guild", channelId: "thread", id: "fresh-request", author: { id: "owner", bot: false }, content: "fresh request",
         channel: { isThread: () => true, parentId: "channel" }, reference: null, mentions: { parsedUsers: new Map() },
       });
+      await new Promise((resolve) => setTimeout(resolve, 20));
       assert(listMessages(again.database, session.id).some((message) => message.external_message_id === "fresh-request"));
       await transport.stop();
     } finally {
@@ -508,7 +524,7 @@ test("a claimed legacy notice is not resent after a crash before Discord deliver
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const first = await start(directory);
+    const first = await startWithTestStore(directory);
     const session = createSession(first.database, {
       user_id: first.owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
       conversation_id: "thread", initiating_external_message_id: "initial", agent_provider: "codex",
@@ -518,17 +534,17 @@ test("a claimed legacy notice is not resent after a crash before Discord deliver
       VALUES (?, 'lost-request', 'unsafe preview', unixepoch() + 3600)`).run(session.id);
     await first.release();
 
-    const recovered = await start(directory);
+    const recovered = await startWithTestStore(directory);
     assert.equal(legacyApprovalNotices(recovered.database).length, 1);
     assert.equal(claimLegacyApprovalNotice(recovered.database, legacyApprovalNotices(recovered.database)[0]!.id), true);
     await recovered.release(); // Crash boundary: the claim committed, but Discord send never happened.
 
-    const again = await start(directory);
+    const again = await startWithTestStore(directory);
     try {
       assert.equal(legacyApprovalNotices(again.database).length, 0);
       assert.equal(listEvents(again.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
       const fake = new FakeClient();
-      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client));
+      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(again.database));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(again.database.prepare("SELECT resolution_message_id FROM approvals").get()?.resolution_message_id, null);
       await transport.stop();
@@ -545,18 +561,18 @@ test("connection or health publish failure never archives an online Event", asyn
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     try {
       class LoginFailure extends FakeClient {
         override async login(): Promise<string> { throw new Error("login failed"); }
       }
       const disconnected = new LoginFailure();
-      await assert.rejects(startTransport(instance, undefined, new DiscordTransport("token", disconnected as unknown as Client)), /login failed/);
+      await assert.rejects(startTransport(instance, undefined, new DiscordTransport("token", disconnected as unknown as Client), undefined, undefined, sqliteStore(instance.database)), /login failed/);
       assert.equal(disconnected.sent.length, 0);
 
       const failed = new FakeClient();
       failed.failSend = true;
-      await assert.rejects(startTransport(instance, undefined, new DiscordTransport("token", failed as unknown as Client)), /send failed/);
+      await assert.rejects(startTransport(instance, undefined, new DiscordTransport("token", failed as unknown as Client), undefined, undefined, sqliteStore(instance.database)), /send failed/);
       assert.equal(listEvents(instance.database).length, 0);
     } finally {
       await instance.release();
@@ -571,7 +587,7 @@ test("shutdown during an in-flight health post cannot archive an online Event", 
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     try {
       const fake = new FakeClient();
       let sendStarted!: () => void;
@@ -580,7 +596,7 @@ test("shutdown during an in-flight health post cannot archive an online Event", 
       fake.sendGate = new Promise<void>((resolve) => { finishSend = resolve; });
       fake.sendStarted = sendStarted;
       const transport = new DiscordTransport("token", fake as unknown as Client);
-      const starting = startTransport(instance, undefined, transport);
+      const starting = startTransport(instance, undefined, transport, undefined, undefined, sqliteStore(instance.database));
       const rejected = assert.rejects(starting);
       await sending;
       await transport.stop();
@@ -614,7 +630,7 @@ test("CLI SIGTERM during the health post releases SQLite and the runtime lock", 
     process.emit("SIGTERM");
     finishSend();
     await running;
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     try {
       assert.equal(listEvents(restarted.database).length, 0);
     } finally {
@@ -644,7 +660,7 @@ test("CLI exits and releases the runtime lock after terminal Discord failure", a
     }
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
     assert.equal(process.exitCode, 1);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     await restarted.release();
   } finally {
     process.chdir(previousDirectory);
@@ -666,10 +682,10 @@ test("Claude startup failure happens before any external connection and releases
     const fake = new FakeClient();
     let loggedIn = false;
     fake.login = async () => { loggedIn = true; return "connected"; };
-    await assert.rejects(run([], new DiscordTransport("token", fake as unknown as Client)), /Claude CLI is unavailable/);
+    await assert.rejects(run([], new DiscordTransport("token", fake as unknown as Client), undefined, beforeReviewTime), /Claude CLI is unavailable/);
     assert.equal(loggedIn, false);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     await restarted.release();
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
@@ -694,10 +710,10 @@ test("a missing OpenCode CLI fails startup before any external connection and re
     const fake = new FakeClient();
     let loggedIn = false;
     fake.login = async () => { loggedIn = true; return "connected"; };
-    await assert.rejects(run([], new DiscordTransport("token", fake as unknown as Client)), /OpenCode CLI is unavailable/);
+    await assert.rejects(run([], new DiscordTransport("token", fake as unknown as Client), undefined, beforeReviewTime), /OpenCode CLI is unavailable/);
     assert.equal(loggedIn, false);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     await restarted.release();
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
@@ -777,12 +793,12 @@ test("Claude credential guard refuses an API key before Discord starts and relea
     const fake = new FakeClient();
     let loggedIn = false;
     fake.login = async () => { loggedIn = true; return "connected"; };
-    const error = await run([], new DiscordTransport("token", fake as unknown as Client)).then(() => assert.fail("expected refusal"), (failure: unknown) => failure as Error);
+    const error = await run([], new DiscordTransport("token", fake as unknown as Client), undefined, beforeReviewTime).then(() => assert.fail("expected refusal"), (failure: unknown) => failure as Error);
     assert.match(error.message, /Claude credential refused: an API key \(ANTHROPIC_API_KEY\)/);
     assert.equal(/sentinel/i.test(error.message), false);
     assert.equal(loggedIn, false);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     try {
       assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM events").get()?.count, 0);
     } finally { await restarted.release(); }
@@ -821,7 +837,7 @@ test("Claude startup with the subscription login wires the runtime and a denied 
     assert.match(JSON.stringify(fake.sent), /claude answer/);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
     assert.equal(/sentinel|rm -rf/i.test(JSON.stringify([fake.sent, logged])), false);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     try {
       const events = listEvents(restarted.database);
       assert.equal(events.filter((event) => event.event_type === "approval_unsupported").length, 1);
@@ -904,7 +920,7 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
     const tokens = ["sk-test-AAAAAAAAAAAAAAAAAAAA", "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"];
     const leaks = (text: string) => tokens.some((token) => text.includes(token)) || /sentinel|permission requested|cannot ask the user|external_directory|Command failed/i.test(text);
     assert.equal(leaks(JSON.stringify([fake.sent, logged])), false);
-    const restarted = await start(directory);
+    const restarted = await startWithTestStore(directory);
     try {
       const session = restarted.database.prepare("SELECT agent_provider, agent_session_id, updated_by FROM sessions").get();
       assert.deepEqual({ ...session }, { agent_provider: "opencode", agent_session_id: "ses_wired000000000000000000000", updated_by: "runtime:opencode" });
@@ -935,9 +951,7 @@ test("invalid configuration or database prevents Discord startup", async () => {
     const home = await bootstrapRuntimeHome(directory);
     await assert.rejects(start(directory), /Invalid configuration/);
     await writeFile(home.envFile, validEnv);
-    await rm(home.databaseFile);
-    await mkdir(home.databaseFile);
-    await assert.rejects(start(directory));
+    await assert.rejects(start(directory), /PostgreSQL operation failed|Agent Instance is already active or not provisioned/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

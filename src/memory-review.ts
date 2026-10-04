@@ -9,6 +9,7 @@ import type { MemoryRecord, MemoryReviewRecord, MessageRecord } from "./database
 import { openCodeAuthenticationNotice } from "./opencode-runtime.js";
 import { secretLike } from "./prompt-context.js";
 import { runtimeFailureNotice } from "./runtime-turn.js";
+import type { MemoryReviewCommit, MemoryReviewSnapshot } from "./operational-store.js";
 
 // One Memory Review (ADR 0010): an Agent Session's new archive range becomes one Recap plus validated Memory changes,
 // committed in one transaction. Nothing is written before that commit, so any failed attempt is safe to rerun.
@@ -75,6 +76,14 @@ export type MemoryReviewResult =
   | { state: "completed"; reviewId: number; throughMessageId: number; added: number; updated: number; deleted: number; ignored: MemoryReviewIgnoredReason[] }
   // Every failure happens before the commit and leaves SQLite unchanged, so it is always replay-safe.
   | { state: "failed"; reason: MemoryReviewFailureReason };
+
+/** Async persistence boundary for PostgreSQL-backed Memory Review. The review engine
+ * performs all model work from one snapshot, then hands one validated commit to the
+ * store so the cursor, recap, memories, and outcome event remain atomic. */
+export type AsyncMemoryReviewStore = {
+  readMemoryReview(sessionId: number, reviewId?: number): Promise<MemoryReviewSnapshot>;
+  commitMemoryReview(input: MemoryReviewCommit): Promise<{ state: "completed"; reviewId: number } | { state: "stale_range" }>;
+};
 
 type Entry = { id: number; role: "owner" | "agent"; body: string };
 type Window = { text: string; firstId: number; lastId: number };
@@ -430,6 +439,81 @@ function commit(
     return { state: "completed", reviewId: row.id, throughMessageId: throughId, ...counts, ignored };
   } catch (error) {
     database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function selectAsyncRange(snapshot: MemoryReviewSnapshot, runtime: AgentRuntime): { messages: MessageRecord[]; entries: Entry[] } {
+  const owners = new Set(snapshot.ownerUserIds);
+  const notices = fixedNotices(runtime);
+  const messages: MessageRecord[] = [];
+  for (const message of snapshot.messages) {
+    if (snapshot.review && message.id > snapshot.review.through_message_id) break;
+    if (message.state === "pending" || message.state === "processing") {
+      if (snapshot.review) throw new ReviewFailed("range_not_ready");
+      break;
+    }
+    messages.push(message);
+  }
+  const entries = messages.flatMap((message): Entry[] => {
+    if (message.state !== "completed") return [];
+    if (message.direction === "user") return message.user_id !== null && owners.has(message.user_id)
+      ? [{ id: message.id, role: "owner", body: redactSecrets(message.body) }] : [];
+    return notices.has(message.body) ? [] : [{ id: message.id, role: "agent", body: redactSecrets(message.body) }];
+  });
+  return { messages, entries };
+}
+
+/** PostgreSQL equivalent of reviewSession. It deliberately has no fallback to
+ * SQLite: callers choose the store explicitly, and all durable writes go through
+ * commitMemoryReview. */
+export async function reviewSessionWithStore(store: AsyncMemoryReviewStore, runtime: AgentRuntime, sessionId: number, options: MemoryReviewOptions): Promise<MemoryReviewResult> {
+  if (!runtime.review) return { state: "skipped", reason: "unsupported" };
+  const { signal } = options;
+  try {
+    const snapshot = await store.readMemoryReview(sessionId, options.reviewId);
+    const review = snapshot.review;
+    if (options.reviewId !== undefined && (!review || review.state === "completed" || review.from_message_id <= snapshot.cursor)) throw new ReviewFailed("stale_range");
+    const { messages, entries } = selectAsyncRange(snapshot, runtime);
+    if (review && messages.length && messages[0].id !== review.from_message_id) throw new ReviewFailed("stale_range");
+    if (!entries.length) return { state: "empty" };
+    const { windows, included } = buildWindows(entries, options.maxChars);
+    const fromId = review?.from_message_id ?? messages[0].id;
+    const throughId = included.length < entries.length ? included.at(-1)!.id : review?.through_message_id ?? messages.at(-1)!.id;
+    const noteLimit = Math.max(minNoteChars, Math.min(maxNoteChars, Math.floor(notesBudget / windows.length)));
+    const notes: string[] = [];
+    for (const [index, window] of windows.entries()) {
+      const reply = await ask(runtime, windowPrompt(index + 1, windows.length, noteLimit, window.text), signal);
+      if (typeof reply.notes !== "string") throw new ReviewFailed("unparseable");
+      notes.push(`[window ${index + 1}, messages ${window.firstId} to ${window.lastId}]\n${redactSecrets(reply.notes.trim().slice(0, noteLimit))}`);
+    }
+    const memoryLines = withinBudget(snapshot.memories.map((memory) => `[memory ${memory.id}] origin=${memory.origin}: ${redactSecrets(memory.body)}`), memoryBudget);
+    const recapLines = withinBudget(snapshot.recaps.map(({ id, recap }) => `[recap ${id}] ${redactSecrets(recap)}`), recapBudget);
+    const result = await ask(runtime, aggregationPrompt(windows.length, fromId, throughId, notes, explicitRequests(included), memoryLines, recapLines), signal);
+    if (typeof result.recap !== "string" || !Array.isArray(result.actions)) throw new ReviewFailed("unparseable");
+    let recap = result.recap.trim();
+    if (!recap) throw new ReviewFailed("unparseable");
+    if (secretLike.test(recap)) throw new ReviewFailed("unsafe_recap");
+    if (recap.length > recapLimit) recap = `${recap.slice(0, recapLimit - 1)}…`;
+    if (signal?.aborted) throw new ReviewFailed("cancelled");
+    const entriesById = new Map(included.map((entry) => [entry.id, entry]));
+    const memories = new Map(snapshot.memories.map((memory) => [memory.id, memory]));
+    const priorRecaps = new Set(snapshot.recaps.map(({ id }) => id));
+    const targeted = new Set<number>();
+    const ignored: MemoryReviewIgnoredReason[] = [];
+    const counts = { added: 0, updated: 0, deleted: 0 };
+    const actions: MemoryReviewCommit["actions"] = [];
+    for (const [index, value] of result.actions.entries()) {
+      const action = index < maxActions ? validateAction(value, entriesById, memories, (id) => priorRecaps.has(id) && id !== review?.id, targeted) : "too_many_actions";
+      if (typeof action === "string") { ignored.push(action); continue; }
+      actions.push(action);
+      counts[action.op === "add" ? "added" : action.op === "update" ? "updated" : "deleted"]++;
+    }
+    const committed = await store.commitMemoryReview({ sessionId, cursor: snapshot.cursor, reviewId: review?.id, fromMessageId: fromId, throughMessageId: throughId, recap, actions, ignored, counts, actor });
+    if (committed.state === "stale_range") return { state: "failed", reason: "stale_range" };
+    return { state: "completed", reviewId: committed.reviewId, throughMessageId: throughId, ...counts, ignored };
+  } catch (error) {
+    if (error instanceof ReviewFailed) return { state: "failed", reason: error.reason };
     throw error;
   }
 }

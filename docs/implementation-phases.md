@@ -1,6 +1,6 @@
 # inoai implementation phases
 
-V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. Phase 6c adds an optional analytics-sync scheduler; it does not make cloud access an operational dependency or accept remote UI access.
+V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
 
 ## Phase 1 — Scaffolding
 
@@ -267,23 +267,32 @@ Phase 6b uses synthetic, secret-free archived Messages and no Discord run. The p
 
 **Testable outcome:** Codex Memory Review remains explicitly skipped with evidence and an unchanged cursor until a tool/MCP-free throwaway session is proven; no Discord access is required.
 
-## Phase 6c — BigQuery analytics sync
+## Phase 6c — PostgreSQL operational database
 
-**Purpose:** export an analytics-safe, one-way copy of local SQLite data to BigQuery without making cloud access an operational dependency.
+**Purpose:** replace SQLite as the core operational source of truth with one shared PostgreSQL database, while keeping Electron SQLite reads and BigQuery analytics isolated for their later phases.
 
-SQLite remains the operational source of truth. Sync is optional, asynchronous, and configurable; an instance without BigQuery configuration or Google Application Default Credentials continues to run normally. Multiple runtime homes share BigQuery tables and identify their rows with a stable generated `agent_instance_id` and a non-unique `agent_name` (defaulting to the runtime-home folder name). Exported text uses the existing secret-redaction rules; raw tool input/output and credentials are never exported. Soft deletes are represented as tombstones rather than physical deletes. Sync failures are recorded locally and retried without delaying Discord Turns or Memory Reviews.
+Phase 6c uses a shared `inoai_control` schema, one derived Agent Schema per Agent Instance, explicit privileged migrations/provisioning, and the restricted `inoai_sync` runtime role. Current isolation is application-enforced through `POSTGRES_ISOLATION_MODE=application`; unsupported database-enforced mode fails closed. Existing SQLite data is disposable and is not migrated.
 
 ### Tasks
 
-1. Add persistent runtime metadata for `agent_instance_id` and configurable `agent_name`.
-2. Add optional BigQuery configuration and an incremental, idempotent exporter for Conversations, Sessions, Messages, Memory, Recaps, and non-secret Events.
-3. Add local sync watermarks, retry/backoff, soft-delete propagation, and non-blocking failure events.
-4. Document Google ADC setup for repository clones and verify the exporter with a disposable BigQuery test project or documented offline fallback.
-5. Add analytics schema/partitioning conventions using a configurable project and dataset, with tables clustered by `agent_instance_id`.
+1. Add the PostgreSQL client/configuration and async `OperationalStore` boundary (AgentRig task 0071).
+2. Add Docker Compose PostgreSQL for local testing and a locked, versioned migration runner (0072).
+3. Add control-plane registration and the credential-free DBeaver provisioning factory (0073).
+4. Provision per-Agent operational tables, indexes, audit/soft-delete constraints, and restricted runtime grants (0074).
+5. Implement the async PostgreSQL operational store for conversations, queue, delivery, recovery, Memory, reviews, and events (0075–0076).
+6. Add Agent Instance leases and migrate all core runtime consumers to the async store (0077, 0081).
+7. Wire PostgreSQL into startup/shutdown and remove the normal runtime's SQLite path; keep Electron and BigQuery isolated (0078).
+8. Run opt-in Docker integration and role/lease/shutdown acceptance tests (0079), then complete the independent integrated review (0080).
 
-**Testable outcome:** configured instances incrementally export redacted analytics data to BigQuery; unconfigured or unavailable BigQuery never prevents normal local operation.
+**Testable outcome:** normal inoai startup requires a reachable, provisioned PostgreSQL Agent Schema and an owned lease; queue, Discord transport, Memory Review, Manual Memory, and recovery operate through PostgreSQL, while Electron/BigQuery remain on their separate tracks.
 
-**Current implementation boundary:** local metadata, configuration validation, table definitions, exporter, watermarks, retry state, scheduler, and fake-sink acceptance are implemented. The production `@google-cloud/bigquery` client uses ADC and is constructed from configured project settings; `src/index.ts` starts the scheduler after transport startup and stops it during shutdown. No live cloud credentials are required by the offline test suite; a live export still requires host ADC, IAM, project, and dataset setup.
+**Test scenarios:**
+
+- A missing, malformed, unavailable, or unprovisioned PostgreSQL configuration fails before Discord work and never logs credentials.
+- Two processes using one Agent Instance cannot both hold the lease; expired ownership is recoverable and different Agent Instances run concurrently.
+- Runtime DML succeeds through `inoai_sync`, DDL is denied, and unsupported isolation modes fail closed.
+- FIFO claims, idempotent delivery, recovery, Memory Review cursors, redaction, soft deletes, and Manual Memory operations preserve prior behavior.
+- Unit tests use fake stores; opt-in Docker tests require the restricted runtime role and safely skip when Docker/credentials are unavailable.
 
 ## Phase 7 — Separate Electron analytics UI
 

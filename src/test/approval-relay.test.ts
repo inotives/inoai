@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { ApprovalRelay } from "../approval-relay.js";
 import { CodexAppServer } from "../codex-app-server.js";
 import { CodexRuntime } from "../codex-runtime.js";
@@ -64,7 +66,7 @@ test("unsupported Codex approvals fail closed without leaking arbitrary literals
     const server = await CodexAppServer.connect({ spawnProcess: () => fake.child() });
     const runtime = new CodexRuntime(server);
     const discord = new FakeDiscord();
-    const relay = new ApprovalRelay(database, server, discord.transport());
+    const relay = new ApprovalRelay(sqliteStore(database), server, discord.transport());
     try {
       const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "parent", conversation_id: "conversation", initiating_external_message_id: "initial", agent_provider: "codex", agent_session_id: "pending:initial", project_path: directory });
@@ -122,7 +124,7 @@ test("approval requests for a Codex review thread are declined without touching 
     const server = await CodexAppServer.connect({ spawnProcess: () => fake.child() });
     const runtime = new CodexRuntime(server, undefined, undefined, true);
     const discord = new FakeDiscord();
-    const relay = new ApprovalRelay(database, server, discord.transport());
+    const relay = new ApprovalRelay(sqliteStore(database), server, discord.transport());
     try {
       const counts = () => JSON.stringify(["sessions", "messages", "events", "approvals"].map((table) =>
         (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count));
@@ -139,31 +141,5 @@ test("approval requests for a Codex review thread are declined without touching 
       assert.equal(counts(), before);
       assert.deepEqual(discord.messages, []);
     } finally { relay.close(); await server.close(); database.close(); }
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-test("rebinds approval handling to a replacement app-server", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "inoai-approval-rebind-"));
-  try {
-    const home = await bootstrapRuntimeHome(directory);
-    const database = openDatabase(home);
-    const firstProcess = new FakeProcess();
-    const first = await CodexAppServer.connect({ spawnProcess: () => firstProcess.child() });
-    const secondProcess = new FakeProcess();
-    const second = await CodexAppServer.connect({ spawnProcess: () => secondProcess.child() });
-    const discord = new FakeDiscord();
-    const relay = new ApprovalRelay(database, first, discord.transport());
-    try {
-      const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
-      const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "parent", conversation_id: "conversation", initiating_external_message_id: "initial", agent_provider: "codex", agent_session_id: "thread-1", project_path: directory });
-      relay.bind(second);
-      secondProcess.reply({ id: "replacement-approval", method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", command: "echo safe" } });
-      await tick();
-      assert.deepEqual(secondProcess.sent.find((entry) => entry.id === "replacement-approval"), { id: "replacement-approval", result: { decision: "decline" } });
-      assert.equal(firstProcess.sent.some((entry) => entry.id === "replacement-approval"), false);
-      assert.equal(discord.messages.length, 1);
-      assert.equal((database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'approval_unsupported'").get() as { count: number }).count, 1);
-      assert.equal(session.id > 0, true);
-    } finally { relay.close(); await first.close(); await second.close(); database.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

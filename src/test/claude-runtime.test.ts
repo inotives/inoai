@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { RuntimeEvent } from "../agent-runtime.js";
 import { resumeAgentSession, startAgentSession } from "../agent-session.js";
@@ -145,12 +147,12 @@ test("binds the assigned UUID with the Claude runtime actor and uses neutral res
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "claude", agent_session_id: "pending:message", project_path: project });
       const runtime = new ClaudeRuntime({ executable: "/nonexistent/claude" });
-      await assert.rejects(resumeAgentSession(database, runtime, session.id, home), /no runtime session to resume/);
-      const id = await startAgentSession(database, runtime, session.id, home);
+      await assert.rejects(resumeAgentSession(sqliteStore(database), runtime, session.id, home), /no runtime session to resume/);
+      const id = await startAgentSession(sqliteStore(database), runtime, session.id, home);
       const bound = getSession(database, session.id)!;
       assert.equal(bound.agent_session_id, id);
       assert.equal(bound.updated_by, "runtime:claude");
-      assert.equal(await resumeAgentSession(database, runtime, session.id, home), id);
+      assert.equal(await resumeAgentSession(sqliteStore(database), runtime, session.id, home), id);
     } finally { database.close(); }
   } finally { await rm(project, { recursive: true, force: true }); }
 });
@@ -307,7 +309,7 @@ test("a Turn whose init reports an API-key source is killed before it does work"
     try {
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "claude", agent_session_id: id, project_path: project });
-      const outcome = await runRuntimeTurn(database, runtime, session.id, id, "question");
+      const outcome = await runRuntimeTurn(sqliteStore(database), runtime, session.id, id, "question");
       assert.deepEqual(outcome, { state: "failed", reason: "authentication", attempts: 1, replaySafe: false,
         notice: "Claude sign-in needs attention. Run claude /login locally, then send a fresh request." });
       assert.equal((await fake.calls()).length, 1);
@@ -383,7 +385,7 @@ test("a resume that finds no conversation fails closed as session_missing and is
     try {
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "claude", agent_session_id: lost, project_path: project });
-      const outcome = await runRuntimeTurn(database, restarted, session.id, lost, "question");
+      const outcome = await runRuntimeTurn(sqliteStore(database), restarted, session.id, lost, "question");
       assert.deepEqual(outcome, { state: "failed", reason: "session_missing", attempts: 1, replaySafe: false,
         notice: "This thread's Claude session could not be found. Use /inoai reset to start a new session." });
       assert.equal((await fake.calls()).length, 1);
@@ -474,8 +476,8 @@ test("Claude permission denials fail closed with one non-secret notice and Event
       async sendMessage(...args: unknown[]) { sends.push(args); return `discord-${sends.length}`; },
       async showWorking() {},
     };
-    const runtime = new ClaudeRuntime({ executable: fake.executable, onPermissionDenied: claudePermissionDenialNotifier(database, transport as never) });
-    const worker = new ConversationWorker(database, home, runtime, "claude", () => {}, transport);
+    const runtime = new ClaudeRuntime({ executable: fake.executable, onPermissionDenied: claudePermissionDenialNotifier(sqliteStore(database), transport as never) });
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "claude", () => {}, transport);
     for (const id of ["first", "second", "third"]) {
       archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: id, external_author_id: "owner", user_id: owner.id, direction: "user", body: id, reply_to_external_message_id: null, in_reply_to_message_id: null });
     }

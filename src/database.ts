@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { Configuration } from "./config.js";
 import type { RuntimeHome } from "./runtime-home.js";
@@ -27,31 +27,6 @@ CREATE TABLE IF NOT EXISTS users (
   deleted_by TEXT,
   CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL)),
   UNIQUE (transport, workspace_id, external_user_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_instance_metadata (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  agent_instance_id TEXT NOT NULL UNIQUE,
-  agent_name TEXT NOT NULL,
-  runtime_provider TEXT NOT NULL,
-  runtime_home_name TEXT NOT NULL,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  created_by TEXT NOT NULL DEFAULT 'system',
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_by TEXT NOT NULL DEFAULT 'system',
-  deleted_at INTEGER,
-  deleted_by TEXT,
-  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
-);
-
-CREATE TABLE IF NOT EXISTS bigquery_sync_state (
-  table_name TEXT PRIMARY KEY,
-  watermark_updated_at INTEGER,
-  watermark_source_id INTEGER,
-  consecutive_failures INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT,
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -249,54 +224,7 @@ function migrateMessages(database: DatabaseSync): void {
   if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("Message migration broke a foreign key");
 }
 
-export type AgentInstanceMetadata = {
-  id: 1;
-  agent_instance_id: string;
-  agent_name: string;
-  runtime_provider: string;
-  runtime_home_name: string;
-  created_at: number;
-  created_by: string;
-  updated_at: number;
-  updated_by: string;
-  deleted_at: number | null;
-  deleted_by: string | null;
-};
-
-export type AgentInstanceMetadataOptions = {
-  agentName?: string;
-  agentProvider?: string;
-};
-
-function ensureAgentInstanceMetadata(database: DatabaseSync, home: RuntimeHome, options: AgentInstanceMetadataOptions): void {
-  const runtimeHomeName = basename(resolve(home.directory));
-  const existing = database.prepare("SELECT agent_instance_id FROM agent_instance_metadata WHERE id = 1").get();
-  if (!existing) {
-    database.prepare(`INSERT INTO agent_instance_metadata
-      (id, agent_instance_id, agent_name, runtime_provider, runtime_home_name)
-      VALUES (1, ?, ?, ?, ?)`).run(
-      randomUUID(), options.agentName?.trim() || runtimeHomeName, options.agentProvider?.trim() || "unknown", runtimeHomeName,
-    );
-    return;
-  }
-  if (options.agentName?.trim() || options.agentProvider?.trim()) {
-    database.prepare(`UPDATE agent_instance_metadata SET
-      agent_name = COALESCE(NULLIF(?, ''), agent_name),
-      runtime_provider = COALESCE(NULLIF(?, ''), runtime_provider),
-      runtime_home_name = ?, deleted_at = NULL, deleted_by = NULL,
-      updated_at = unixepoch(), updated_by = 'system' WHERE id = 1`).run(
-      options.agentName?.trim() || "", options.agentProvider?.trim() || "", runtimeHomeName,
-    );
-  }
-}
-
-export function getAgentInstanceMetadata(database: DatabaseSync): AgentInstanceMetadata {
-  const metadata = database.prepare("SELECT * FROM agent_instance_metadata WHERE id = 1 AND deleted_at IS NULL").get() as AgentInstanceMetadata | undefined;
-  if (!metadata) throw new Error("Agent Instance metadata is missing");
-  return metadata;
-}
-
-export function openDatabase(home: RuntimeHome, options: AgentInstanceMetadataOptions = {}): DatabaseSync {
+export function openDatabase(home: RuntimeHome): DatabaseSync {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
   const expectedFile = join(directory, "inoai.sqlite");
@@ -307,7 +235,6 @@ export function openDatabase(home: RuntimeHome, options: AgentInstanceMetadataOp
   const database = new DatabaseSync(databaseFile);
   database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
   database.exec(initialSchema);
-  ensureAgentInstanceMetadata(database, home, options);
   migrateMessages(database);
   recoverStaleWork(database);
   recoverLegacyApprovals(database);
@@ -412,14 +339,14 @@ export type MemoryReviewRecord = AuditColumns & {
   completed_at: number | null;
 };
 
-type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
-type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
+export type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
+export type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
 export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failure_detail" | "started_at" | "runtime_started_at" | "completed_at" | "provisional_id" | "delivery_state" | "state"> & { state?: MessageRecord["state"] };
 export type NewAgentResponse = Omit<NewMessage, "session_id" | "direction" | "in_reply_to_message_id" | "state">;
 export type MessageQueueMode = "per-session" | "global";
-type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
-type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state">;
-type NewMemoryReview = Omit<MemoryReviewRecord, keyof AuditColumns | "id" | "attempts" | "next_attempt_at" | "recap" | "failure_detail" | "started_at" | "completed_at" | "state">;
+export type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
+export type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state">;
+export type NewMemoryReview = Omit<MemoryReviewRecord, keyof AuditColumns | "id" | "attempts" | "next_attempt_at" | "recap" | "failure_detail" | "started_at" | "completed_at" | "state">;
 
 function activeRow<T>(database: DatabaseSync, sql: string, ...values: Array<string | number | bigint | Uint8Array | null>): T | undefined {
   return database.prepare(sql).get(...values) as T | undefined;

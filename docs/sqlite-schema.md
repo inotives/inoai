@@ -6,22 +6,6 @@ This is the initial SQLite schema for the chat-to-agent bridge. Times are Unix s
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
--- Each runtime home has exactly one stable, non-secret identity row.
-CREATE TABLE agent_instance_metadata (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  agent_instance_id TEXT NOT NULL UNIQUE,
-  agent_name TEXT NOT NULL,
-  runtime_provider TEXT NOT NULL,
-  runtime_home_name TEXT NOT NULL,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  created_by TEXT NOT NULL DEFAULT 'system',
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_by TEXT NOT NULL DEFAULT 'system',
-  deleted_at INTEGER,
-  deleted_by TEXT,
-  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
-);
-
 CREATE TABLE users (
   id INTEGER PRIMARY KEY,
   transport TEXT NOT NULL,
