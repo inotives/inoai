@@ -1,8 +1,6 @@
-import type { DatabaseSync } from "node:sqlite";
-
 import { RuntimeFailure } from "./agent-runtime.js";
 import type { AgentRuntime } from "./agent-runtime.js";
-import { createEvent, getSession, rebindAgentSession } from "./database.js";
+import type { OperationalStore } from "./operational-store.js";
 
 export type RuntimeTurnOutcome =
   | { state: "completed"; answer: string; attempts: number; replaySafe: false }
@@ -30,7 +28,7 @@ function failureKind(error: unknown): { reason: RuntimeFailure["kind"]; replaySa
 }
 
 export async function runRuntimeTurn(
-  database: DatabaseSync,
+  database: Pick<OperationalStore, "createEvent" | "getSession" | "rebindAgentSession">,
   runtime: AgentRuntime,
   sessionId: number,
   agentSessionId: string,
@@ -41,24 +39,24 @@ export async function runRuntimeTurn(
 ): Promise<RuntimeTurnOutcome> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (shutdown?.aborted) return { state: "failed", reason: "cancelled", notice: failureNotice("cancelled", runtime), attempts: attempt - 1, replaySafe: false };
-    createEvent(database, { session_id: sessionId, message_id: messageId, event_type: "runtime_attempt", detail: `attempt=${attempt}` }, "runtime");
+    await database.createEvent({ session_id: sessionId, message_id: messageId, event_type: "runtime_attempt", detail: `attempt=${attempt}` }, "runtime");
     try {
       let answer: string | undefined;
       for await (const event of runtime.runTurn(agentSessionId, prompt)) {
         if (event.type === "progress") onProgress(event.text);
         else if (event.type === "session") {
           // Bound as soon as it is reported, so a crash later in the Turn still leaves the real ID in SQLite.
-          const session = getSession(database, sessionId);
+          const session = await database.getSession(sessionId);
           if (!session) throw new RuntimeFailure("uncertain");
-          rebindAgentSession(database, sessionId, agentSessionId, event.id, `runtime:${session.agent_provider}`);
+          await database.rebindAgentSession(sessionId, agentSessionId, event.id, `runtime:${session.agent_provider}`);
         } else answer = event.text;
       }
       if (answer === undefined) throw new RuntimeFailure("uncertain");
-      createEvent(database, { session_id: sessionId, message_id: messageId, event_type: "runtime_completed", detail: `attempt=${attempt}` }, "runtime");
+      await database.createEvent({ session_id: sessionId, message_id: messageId, event_type: "runtime_completed", detail: `attempt=${attempt}` }, "runtime");
       return { state: "completed", answer, attempts: attempt, replaySafe: false };
     } catch (error) {
       const { reason, replaySafe } = failureKind(error);
-      createEvent(database, { session_id: sessionId, message_id: messageId, event_type: "runtime_failure", detail: `attempt=${attempt}; reason=${reason}; replay_safe=${replaySafe}` }, "runtime");
+      await database.createEvent({ session_id: sessionId, message_id: messageId, event_type: "runtime_failure", detail: `attempt=${attempt}; reason=${reason}; replay_safe=${replaySafe}` }, "runtime");
       if (shutdown?.aborted) return { state: "failed", reason: "cancelled", notice: failureNotice("cancelled", runtime), attempts: attempt, replaySafe: false };
       if (replaySafe && (reason === "pre_start" || reason === "timed_out") && attempt < maxAttempts) {
         await new Promise((resolve) => setTimeout(resolve, 100 * attempt));

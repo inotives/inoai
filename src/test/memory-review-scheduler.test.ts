@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
 import { ConversationWorker, fixedTurnNotices } from "../conversation-worker.js";
@@ -98,7 +100,7 @@ async function seed(database: DatabaseSync, directory: string, home: RuntimeHome
 }
 
 function scheduler(database: DatabaseSync, runtime: AgentRuntime, clock: SchedulerClock) {
-  return new MemoryReviewScheduler(database, runtime, { reviewTime: "06:00", maxChars: 20_000, clock });
+  return new MemoryReviewScheduler(sqliteStore(database), runtime, { reviewTime: "06:00", maxChars: 20_000, clock });
 }
 
 async function until(check: () => boolean): Promise<void> {
@@ -199,7 +201,7 @@ test("chat arriving through the worker preempts a review without using an attemp
     add("user", "Remember that the CI runs on Fridays.");
     const sent: string[] = [];
     const transport = { async sendMessage(_conversation: string, text: string) { sent.push(text); return `sent-${sent.length}`; } };
-    const worker = new ConversationWorker(database, home, runtime, "claude", () => {}, transport);
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "claude", () => {}, transport);
     const instance = scheduler(database, runtime, time.clock);
     worker.onQueueChange(() => instance.poke());
     instance.start();
@@ -207,6 +209,7 @@ test("chat arriving through the worker preempts a review without using an attemp
     assert.equal(reviews()[0].state, "processing");
     add("user", "a chat request", "pending", chat.id);
     worker.wake();
+    await instance.poke();
     assert.equal(state.signals[0].aborted, true);
     // Once the chat Turn settles the worker wakes again and the review restarts and completes.
     state.mode = "ok";
@@ -323,7 +326,7 @@ test("a range past the window cap completes in part and a follow-up row reviews 
     const { runtime } = reviewRuntime();
     // One Message per 500-character window; the engine stops at 60 windows.
     const messages = Array.from({ length: 65 }, (_, index) => add("user", `${index} ${"x".repeat(450)}`));
-    const instance = new MemoryReviewScheduler(database, runtime, { reviewTime: "06:00", maxChars: 500, clock: time.clock });
+    const instance = new MemoryReviewScheduler(sqliteStore(database), runtime, { reviewTime: "06:00", maxChars: 500, clock: time.clock });
     instance.start();
     await until(() => reviews().length === 2 && reviews()[1].state === "completed");
     await instance.idle();

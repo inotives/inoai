@@ -267,6 +267,33 @@ Phase 6b uses synthetic, secret-free archived Messages and no Discord run. The p
 
 **Testable outcome:** Codex Memory Review remains explicitly skipped with evidence and an unchanged cursor until a tool/MCP-free throwaway session is proven; no Discord access is required.
 
+## Phase 6c — PostgreSQL operational database
+
+**Purpose:** replace SQLite as the core operational source of truth with one shared PostgreSQL database, while keeping Electron SQLite reads and BigQuery analytics isolated for their later phases.
+
+Phase 6c uses a shared `inoai_control` schema, one derived Agent Schema per Agent Instance, explicit privileged migrations/provisioning, and the restricted `inoai_sync` runtime role. Current isolation is application-enforced through `POSTGRES_ISOLATION_MODE=application`; unsupported database-enforced mode fails closed. Existing SQLite data is disposable and is not migrated.
+
+### Tasks
+
+1. Add the PostgreSQL client/configuration and async `OperationalStore` boundary (AgentRig task 0071).
+2. Add Docker Compose PostgreSQL for local testing and a locked, versioned migration runner (0072).
+3. Add control-plane registration and the credential-free DBeaver provisioning factory (0073).
+4. Provision per-Agent operational tables, indexes, audit/soft-delete constraints, and restricted runtime grants (0074).
+5. Implement the async PostgreSQL operational store for conversations, queue, delivery, recovery, Memory, reviews, and events (0075–0076).
+6. Add Agent Instance leases and migrate all core runtime consumers to the async store (0077, 0081).
+7. Wire PostgreSQL into startup/shutdown and remove the normal runtime's SQLite path; keep Electron and BigQuery isolated (0078).
+8. Run opt-in Docker integration and role/lease/shutdown acceptance tests (0079), then complete the independent integrated review (0080).
+
+**Testable outcome:** normal inoai startup requires a reachable, provisioned PostgreSQL Agent Schema and an owned lease; queue, Discord transport, Memory Review, Manual Memory, and recovery operate through PostgreSQL, while Electron/BigQuery remain on their separate tracks.
+
+**Test scenarios:**
+
+- A missing, malformed, unavailable, or unprovisioned PostgreSQL configuration fails before Discord work and never logs credentials.
+- Two processes using one Agent Instance cannot both hold the lease; expired ownership is recoverable and different Agent Instances run concurrently.
+- Runtime DML succeeds through `inoai_sync`, DDL is denied, and unsupported isolation modes fail closed.
+- FIFO claims, idempotent delivery, recovery, Memory Review cursors, redaction, soft deletes, and Manual Memory operations preserve prior behavior.
+- Unit tests use fake stores; opt-in Docker tests require the restricted runtime role and safely skip when Docker/credentials are unavailable.
+
 ## Phase 7 — Separate Electron analytics UI
 
 **Purpose:** provide a separately started Electron UI to inspect archived conversations, Memory, queue health, and review results, and to manage Manual Memory Entries.

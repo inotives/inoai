@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { RuntimeEvent } from "../agent-runtime.js";
 import { resumeAgentSession, startAgentSession } from "../agent-session.js";
@@ -169,17 +171,17 @@ test("binds the placeholder, rebinds it to the streamed OpenCode ID with the Ope
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "opencode", agent_session_id: "pending:message", project_path: project });
       const runtime = new OpenCodeRuntime({ executable: fake.executable });
-      const placeholder = await startAgentSession(database, runtime, session.id, home);
+      const placeholder = await startAgentSession(sqliteStore(database), runtime, session.id, home);
       assert.equal(getSession(database, session.id)!.agent_session_id, placeholder);
       assert.equal(getSession(database, session.id)!.updated_by, "runtime:opencode");
-      const outcome = await runRuntimeTurn(database, runtime, session.id, placeholder, "question");
+      const outcome = await runRuntimeTurn(sqliteStore(database), runtime, session.id, placeholder, "question");
       assert.deepEqual(outcome, { state: "completed", answer: "Bound", attempts: 1, replaySafe: false });
       const bound = getSession(database, session.id)!;
       assert.equal(bound.agent_session_id, "ses_fake0000000000000000000000");
       assert.equal(bound.updated_by, "runtime:opencode");
-      const resumed = await resumeAgentSession(database, runtime, session.id, home);
+      const resumed = await resumeAgentSession(sqliteStore(database), runtime, session.id, home);
       assert.equal(resumed, bound.agent_session_id);
-      assert.equal((await runRuntimeTurn(database, runtime, session.id, resumed, "next")).state, "completed");
+      assert.equal((await runRuntimeTurn(sqliteStore(database), runtime, session.id, resumed, "next")).state, "completed");
       assert.deepEqual((await fake.calls()).map((call) => call.argv.slice(4)), [[], ["--session", resumed]]);
       const stored = JSON.stringify(["sessions", "messages", "events"].map((table) => database.prepare(`SELECT * FROM ${table}`).all()));
       assert.equal(stored.includes(secret), false);
@@ -244,14 +246,14 @@ test("a vanished session fails closed as session_missing without running, and a 
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "opencode", agent_session_id: known, project_path: project });
       await fake.reset();
-      assert.deepEqual(await runRuntimeTurn(database, restarted, session.id, known, "question"), { state: "failed", reason: "session_missing", attempts: 1, replaySafe: false,
+      assert.deepEqual(await runRuntimeTurn(sqliteStore(database), restarted, session.id, known, "question"), { state: "failed", reason: "session_missing", attempts: 1, replaySafe: false,
         notice: "This thread's OpenCode session could not be found. Use /inoai reset to start a new session." });
       assert.deepEqual((await fake.calls()).map((call) => call.kind), ["check"]);
 
       // A check that fails without SessionNotFoundError ran no Turn, so it is retried and never runs --session.
       await fake.setChecks(["error"]);
       await fake.reset();
-      const outcome = await runRuntimeTurn(database, restarted, session.id, known, "question");
+      const outcome = await runRuntimeTurn(sqliteStore(database), restarted, session.id, known, "question");
       assert.deepEqual([outcome.state, outcome.attempts, outcome.replaySafe], ["failed", 3, true]);
       assert.equal(outcome.state === "failed" && outcome.reason, "pre_start");
       assert.deepEqual((await fake.calls()).map((call) => call.kind), ["check", "check", "check"]);
@@ -490,9 +492,9 @@ test("a malformed session ID resumed from SQLite is session_missing without any 
     try {
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "opencode", agent_session_id: "../x", project_path: project });
-      const resumed = await resumeAgentSession(database, runtime, session.id, home);
+      const resumed = await resumeAgentSession(sqliteStore(database), runtime, session.id, home);
       assert.equal(resumed, "../x");
-      const outcome = await runRuntimeTurn(database, runtime, session.id, resumed, "question");
+      const outcome = await runRuntimeTurn(sqliteStore(database), runtime, session.id, resumed, "question");
       assert.deepEqual([outcome.state, outcome.state === "failed" && outcome.reason, outcome.replaySafe], ["failed", "session_missing", false]);
       assert.equal(getSession(database, session.id)!.agent_session_id, "../x");
     } finally { database.close(); }
@@ -538,9 +540,9 @@ test("OpenCode permission rejections fail closed with one non-secret notice and 
       async showWorking() {},
     };
     const reported: Array<[string, number]> = [];
-    const notify = openCodePermissionDenialNotifier(database, transport as never);
+    const notify = openCodePermissionDenialNotifier(sqliteStore(database), transport as never);
     const runtime = new OpenCodeRuntime({ executable: fake.executable, onPermissionDenied: (id, count) => { reported.push([id, count]); notify(id, count); } });
-    const worker = new ConversationWorker(database, home, runtime, "opencode", () => {}, transport);
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "opencode", () => {}, transport);
     for (const id of ["first", "second", "third"]) {
       archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: id, external_author_id: "owner", user_id: owner.id, direction: "user", body: id, reply_to_external_message_id: null, in_reply_to_message_id: null });
     }

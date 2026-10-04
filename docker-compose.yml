@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${INOAI_POSTGRES_DEV_DB:-inoai}
+      POSTGRES_USER: ${INOAI_POSTGRES_DEV_USER:-inoai}
+      POSTGRES_PASSWORD: ${INOAI_POSTGRES_DEV_PASSWORD:-inoai-local-only}
+    ports:
+      - "127.0.0.1:${INOAI_POSTGRES_DEV_PORT:-5432}:5432"
+    volumes:
+      - inoai-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  inoai-postgres-data:

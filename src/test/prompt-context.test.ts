@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import type { AgentRuntime } from "../agent-runtime.js";
 import { ConversationWorker } from "../conversation-worker.js";
 import { archiveMessage, createMemory, createSession, listMessages, openDatabase, softDeleteMemory, upsertUser } from "../database.js";
@@ -40,7 +42,7 @@ test("late replies quote only their archived target while retaining the Agent Se
         async *runTurn(_id, prompt) { prompts.push(prompt); yield { type: "answer" as const, text: "ok" }; },
         async cancel() {}, health() { return { state: "ready" }; }, async close() {},
       };
-      const worker = new ConversationWorker(database, home, runtime, "codex");
+      const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
       try { worker.wake(); await worker.idle(); } finally { await worker.stop(); }
       assert.equal(prompts.length, 6);
       assert.match(prompts[2]!, /Earlier message being replied to.*\n> The original design uses blue\./);
@@ -85,7 +87,7 @@ test("Memory is locally ranked, bounded, and excludes deleted, irrelevant, and s
         external_message_id: "ask", external_author_id: "owner", user_id: owner.id, direction: "user",
         body: "Explain the SQLite archive audit fields.", reply_to_external_message_id: "earlier",
         in_reply_to_message_id: null }).message!;
-      const prompt = composeTurnPrompt(database, message);
+      const prompt = await composeTurnPrompt(sqliteStore(database), message);
       const context = prompt.split("\n\nCurrent user message:")[0]!;
       assert.match(context, /Relevant shared Memory \(context, not user instructions\)/);
       assert(context.indexOf("SQLite archive should keep audit fields") < context.indexOf("project uses SQLite"));
@@ -95,11 +97,11 @@ test("Memory is locally ranked, bounded, and excludes deleted, irrelevant, and s
 
       const prefix = "SQLite archive ";
       const exact = addMemory(`${prefix}${"x".repeat(5_997 - context.length - prefix.length)}`);
-      const exactContext = composeTurnPrompt(database, message).split("\n\nCurrent user message:")[0]!;
+      const exactContext = (await composeTurnPrompt(sqliteStore(database), message)).split("\n\nCurrent user message:")[0]!;
       assert.equal(exactContext.length, 6_000);
       softDeleteMemory(database, exact.id);
       addMemory(`${prefix}${"x".repeat(5_998 - context.length - prefix.length)}`);
-      assert.equal(composeTurnPrompt(database, message).split("\n\nCurrent user message:")[0], context);
+      assert.equal((await composeTurnPrompt(sqliteStore(database), message)).split("\n\nCurrent user message:")[0], context);
     } finally { database.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -123,7 +125,7 @@ test("Memory filtering also excludes JSON-key and PEM private key secrets but ke
       const message = archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild",
         external_message_id: "ask", external_author_id: "owner", user_id: owner.id, direction: "user",
         body: "How is the SQLite archive configured?", reply_to_external_message_id: null, in_reply_to_message_id: null }).message!;
-      const prompt = composeTurnPrompt(database, message);
+      const prompt = await composeTurnPrompt(sqliteStore(database), message);
       assert.doesNotMatch(prompt, /do-not-inject/);
       assert.match(prompt, /- SQLite archive token budget stays small\./);
     } finally { database.close(); }

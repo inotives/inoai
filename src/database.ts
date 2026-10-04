@@ -339,14 +339,14 @@ export type MemoryReviewRecord = AuditColumns & {
   completed_at: number | null;
 };
 
-type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
-type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
+export type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
+export type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
 export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failure_detail" | "started_at" | "runtime_started_at" | "completed_at" | "provisional_id" | "delivery_state" | "state"> & { state?: MessageRecord["state"] };
 export type NewAgentResponse = Omit<NewMessage, "session_id" | "direction" | "in_reply_to_message_id" | "state">;
 export type MessageQueueMode = "per-session" | "global";
-type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
-type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state">;
-type NewMemoryReview = Omit<MemoryReviewRecord, keyof AuditColumns | "id" | "attempts" | "next_attempt_at" | "recap" | "failure_detail" | "started_at" | "completed_at" | "state">;
+export type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
+export type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state">;
+export type NewMemoryReview = Omit<MemoryReviewRecord, keyof AuditColumns | "id" | "attempts" | "next_attempt_at" | "recap" | "failure_detail" | "started_at" | "completed_at" | "state">;
 
 function activeRow<T>(database: DatabaseSync, sql: string, ...values: Array<string | number | bigint | Uint8Array | null>): T | undefined {
   return database.prepare(sql).get(...values) as T | undefined;

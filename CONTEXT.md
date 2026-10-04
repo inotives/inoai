@@ -59,3 +59,19 @@ _Avoid_: Every fact, summary
 **Manual Memory Entry**:
 An important Memory item created directly through inoai's local management CLI or Electron UI, without waiting for a Recap.
 _Avoid_: Chat command, transcript item
+
+**Analytics Sink**:
+An optional external store that receives a one-way, redacted copy of an Agent Instance's local history for analysis. It is never the operational source of truth.
+_Avoid_: Primary database, archive
+
+**PostgreSQL Analytics Sink**:
+The optional PostgreSQL destination for shared analytics across one or more Agent Instances. It may be local, containerized, or network-hosted, but it does not own live Conversations or Tasks.
+_Avoid_: Operational database, scheduler store
+
+**Operational Database**:
+The durable coordination store that owns live Agent Instance state, Conversations, Tasks, scheduling state, and recoverable work.
+_Avoid_: Analytics sink, archive copy
+
+**Agent Schema**:
+A database namespace containing one Agent Instance's operational records, identified by the shared coordination model.
+_Avoid_: Runtime home, database

@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { ApprovalRelay } from "../approval-relay.js";
 import { CodexAppServer } from "../codex-app-server.js";
 import { CodexRuntime } from "../codex-runtime.js";
@@ -64,7 +66,7 @@ test("unsupported Codex approvals fail closed without leaking arbitrary literals
     const server = await CodexAppServer.connect({ spawnProcess: () => fake.child() });
     const runtime = new CodexRuntime(server);
     const discord = new FakeDiscord();
-    const relay = new ApprovalRelay(database, server, discord.transport());
+    const relay = new ApprovalRelay(sqliteStore(database), server, discord.transport());
     try {
       const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
       const session = createSession(database, { user_id: owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "parent", conversation_id: "conversation", initiating_external_message_id: "initial", agent_provider: "codex", agent_session_id: "pending:initial", project_path: directory });
@@ -122,7 +124,7 @@ test("approval requests for a Codex review thread are declined without touching 
     const server = await CodexAppServer.connect({ spawnProcess: () => fake.child() });
     const runtime = new CodexRuntime(server, undefined, undefined, true);
     const discord = new FakeDiscord();
-    const relay = new ApprovalRelay(database, server, discord.transport());
+    const relay = new ApprovalRelay(sqliteStore(database), server, discord.transport());
     try {
       const counts = () => JSON.stringify(["sessions", "messages", "events", "approvals"].map((table) =>
         (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count));

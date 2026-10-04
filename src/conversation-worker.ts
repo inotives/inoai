@@ -1,10 +1,8 @@
-import type { DatabaseSync } from "node:sqlite";
-
 import type { AgentRuntime, RuntimeFailureKind } from "./agent-runtime.js";
 import { resumeAgentSession, startAgentSession } from "./agent-session.js";
-import { archiveFailureNotice, archiveResponseChunks, claimNextMessage, claimResponseChunk, confirmResponseChunk, createEvent, failProcessingMessage, failRemainingResponseChunks, failResponseChunk, getSession, listPendingResponseChunks, markRuntimeStarted } from "./database.js";
 import type { Configuration } from "./config.js";
 import type { MessageRecord } from "./database.js";
+import type { OperationalStore } from "./operational-store.js";
 import type { RuntimeHome } from "./runtime-home.js";
 import { composeTurnPrompt } from "./prompt-context.js";
 import { runRuntimeTurn } from "./runtime-turn.js";
@@ -49,9 +47,11 @@ export class ConversationWorker {
   private mode: "global" | "per-session" = "global";
   private stopping = false;
   private queueListener: (() => void) | undefined;
+  private pumpPromise: Promise<void> | undefined;
+  private wakeRequested = false;
 
   constructor(
-    private readonly database: DatabaseSync,
+    private readonly database: OperationalStore,
     private readonly home: RuntimeHome,
     private readonly runtime: AgentRuntime,
     private readonly agentProvider: Configuration["agentProvider"],
@@ -59,14 +59,17 @@ export class ConversationWorker {
     private readonly transport?: Pick<ChatTransport, "sendMessage" | "showWorking">,
   ) {}
 
-  wake(): void {
-    if (this.stopping) return;
+  wake(): Promise<void> {
+    if (this.stopping) return Promise.resolve();
+    if (this.pumpPromise) { this.wakeRequested = true; return this.pumpPromise; }
+    this.pumpPromise ??= this.pump().catch((error: unknown) => this.onFailure(error instanceof Error ? error : new Error("Conversation worker failed"))).finally(() => { this.pumpPromise = undefined; });
+    return this.pumpPromise;
+  }
+
+  private async pump(): Promise<void> {
     try {
       if (this.transport && !this.recoveryChecked) {
-        const recovered = this.database.prepare(`SELECT id FROM messages WHERE direction = 'user' AND state = 'failed'
-          AND failure_detail = 'Runtime outcome uncertain after restart' AND updated_by = 'startup-recovery'
-          AND deleted_at IS NULL`).all() as Array<{ id: number }>;
-        for (const row of recovered) archiveFailureNotice(this.database, row.id, uncertainNotice, "startup-recovery");
+        await this.database.recoverStaleWork("startup-recovery");
         this.recoveryChecked = true;
       }
       if (this.transport && !this.delivery) {
@@ -74,11 +77,11 @@ export class ConversationWorker {
           this.onFailure(error instanceof Error ? error : new Error("Response delivery failed"));
         }).finally(() => {
           this.delivery = undefined;
-          if (!this.stopping && listPendingResponseChunks(this.database).length) this.wake();
+          if (!this.stopping) this.wakeRequested = true;
         });
       }
       while (this.mode === "per-session" || this.active.size === 0) {
-        const message = claimNextMessage(this.database, this.mode, "conversation-worker");
+        const message = await this.database.claimNextMessage(this.mode, "conversation-worker");
         if (!message) break;
         this.turnCancellation.set(message.id, new AbortController());
         const running = this.process(message).catch((error: unknown) => {
@@ -89,6 +92,10 @@ export class ConversationWorker {
           this.wake();
         });
         this.active.set(message.id, running);
+      }
+      if (this.wakeRequested && !this.stopping) {
+        this.wakeRequested = false;
+        await this.pump();
       }
     } catch (error) {
       this.onFailure(error instanceof Error ? error : new Error("Conversation worker failed"));
@@ -118,8 +125,8 @@ export class ConversationWorker {
   concurrencyMode(): "global" | "per-session" { return this.mode; }
 
   async cancelSession(sessionId: number): Promise<boolean> {
-    const running = this.database.prepare(`SELECT id FROM messages WHERE session_id = ? AND direction = 'user'
-      AND state = 'processing' AND deleted_at IS NULL`).all(sessionId) as Array<{ id: number }>;
+    const messages = await this.database.listMessages(sessionId);
+    const running = messages.filter((message) => message.direction === "user" && message.state === "processing");
     for (const { id } of running) {
       this.turnCancellation.get(id)?.abort();
       const agentSessionId = this.activeAgentSessionIds.get(id);
@@ -129,8 +136,8 @@ export class ConversationWorker {
   }
 
   async idle(): Promise<void> {
-    while (this.active.size || this.delivery) {
-      await Promise.all([...this.active.values(), ...(this.delivery ? [this.delivery] : [])]);
+    while (this.active.size || this.delivery || this.pumpPromise) {
+      await Promise.all([...this.active.values(), ...(this.delivery ? [this.delivery] : []), ...(this.pumpPromise ? [this.pumpPromise] : [])]);
     }
   }
 
@@ -147,7 +154,7 @@ export class ConversationWorker {
 
   private async process(message: MessageRecord): Promise<void> {
     const cancellation = this.turnCancellation.get(message.id)!;
-    const session = getSession(this.database, message.session_id);
+    const session = await this.database.getSession(message.session_id);
     const showWorking = () => { if (session && !cancellation.signal.aborted) void this.transport?.showWorking?.(session.conversation_id).catch(() => undefined); };
     showWorking();
     const indicator = this.transport?.showWorking ? setInterval(showWorking, 8_000) : undefined;
@@ -156,51 +163,51 @@ export class ConversationWorker {
       if (!session || session.state !== "active") return;
       if (session.agent_provider !== this.agentProvider) {
         // Never start or resume another provider's Session; the owner resets or opens a new thread.
-        if (!failProcessingMessage(this.database, message.id, "Agent provider mismatch; replay_safe=false", "conversation-worker")) return;
-        createEvent(this.database, { session_id: session.id, message_id: message.id,
+        if (!await this.database.failProcessingMessage(message.id, "Agent provider mismatch; replay_safe=false", "conversation-worker")) return;
+        await this.database.createEvent({ session_id: session.id, message_id: message.id,
           event_type: "turn_failed", detail: "reason=provider_mismatch; attempts=0" }, "conversation-worker");
-        archiveFailureNotice(this.database, message.id, providerMismatchNotice(session.agent_provider, this.runtime.displayName));
+        await this.database.archiveFailureNotice(message.id, providerMismatchNotice(session.agent_provider, this.runtime.displayName));
         return;
       }
       const agentSessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.database, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
-      const prompt = composeTurnPrompt(this.database, message);
-      if (this.stopping || cancellation.signal.aborted || !markRuntimeStarted(this.database, message.id)) {
-        if (cancellation.signal.aborted) failProcessingMessage(this.database, message.id, "Cancelled by owner", "user:owner");
+      const prompt = await composeTurnPrompt(this.database, message);
+      if (this.stopping || cancellation.signal.aborted || !await this.database.markRuntimeStarted(message.id)) {
+        if (cancellation.signal.aborted) await this.database.failProcessingMessage(message.id, "Cancelled by owner", "user:owner");
         return;
       }
       this.activeAgentSessionIds.set(message.id, agentSessionId);
       const outcome = await runRuntimeTurn(this.database, this.runtime, session.id, agentSessionId, prompt, undefined, message.id, cancellation.signal);
       if (cancellation.signal.aborted) {
-        failProcessingMessage(this.database, message.id, "Cancelled by owner", "user:owner");
+        await this.database.failProcessingMessage(message.id, "Cancelled by owner", "user:owner");
         return;
       }
       if (outcome.state === "completed") {
         if (outcome.answer?.trim()) {
-          archiveResponseChunks(this.database, message.id, splitFinalAnswer(outcome.answer), "conversation-worker");
-        } else if (failProcessingMessage(this.database, message.id, "Runtime returned no final answer", "conversation-worker")) {
-          createEvent(this.database, { session_id: session.id, message_id: message.id,
+          await this.database.archiveResponseChunks(message.id, splitFinalAnswer(outcome.answer), "conversation-worker");
+        } else if (await this.database.failProcessingMessage(message.id, "Runtime returned no final answer", "conversation-worker")) {
+          await this.database.createEvent({ session_id: session.id, message_id: message.id,
             event_type: "turn_failed", detail: "reason=empty_answer" }, "conversation-worker");
-          archiveFailureNotice(this.database, message.id, failureNotice);
+          await this.database.archiveFailureNotice(message.id, failureNotice);
         }
       } else {
         if (outcome.reason === "uncertain" || outcome.reason === "timed_out") this.fallbackToGlobal();
-        if (!failProcessingMessage(this.database, message.id, `Runtime ${outcome.reason}; replay_safe=${outcome.replaySafe}`, "conversation-worker")) return;
-        createEvent(this.database, { session_id: session.id, message_id: message.id,
+        if (!await this.database.failProcessingMessage(message.id, `Runtime ${outcome.reason}; replay_safe=${outcome.replaySafe}`, "conversation-worker")) return;
+        await this.database.createEvent({ session_id: session.id, message_id: message.id,
           event_type: "turn_failed", detail: `reason=${outcome.reason}; attempts=${outcome.attempts}` }, "conversation-worker");
         // Only these kinds carry fixed provider-worded guidance the owner can act on; the rest stay generic.
-        archiveFailureNotice(this.database, message.id, providerNoticeKinds.has(outcome.reason) ? outcome.notice
+        await this.database.archiveFailureNotice(message.id, providerNoticeKinds.has(outcome.reason) ? outcome.notice
           : outcome.reason === "uncertain" || outcome.reason === "timed_out" ? uncertainNotice : failureNotice);
       }
     } catch {
       this.fallbackToGlobal();
       const detail = message.runtime_started_at === null && !this.activeAgentSessionIds.has(message.id)
         ? "Agent Session setup failed before runtime start" : "Runtime outcome uncertain";
-      if (failProcessingMessage(this.database, message.id, detail, "conversation-worker")) {
-        createEvent(this.database, { session_id: message.session_id, message_id: message.id,
+      if (await this.database.failProcessingMessage(message.id, detail, "conversation-worker")) {
+        await this.database.createEvent({ session_id: message.session_id, message_id: message.id,
           event_type: "turn_failed", detail }, "conversation-worker");
-        archiveFailureNotice(this.database, message.id, detail.includes("uncertain") ? uncertainNotice : failureNotice);
+        await this.database.archiveFailureNotice(message.id, detail.includes("uncertain") ? uncertainNotice : failureNotice);
       }
       // The user turn has a terminal safe outcome; later queued work may continue.
     } finally {
@@ -211,29 +218,28 @@ export class ConversationWorker {
 
   private async deliverPending(): Promise<void> {
     if (!this.transport) return;
-    for (const chunk of listPendingResponseChunks(this.database)) {
+    for (const chunk of await this.database.listPendingResponseChunks()) {
       if (this.stopping) return;
       const inboundId = chunk.in_reply_to_message_id;
       if (inboundId === null) continue;
-      const earlier = this.database.prepare(`SELECT delivery_state FROM messages WHERE in_reply_to_message_id = ?
-        AND direction = 'agent' AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1`).get(inboundId, chunk.id) as { delivery_state: string } | undefined;
+      const earlier = (await this.database.listMessages(chunk.session_id)).filter((row) => row.in_reply_to_message_id === inboundId && row.direction === "agent" && row.id < chunk.id).at(-1);
       if (earlier && earlier.delivery_state !== "confirmed") {
-        failRemainingResponseChunks(this.database, inboundId);
-        createEvent(this.database, { session_id: chunk.session_id, message_id: chunk.id,
+        await this.database.failRemainingResponseChunks(inboundId);
+        await this.database.createEvent({ session_id: chunk.session_id, message_id: chunk.id,
           event_type: "response_delivery_skipped", detail: "Earlier response chunk was not confirmed" }, "transport:discord");
         continue;
       }
-      const session = getSession(this.database, chunk.session_id);
-      if (!claimResponseChunk(this.database, chunk.id)) continue;
+      const session = await this.database.getSession(chunk.session_id);
+      if (!await this.database.claimResponseChunk(chunk.id)) continue;
       try {
         if (!session || session.state !== "active") throw new KnownDeliveryFailure("Session unavailable before send");
         const id = await this.transport.sendMessage(session.conversation_id, chunk.body);
-        if (!confirmResponseChunk(this.database, chunk.id, id)) throw new Error("Response chunk confirmation failed");
+        if (!await this.database.confirmResponseChunk(chunk.id, id)) throw new Error("Response chunk confirmation failed");
       } catch (error) {
-        if (error instanceof KnownDeliveryFailure) failResponseChunk(this.database, chunk.id, "Discord rejected delivery before send");
+        if (error instanceof KnownDeliveryFailure) await this.database.failResponseChunk(chunk.id, "Discord rejected delivery before send");
         // A send rejection or crash after claim may have reached Discord. Keep it uncertain.
-        failRemainingResponseChunks(this.database, inboundId);
-        createEvent(this.database, { session_id: chunk.session_id, message_id: chunk.id,
+        await this.database.failRemainingResponseChunks(inboundId);
+        await this.database.createEvent({ session_id: chunk.session_id, message_id: chunk.id,
           event_type: "response_delivery_failed", detail: error instanceof KnownDeliveryFailure ? "known_pre_send_failure" : "uncertain_after_send_attempt" }, "transport:discord");
       }
     }

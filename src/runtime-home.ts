@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 const templates = {
   ".env": "",
   "agent.md": "# inoai\n",
-  "inoai.sqlite": Buffer.alloc(0),
 } as const;
 
 export type RuntimeHome = {

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
 import { ConversationWorker, splitFinalAnswer } from "../conversation-worker.js";
@@ -52,7 +54,7 @@ test("completed Unicode answer is archived before ordered Discord delivery; prog
     },
     async showWorking(thread: string) { typing.push(thread); },
   };
-  const worker = new ConversationWorker(f.database, f.home,
+  const worker = new ConversationWorker(sqliteStore(f.database), f.home,
     runtime([{ type: "progress", text: "secret raw tool trace" }, { type: "answer", text: answer }]), "codex", () => {}, transport);
   try {
     worker.wake();
@@ -79,7 +81,7 @@ test("known pre-send failure is distinct from ambiguous acceptance, and neither 
         throw new Error("Connection lost after acceptance");
       },
     };
-    const worker = new ConversationWorker(f.database, f.home, runtime([{ type: "answer", text: "😀".repeat(1200) }]), "codex", () => {}, transport);
+    const worker = new ConversationWorker(sqliteStore(f.database), f.home, runtime([{ type: "answer", text: "😀".repeat(1200) }]), "codex", () => {}, transport);
     try {
       worker.wake();
       await worker.idle();
@@ -92,7 +94,7 @@ test("known pre-send failure is distinct from ambiguous acceptance, and neither 
       await worker.stop();
       f.database.close();
       const reopened = openDatabase(f.home);
-      const restarted = new ConversationWorker(reopened, f.home, runtime([]), "codex", () => {}, transport);
+      const restarted = new ConversationWorker(sqliteStore(reopened), f.home, runtime([]), "codex", () => {}, transport);
       restarted.wake();
       await restarted.idle();
       assert.equal(accepted.length, known ? 0 : 1);
@@ -111,7 +113,7 @@ test("partial send stops later chunks while retaining the full archived answer",
     if (attempts === 2) throw new KnownDeliveryFailure("blocked before send");
     return "first-id";
   } };
-  const worker = new ConversationWorker(f.database, f.home, runtime([{ type: "answer", text: answer }]), "codex", () => {}, transport);
+  const worker = new ConversationWorker(sqliteStore(f.database), f.home, runtime([{ type: "answer", text: answer }]), "codex", () => {}, transport);
   try {
     worker.wake();
     await worker.idle();
@@ -126,7 +128,7 @@ test("terminal failure sends one generic archived notice without exposing runtim
   const f = await fixture("inoai-delivery-failure-");
   const sent: string[] = [];
   const transport = { async sendMessage(_thread: string, text: string) { sent.push(text); return "notice-id"; } };
-  const worker = new ConversationWorker(f.database, f.home, runtime(new RuntimeFailure("uncertain")), "codex", () => {}, transport);
+  const worker = new ConversationWorker(sqliteStore(f.database), f.home, runtime(new RuntimeFailure("uncertain")), "codex", () => {}, transport);
   try {
     worker.wake();
     await worker.idle();
@@ -149,7 +151,7 @@ test("restart reports a stale post-start turn once without replaying Codex", asy
   const database = openDatabase(f.home);
   const sent: string[] = [];
   const transport = { async sendMessage(_thread: string, text: string) { sent.push(text); return "recovered-notice"; } };
-  const worker = new ConversationWorker(database, f.home, runtime([]), "codex", () => {}, transport);
+  const worker = new ConversationWorker(sqliteStore(database), f.home, runtime([]), "codex", () => {}, transport);
   try {
     worker.wake();
     await worker.idle();

@@ -8,63 +8,55 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { openDatabase, upsertUser } from "../database.js";
-import { manageMemory } from "../index.js";
+import { manageMemory, manageMemoryWithStore } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 
 const execFile = promisify(execFileCallback);
 
-test("Manual Memory CLI persists, lists, and soft-deletes without runtime startup", async () => {
+test("Manual Memory operations use the injected operational store without runtime startup", async () => {
+  const memories: any[] = [];
+  const store = {
+    async listMemories() { return memories.filter((memory) => memory.state === "active"); },
+    async createMemory(memory: any, actor?: string) { const row = { ...memory, id: 1, state: "active", created_by: actor, updated_by: actor, deleted_at: null, deleted_by: null }; memories.push(row); return row; },
+    async softDeleteMemory(id: number, actor?: string) { const row = memories.find((memory) => memory.id === id); if (row) Object.assign(row, { state: "deleted", deleted_by: actor }); },
+  };
+  const created = await manageMemoryWithStore(store, "add", "remember this", 7) as any;
+  assert.equal(created.origin, "manual");
+  assert.equal(created.created_by_user_id, 7);
+  assert.deepEqual((await manageMemoryWithStore(store, "list", undefined, 7) as any[]).map((memory) => memory.id), [1]);
+  await manageMemoryWithStore(store, "delete", "1", 7);
+  assert.deepEqual(await manageMemoryWithStore(store, "list", undefined, 7), []);
+});
+
+test("memory subcommands require PostgreSQL runtime configuration", async () => {
   const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  const executable = fileURLToPath(new URL("../index.js", import.meta.url));
   try {
-    const home = await bootstrapRuntimeHome(deployment);
-    const database = openDatabase(home);
-    const owner = upsertUser(database, {
-      transport: "discord",
-      workspace_id: "workspace",
-      external_user_id: "owner",
-      display_name: "Owner",
-      role: "owner",
-      state: "active",
-    }, "owner-bootstrap")!;
-    database.close();
-
-    const created = await manageMemory("add", "remember this", deployment);
-    assert.equal(created.origin, "manual");
-    assert.equal(created.created_by_user_id, owner.id);
-    assert.equal(created.created_by, `manual-cli:user:${owner.id}`);
-    assert.deepEqual((await manageMemory("list", undefined, deployment)).map((memory) => memory.id), [created.id]);
-
-    await manageMemory("delete", String(created.id), deployment);
-    assert.deepEqual(await manageMemory("list", undefined, deployment), []);
-
-    const reopened = openDatabase(home);
-    const deleted = reopened.prepare("SELECT origin, state, deleted_at, deleted_by FROM memories WHERE id = ?").get(created.id) as {
-      origin: string;
-      state: string;
-      deleted_at: number;
-      deleted_by: string;
-    };
-    assert.deepEqual(deleted.origin, "manual");
-    assert.equal(deleted.state, "deleted");
-    assert.ok(deleted.deleted_at);
-    assert.equal(deleted.deleted_by, `manual-cli:user:${owner.id}`);
-    reopened.close();
+    await assert.rejects(execFile(process.execPath, [executable, "memory", "add", "offline memory"], { cwd: deployment }), /Invalid configuration/);
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }
 });
 
-test("memory subcommands work with a blank runtime configuration", async () => {
-  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
-  const executable = fileURLToPath(new URL("../index.js", import.meta.url));
-  try {
-    const created = JSON.parse((await execFile(process.execPath, [executable, "memory", "add", "offline memory"], { cwd: deployment })).stdout);
-    const listed = JSON.parse((await execFile(process.execPath, [executable, "memory", "list"], { cwd: deployment })).stdout);
-    await execFile(process.execPath, [executable, "memory", "delete", String(created.id)], { cwd: deployment });
-    assert.equal(created.origin, "manual");
-    assert.equal(created.created_by_user_id, null);
-    assert.deepEqual(listed.map((memory: { id: number }) => memory.id), [created.id]);
-  } finally {
-    await rm(deployment, { recursive: true, force: true });
-  }
+test("PostgreSQL Manual Memory adapter never starts a runtime and preserves soft-delete actor", async () => {
+  let nextId = 7;
+  const memories: any[] = [];
+  const store = {
+    async listMemories() { return memories.filter((memory) => memory.state === "active"); },
+    async createMemory(memory: any, actor?: string) {
+      const row = { ...memory, id: nextId++, state: "active", created_by: actor, updated_by: actor, deleted_at: null, deleted_by: null };
+      memories.push(row);
+      return row;
+    },
+    async softDeleteMemory(id: number, actor?: string) {
+      const row = memories.find((memory) => memory.id === id);
+      if (row) Object.assign(row, { state: "deleted", deleted_by: actor, updated_by: actor });
+    },
+  };
+  const created = await manageMemoryWithStore(store, "add", "postgres memory", 42) as any;
+  assert.equal(created.created_by, "manual-cli:user:42");
+  assert.deepEqual((await manageMemoryWithStore(store, "list", undefined, 42) as any[]).map((memory) => memory.id), [7]);
+  await manageMemoryWithStore(store, "delete", "7", 42);
+  assert.equal(memories[0].state, "deleted");
+  assert.equal(memories[0].deleted_by, "manual-cli:user:42");
 });

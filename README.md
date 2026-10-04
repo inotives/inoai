@@ -179,6 +179,8 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- memory add "<text>"` | Add a Manual Memory Entry without starting an Agent Runtime. |
 | `npm start -- memory list` | List active Memory with `origin` (`manual` or `review`); review-made entries also show `review_id` and `source_message_id`. |
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
+| `npm run allowlist:add -- --connect-dir .inoai-connect-planner --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
+| `npm run allowlist:disable -- --connect-dir .inoai-connect-planner --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
 | `npm start -- ui` | Launch the sibling Electron UI with the selected `inoai.sqlite` path only. |
 | `npm test` | Build and run the test suite. |
 | `npm run typecheck` | Type-check without emitting. |
@@ -187,6 +189,17 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `/inoai reset` | End the session, cancel queued work, keep the archive, and start a fresh session with the next message. |
 
 The `/inoai` slash commands are owner-only, work in a thread the bot owns, and reply privately.
+
+Allowlist commands use the selected runtime home's PostgreSQL configuration and
+never print credentials. The configured owner cannot be changed by these
+commands. Inspect changes in DBeaver with:
+
+```sql
+SELECT external_user_id, display_name, role, state
+FROM agent_inoai_planner.users
+WHERE transport = 'discord'
+ORDER BY id;
+```
 
 ## Runtime Behavior
 

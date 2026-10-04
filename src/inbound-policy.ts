@@ -1,7 +1,6 @@
-import type { DatabaseSync } from "node:sqlite";
-
 import type { Configuration } from "./config.js";
 import type { SessionRecord, UserRecord } from "./database.js";
+import type { OperationalStore } from "./operational-store.js";
 import type { IncomingMessage } from "./transport.js";
 
 export type EligibleIncomingMessage =
@@ -9,18 +8,15 @@ export type EligibleIncomingMessage =
   | { kind: "bound-thread"; user: UserRecord; session: SessionRecord }
   | { kind: "reset-thread"; user: UserRecord; previous: SessionRecord };
 
-export function classifyIncomingMessage(
-  database: DatabaseSync,
+export async function classifyIncomingMessage(
+  database: Pick<OperationalStore, "findUser" | "findSessionByConversation">,
   configuration: Configuration,
   message: IncomingMessage,
-): EligibleIncomingMessage | null {
+): Promise<EligibleIncomingMessage | null> {
   if (message.authorIsBot || message.transport !== configuration.chatProvider || message.workspaceId !== configuration.discordGuildId
-    || message.externalUserId !== configuration.discordOwnerUserId) return null;
+  ) return null;
 
-  const user = database.prepare(`SELECT * FROM users WHERE transport = ? AND workspace_id = ? AND external_user_id = ?
-    AND role = 'owner' AND state = 'active' AND deleted_at IS NULL`).get(
-    message.transport, message.workspaceId, message.externalUserId,
-  ) as UserRecord | undefined;
+  const user = await database.findUser(message.transport, message.workspaceId, message.externalUserId);
   if (!user) return null;
 
   if (message.parentConversationId === null) {
@@ -30,10 +26,7 @@ export function classifyIncomingMessage(
   }
 
   if (message.parentConversationId === configuration.discordStatusChannelId) return null;
-  const session = database.prepare(`SELECT * FROM sessions WHERE transport = ? AND workspace_id = ?
-    AND parent_conversation_id = ? AND conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1`).get(
-    message.transport, message.workspaceId, message.parentConversationId, message.conversationId,
-  ) as SessionRecord | undefined;
+  const session = await database.findSessionByConversation(message.transport, message.workspaceId, message.parentConversationId, message.conversationId);
   if (session?.state === "active") return { kind: "bound-thread", user, session };
   return session?.state === "ended" && session.updated_by === "user:owner" && session.user_id === user.id
     ? { kind: "reset-thread", user, previous: session } : null;

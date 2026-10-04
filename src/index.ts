@@ -2,14 +2,13 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { AgentRuntime } from "./agent-runtime.js";
-import { ApprovalRelay, claudePermissionDenialNotifier, legacyApprovalNotice, openCodePermissionDenialNotifier } from "./approval-relay.js";
+import { ApprovalRelay, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "./approval-relay.js";
 import { ClaudeRuntime } from "./claude-runtime.js";
 import { CodexAppServer } from "./codex-app-server.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "./concurrency-probe.js";
 import { loadConfiguration } from "./config.js";
-import { archiveMessage, bootstrapOwner, claimLegacyApprovalNotice, createEvent, createMemory, createSession, legacyApprovalNotices, listMemories, openDatabase, resetSession, resolveLegacyApprovalNotice, softDeleteMemory } from "./database.js";
-import type { MemoryRecord } from "./database.js";
+import type { MemoryRecord, UserRecord } from "./database.js";
 import { ConversationWorker } from "./conversation-worker.js";
 import { classifyIncomingMessage } from "./inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory-review-scheduler.js";
@@ -19,6 +18,10 @@ import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "./runtime-home.js"
 import { createChatTransport } from "./transport.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "./transport.js";
 import { launchUi } from "./ui.js";
+import type { OperationalStore } from "./operational-store.js";
+import { createPostgresPool } from "./postgres.js";
+import { PostgresOperationalStore } from "./operational-store.js";
+import { acquireAgentInstanceLease } from "./postgres-lease.js";
 
 export const appName = "inoai";
 export * from "./config.js";
@@ -33,6 +36,7 @@ export * from "./database.js";
 export * from "./inbound-policy.js";
 export * from "./memory-review.js";
 export * from "./memory-review-scheduler.js";
+export * from "./postgres-lease.js";
 export * from "./runtime-home.js";
 export * from "./runtime-turn.js";
 export * from "./transport.js";
@@ -50,29 +54,45 @@ export async function validate(launchDirectory = process.cwd(), connectDirectory
   return { runtimeHome, configuration };
 }
 
-export async function start(launchDirectory = process.cwd(), connectDirectory?: string) {
+export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore) {
   const { runtimeHome, configuration } = await validate(launchDirectory, connectDirectory);
   const release = await acquireRuntimeHomeLock(runtimeHome);
+  const pool = createPostgresPool(configuration);
   try {
-    const database = openDatabase(runtimeHome);
-    const owner = bootstrapOwner(database, configuration);
+    const store = storeFactory?.(pool, runtimeHome) ?? new PostgresOperationalStore(pool, configuration.agentInstanceId);
+    const owner = await store.bootstrapOwner(configuration);
+    // Explicit store injection is the unit-test seam; it supplies its own
+    // isolated persistence fixture and does not need a live PostgreSQL lease.
+    const lease = storeFactory ? {
+      refresh: async () => {},
+      release: async () => {},
+    } : await acquireAgentInstanceLease(pool, {
+      agentInstanceId: configuration.agentInstanceId,
+      ttlMs: configuration.postgresLeaseTtlMs,
+      refreshMs: configuration.postgresLeaseRefreshMs,
+    });
     const pendingIngestion = new Set<Promise<void>>();
     const instance = {
       runtimeHome,
       configuration,
-      database,
+      pool,
+      store,
       owner,
+      lease,
       pendingIngestion,
       closing: false,
       release: async () => {
         instance.closing = true;
         await Promise.allSettled([...pendingIngestion]);
-        database.close();
+        await lease.release();
+        await store.close();
+        await pool.end();
         await release();
       },
     };
     return instance;
   } catch (error) {
+    await pool.end().catch(() => undefined);
     await release();
     throw error;
   }
@@ -84,35 +104,30 @@ export async function startTransport(
   transport: ChatTransport = createChatTransport(instance.configuration),
   onFailure?: (error: Error) => void,
   worker?: ConversationWorker,
+  operationalStore?: OperationalStore,
 ): Promise<ChatTransport> {
+  const store = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
-  const receive = onIncomingMessage ?? ((message: IncomingMessage) => {
+  const receive = onIncomingMessage ?? ((message: IncomingMessage) => { void (async () => {
     if (instance.closing) return;
-    const eligible = classifyIncomingMessage(instance.database, instance.configuration, message);
+    const eligible = await classifyIncomingMessage(store, instance.configuration, message);
     const workspaceId = message.workspaceId;
     if (eligible?.kind === "reset-thread" && workspaceId !== null) {
       try {
-        instance.database.exec("BEGIN IMMEDIATE");
-        try {
-          const session = createSession(instance.database, {
+        const session = await store.createSession({
             user_id: eligible.user.id, transport: message.transport, workspace_id: workspaceId,
             parent_conversation_id: message.parentConversationId!, conversation_id: message.conversationId,
             initiating_external_message_id: message.externalMessageId, agent_provider: instance.configuration.agentProvider,
             agent_session_id: `pending:${message.externalMessageId}`, project_path: dirname(instance.runtimeHome.directory),
           }, "transport:discord");
-          const archived = archiveMessage(instance.database, {
+          const archived = await store.archiveMessage({
             session_id: session.id, transport: message.transport, workspace_id: workspaceId,
             external_message_id: message.externalMessageId, external_author_id: message.externalUserId,
             user_id: eligible.user.id, direction: "user", body: message.body,
             reply_to_external_message_id: message.replyToExternalMessageId, in_reply_to_message_id: null,
           }, "transport:discord");
           if (!archived.inserted) throw new Error("Reset thread message already archived");
-          instance.database.exec("COMMIT");
           worker?.wake();
-        } catch (error) {
-          instance.database.exec("ROLLBACK");
-          throw error;
-        }
       } catch (error) {
         console.error("Discord reset thread message failed:", error instanceof Error ? error.message : error);
       }
@@ -120,7 +135,7 @@ export async function startTransport(
     }
     if (eligible?.kind === "bound-thread" && workspaceId !== null) {
       try {
-        const archived = archiveMessage(instance.database, {
+        const archived = await store.archiveMessage({
           session_id: eligible.session.id, transport: message.transport, workspace_id: workspaceId,
           external_message_id: message.externalMessageId, external_author_id: message.externalUserId,
           user_id: eligible.user.id, direction: "user", body: message.body,
@@ -136,41 +151,39 @@ export async function startTransport(
       return;
     }
     if (eligible?.kind !== "top-level" || workspaceId === null || inFlight.has(message.externalMessageId)) return;
-    const existing = instance.database.prepare(`SELECT id FROM sessions
-      WHERE transport = ? AND workspace_id = ? AND initiating_external_message_id = ?`).get(
-      message.transport, workspaceId, message.externalMessageId,
-    );
-    if (existing) return;
-
     inFlight.add(message.externalMessageId);
+    try {
+      const existing = (await store.listSessions()).some((session) => session.transport === message.transport
+        && session.workspace_id === workspaceId && session.initiating_external_message_id === message.externalMessageId);
+      if (existing) {
+        inFlight.delete(message.externalMessageId);
+        return;
+      }
+    } catch (error) {
+      inFlight.delete(message.externalMessageId);
+      throw error;
+    }
     const pending = (async () => {
       let conversationId: string | undefined;
       try {
         conversationId = await transport.createConversation(
           message.conversationId, message.externalMessageId, message.body.trim().slice(0, 100) || "inoai conversation",
         );
-        instance.database.exec("BEGIN IMMEDIATE");
-        try {
-          const session = createSession(instance.database, {
+        const session = await store.createSession({
             user_id: eligible.user.id, transport: message.transport, workspace_id: workspaceId,
             parent_conversation_id: message.conversationId, conversation_id: conversationId,
             initiating_external_message_id: message.externalMessageId, agent_provider: instance.configuration.agentProvider,
             agent_session_id: `pending:${message.externalMessageId}`, project_path: dirname(instance.runtimeHome.directory),
           }, "transport:discord");
-          const archived = archiveMessage(instance.database, {
+          const archived = await store.archiveMessage({
             session_id: session.id, transport: message.transport, workspace_id: workspaceId,
             external_message_id: message.externalMessageId, external_author_id: message.externalUserId,
             user_id: eligible.user.id, direction: "user", body: message.body,
             reply_to_external_message_id: message.replyToExternalMessageId, in_reply_to_message_id: null,
           }, "transport:discord");
           if (!archived.inserted) throw new Error("Initiating Discord message already archived");
-          instance.database.exec("COMMIT");
           void transport.showWorking?.(conversationId).catch(() => undefined);
           worker?.wake();
-        } catch (error) {
-          instance.database.exec("ROLLBACK");
-          throw error;
-        }
       } catch (error) {
         if (conversationId) {
           try {
@@ -186,7 +199,7 @@ export async function startTransport(
     })();
     instance.pendingIngestion.add(pending);
     void pending.finally(() => instance.pendingIngestion.delete(pending));
-  });
+  })().catch((error: unknown) => console.error("Discord message handling failed:", error instanceof Error ? error.message : error)); });
   const control = async (request: ThreadControl) => {
     const denied = "This control is available only in your active inoai thread.";
     if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
@@ -195,24 +208,28 @@ export async function startTransport(
       await request.respond(denied);
       return;
     }
-    const session = instance.database.prepare(`SELECT sessions.* FROM sessions JOIN users ON users.id = sessions.user_id
-      WHERE sessions.transport = 'discord' AND sessions.workspace_id = ? AND sessions.conversation_id = ?
-        AND sessions.parent_conversation_id = ? AND sessions.state = 'active' AND sessions.deleted_at IS NULL
-        AND users.external_user_id = ? AND users.role = 'owner' AND users.state = 'active' AND users.deleted_at IS NULL`).get(
-      request.workspaceId, request.conversationId, request.parentConversationId, request.externalUserId,
-    ) as { id: number; agent_session_id: string; project_path: string } | undefined;
+    const owner = await store.findUser("discord", request.workspaceId, request.externalUserId);
+    const session = owner ? await store.findSessionByConversation(
+      "discord", request.workspaceId, request.parentConversationId, request.conversationId,
+    ) : undefined;
+    if (session && session.user_id !== owner?.id) {
+      await request.respond(request.conversationOwnedByBot ? denied
+        : "This thread belongs to another inoai bot. Choose that bot's /inoai command to control it.");
+      return;
+    }
     if (!session) {
       await request.respond(request.conversationOwnedByBot ? denied
         : "This thread belongs to another inoai bot. Choose that bot's /inoai command to control it.");
       return;
     }
     if (request.command === "status") {
-      const counts = instance.database.prepare(`SELECT
-        SUM(CASE WHEN direction = 'user' AND state = 'pending' THEN 1 ELSE 0 END) AS queued,
-        SUM(CASE WHEN direction = 'user' AND state = 'processing' THEN 1 ELSE 0 END) AS running,
-        SUM(CASE WHEN direction = 'user' AND state = 'failed' THEN 1 ELSE 0 END) AS failed,
-        SUM(CASE WHEN direction = 'agent' AND delivery_state = 'uncertain' THEN 1 ELSE 0 END) AS uncertain_delivery
-        FROM messages WHERE session_id = ? AND deleted_at IS NULL`).get(session.id) as Record<string, number>;
+      const messages = await store.listMessages(session.id);
+      const counts = {
+        queued: messages.filter((message) => message.direction === "user" && message.state === "pending").length,
+        running: messages.filter((message) => message.direction === "user" && message.state === "processing").length,
+        failed: messages.filter((message) => message.direction === "user" && message.state === "failed").length,
+        uncertain_delivery: messages.filter((message) => message.direction === "agent" && message.delivery_state === "uncertain").length,
+      };
       await request.respond(`Project: ${session.project_path}\nSession: ${session.agent_session_id.startsWith("pending:") ? "pending" : "active"}`
         + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`);
       return;
@@ -224,7 +241,7 @@ export async function startTransport(
       return;
     }
     const cancelling = worker.cancelSession(session.id);
-    if (!resetSession(instance.database, session.id)) { await cancelling; await request.respond(denied); return; }
+    if (!await store.resetSession(session.id)) { await cancelling; await request.respond(denied); return; }
     await cancelling;
     await request.respond("Session reset. Queued work was cancelled; archived history remains. The next message starts a fresh session. Active work may have an uncertain outcome.");
   };
@@ -232,34 +249,9 @@ export async function startTransport(
     await transport.start(receive, async () => {
       if (transport.health().state !== "ready") throw new Error("Discord disconnected before startup announcement");
       await transport.registerThreadControls?.(instance.configuration.discordGuildId);
-      for (const approval of legacyApprovalNotices(instance.database)) {
-        if (approval.external_message_id) {
-          // No interaction handler can approve an old button; scrub it when Discord still exposes the message.
-          await transport.disableLegacyApprovalControls?.(approval.conversation_id, approval.external_message_id).catch(() => undefined);
-        }
-        // Claim before the network send: a crash may omit this notice, but cannot duplicate it.
-        if (!claimLegacyApprovalNotice(instance.database, approval.id)) continue;
-        const notice = legacyApprovalNotice;
-        const externalMessageId = await transport.sendMessage(approval.conversation_id, notice);
-        instance.database.exec("BEGIN IMMEDIATE");
-        try {
-          const archived = archiveMessage(instance.database, {
-            session_id: approval.session_id, transport: approval.transport, workspace_id: approval.workspace_id,
-            external_message_id: externalMessageId, external_author_id: null, user_id: null,
-            direction: "agent", body: notice, reply_to_external_message_id: null, in_reply_to_message_id: null,
-            state: "completed",
-          }, "startup-recovery");
-          if (!archived.message) throw new Error("Legacy approval notice was not archived");
-          resolveLegacyApprovalNotice(instance.database, approval.id, archived.message.id);
-          instance.database.exec("COMMIT");
-        } catch (error) {
-          instance.database.exec("ROLLBACK");
-          throw error;
-        }
-      }
       const messageId = await transport.publishHealth(instance.configuration.discordStatusChannelId, "inoai is online", instance.configuration.discordGuildId);
       if (transport.health().state !== "ready") throw new Error("Discord disconnected during startup announcement");
-      createEvent(instance.database, {
+      await store.createEvent({
         session_id: null,
         message_id: null,
         event_type: "startup_online",
@@ -284,30 +276,73 @@ export async function manageMemory(
   launchDirectory = process.cwd(),
   connectDirectory?: string,
 ): Promise<MemoryRecord | MemoryRecord[] | void> {
-  const runtimeHome = await bootstrapRuntimeHome(launchDirectory, connectDirectory);
-  const database = openDatabase(runtimeHome);
+  const { configuration } = await validate(launchDirectory, connectDirectory);
+  const pool = createPostgresPool(configuration);
+  const store = new PostgresOperationalStore(pool, configuration.agentInstanceId);
   try {
-    const owner = database.prepare("SELECT id FROM users WHERE role = 'owner' AND state = 'active' AND deleted_at IS NULL ORDER BY id LIMIT 1").get() as { id: number } | undefined;
-    const actor = owner ? `manual-cli:user:${owner.id}` : "manual-cli";
-    if (operation === "list") return listMemories(database);
+    const owner = await store.bootstrapOwner(configuration);
+    const actor = `manual-cli:user:${owner.id}`;
+    if (operation === "list") return store.listMemories();
     if (operation === "add") {
       const body = argument?.trim();
       if (!body) throw new Error("Usage: inoai memory add <text>");
-      return createMemory(database, {
+      return store.createMemory({
         body,
         source_message_id: null,
-        created_by_user_id: owner?.id ?? null,
+        created_by_user_id: owner.id,
         review_id: null,
         origin: "manual",
       }, actor);
     }
     const id = Number(argument);
     if (!Number.isSafeInteger(id) || id < 1) throw new Error("Usage: inoai memory delete <id>");
-    if (!listMemories(database).some((memory) => memory.id === id)) throw new Error(`Manual Memory Entry not found: ${id}`);
-    softDeleteMemory(database, id, actor);
+    if (!(await store.listMemories()).some((memory) => memory.id === id)) throw new Error(`Manual Memory Entry not found: ${id}`);
+    await store.softDeleteMemory(id, actor);
   } finally {
-    database.close();
+    await store.close();
   }
+}
+
+/** Manual Memory operations for the PostgreSQL operational store. This helper is
+ * intentionally runtime-free: it never starts an Agent Runtime or transport. */
+export async function manageMemoryWithStore(
+  store: Pick<OperationalStore, "listMemories" | "createMemory" | "softDeleteMemory">,
+  operation: "add" | "list" | "delete",
+  argument: string | undefined,
+  ownerUserId: number | null = null,
+): Promise<MemoryRecord | MemoryRecord[] | void> {
+  const actor = ownerUserId === null ? "manual-cli" : `manual-cli:user:${ownerUserId}`;
+  if (operation === "list") return store.listMemories();
+  if (operation === "add") {
+    const body = argument?.trim();
+    if (!body) throw new Error("Usage: inoai memory add <text>");
+    return store.createMemory({ body, source_message_id: null, created_by_user_id: ownerUserId, review_id: null, origin: "manual" }, actor);
+  }
+  const id = Number(argument);
+  if (!Number.isSafeInteger(id) || id < 1) throw new Error("Usage: inoai memory delete <id>");
+  if (!(await store.listMemories()).some((memory) => memory.id === id)) throw new Error(`Manual Memory Entry not found: ${id}`);
+  await store.softDeleteMemory(id, actor);
+}
+
+type AllowlistStore = Pick<OperationalStore, "findUser" | "upsertUser">;
+export type AllowlistOperation = "add" | "disable";
+
+export async function manageAllowlistWithStore(
+  store: AllowlistStore,
+  operation: AllowlistOperation,
+  guildId: string,
+  userId: string,
+  displayName?: string,
+  actor = "allowlist-cli",
+): Promise<UserRecord> {
+  const existing = await store.findUser("discord", guildId, userId);
+  if (existing?.role === "owner") throw new Error("The configured Discord owner cannot be changed by this command");
+  if (operation === "add" && !displayName?.trim()) throw new Error("Usage: inoai allowlist:add --user-id <id> --display-name <name>");
+  return (await store.upsertUser({
+    transport: "discord", workspace_id: guildId, external_user_id: userId,
+    display_name: displayName?.trim() || existing?.display_name || null,
+    role: "family", state: operation === "add" ? "active" : "disabled",
+  }, actor))!;
 }
 
 export function parseConnectDirectory(args: string[]): string | undefined {
@@ -325,11 +360,53 @@ function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "dele
   throw new Error("Usage: inoai memory <add <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
 }
 
+function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation; userId: string; displayName?: string; connectDirectory?: string } {
+  const operation = args[0] === "allowlist:add" ? "add" : args[0] === "allowlist:disable" ? "disable" : undefined;
+  const usage = "Usage: inoai allowlist:<add|disable> --user-id <id> [--display-name <name>] [--connect-dir .inoai-connect*]";
+  if (!operation) throw new Error(usage);
+  const values = args.slice(1);
+  let userId: string | undefined;
+  let displayName: string | undefined;
+  let connectDirectory: string | undefined;
+  for (let index = 0; index < values.length; index += 2) {
+    const flag = values[index];
+    const value = values[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(usage);
+    if (flag === "--user-id") userId = value;
+    else if (flag === "--display-name") displayName = value;
+    else if (flag === "--connect-dir") connectDirectory = value;
+    else throw new Error(usage);
+  }
+  if (!userId || !/^\d{1,25}$/.test(userId)) throw new Error("--user-id must be a Discord numeric user ID");
+  if (displayName !== undefined && (displayName.trim().length === 0 || displayName.length > 256)) throw new Error("--display-name must be between 1 and 256 characters");
+  if (operation === "add" && displayName === undefined) throw new Error("Usage: inoai allowlist:add --user-id <id> --display-name <name>");
+  if (operation === "disable" && displayName !== undefined) throw new Error("--display-name is only valid with allowlist:add");
+  return { operation, userId, ...(displayName === undefined ? {} : { displayName }), ...(connectDirectory === undefined ? {} : { connectDirectory }) };
+}
+
+export async function manageAllowlist(operation: AllowlistOperation, userId: string, displayName: string | undefined, launchDirectory = process.cwd(), connectDirectory?: string): Promise<UserRecord> {
+  const { configuration } = await validate(launchDirectory, connectDirectory);
+  const pool = createPostgresPool(configuration);
+  const store = new PostgresOperationalStore(pool, configuration.agentInstanceId);
+  try {
+    await store.bootstrapOwner(configuration);
+    return await manageAllowlistWithStore(store, operation, configuration.discordGuildId, userId, displayName);
+  } finally {
+    await store.close();
+  }
+}
+
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.
-export type RunDependencies = { schedulerClock?: SchedulerClock };
+export type RunDependencies = { schedulerClock?: SchedulerClock; storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {
+  if (args[0] === "allowlist:add" || args[0] === "allowlist:disable") {
+    const command = parseAllowlistCommand(args);
+    const result = await manageAllowlist(command.operation, command.userId, command.displayName, process.cwd(), command.connectDirectory);
+    console.log(JSON.stringify({ action: command.operation, user_id: result.external_user_id, guild_id: result.workspace_id, role: result.role, state: result.state }));
+    return;
+  }
   if (args[0] === "memory") {
     const { operation, argument, connectDirectory } = parseMemoryCommand(args.slice(1));
     const result = await manageMemory(operation, argument, process.cwd(), connectDirectory);
@@ -345,7 +422,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     console.log(`inoai configuration is valid: ${runtimeHome.directory}`);
     return;
   }
-  const instance = await start(process.cwd(), parseConnectDirectory(args));
+  const instance = await start(process.cwd(), parseConnectDirectory(args), supplied.storeFactory);
   const transport = suppliedTransport ?? createChatTransport(instance.configuration);
   let runtime = suppliedRuntime;
   let approvalRelay: ApprovalRelay | undefined;
@@ -357,20 +434,20 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         case "codex": {
           const server = await CodexAppServer.connect();
           runtime = createCodexRuntime(server);
-          approvalRelay = new ApprovalRelay(instance.database, server, transport);
+          approvalRelay = new ApprovalRelay(instance.store!, server, transport);
           probeConcurrency = probeCodexConcurrency;
           break;
         }
         case "claude":
           // The CLI denies prompts itself; the notifier only reports denials. A failed probe keeps global FIFO.
           runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
-            onPermissionDenied: claudePermissionDenialNotifier(instance.database, transport) });
+            onPermissionDenied: claudePermissionDenialNotifier(instance.store!, transport) });
           probeConcurrency = () => probeClaudeConcurrency();
           break;
         case "opencode":
           // OpenCode auto-rejects prompts in headless runs; the notifier only reports them. No concurrency probe yet,
           // so the home keeps global FIFO.
-          runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.database, transport) });
+          runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.store!, transport) });
           break;
       }
     }
@@ -378,7 +455,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     await instance.release();
     throw error;
   }
-  const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {
+  const worker = new ConversationWorker(instance.store!, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {
     console.error("Conversation worker failed; stopping to preserve queue state");
     void shutdown(1).catch((failure: unknown) => {
       console.error(failure instanceof Error ? failure.message : failure);
@@ -387,7 +464,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   }, transport);
   // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
   // chat always runs first.
-  const scheduler = new MemoryReviewScheduler(instance.database, runtime, {
+  const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {
     reviewTime: instance.configuration.memoryReviewTime, maxChars: instance.configuration.memoryReviewMaxChars,
     clock: supplied.schedulerClock,
     onFailure: () => console.error("Memory review scheduler failed; the review stays queued"),

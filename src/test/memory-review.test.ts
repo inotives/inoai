@@ -12,7 +12,8 @@ import { fixedTurnNotices, providerMismatchNotice } from "../conversation-worker
 import { archiveMessage, completeMemoryReview, createMemory, createMemoryReview, createSession, listEvents, listMemories, messagesForMemoryReview, openDatabase, upsertUser } from "../database.js";
 import type { MemoryRecord, MemoryReviewRecord, MessageRecord } from "../database.js";
 import { createCodexRuntime } from "../index.js";
-import { parseReviewJson, redactSecrets, reviewSession } from "../memory-review.js";
+import { parseReviewJson, redactSecrets, reviewSession, reviewSessionWithStore } from "../memory-review.js";
+import type { MemoryReviewSnapshot } from "../operational-store.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import { runtimeFailureNotice } from "../runtime-turn.js";
@@ -44,6 +45,50 @@ function fakeRuntime(reply: Reply) {
   };
   return { runtime, prompts, signals };
 }
+
+function storeSnapshot(messageBody: string, cursor = 0): MemoryReviewSnapshot {
+  return {
+    cursor,
+    messages: [{ id: 11, session_id: 1, transport: "discord", workspace_id: "guild", external_message_id: "m11",
+      external_author_id: "owner", user_id: 9, direction: "user", body: messageBody, reply_to_external_message_id: null,
+      in_reply_to_message_id: null, state: "completed", failure_detail: null, started_at: null, runtime_started_at: null,
+      completed_at: 11, provisional_id: null, delivery_state: null, created_at: 11, updated_at: 11, deleted_at: null,
+      created_by: "test", updated_by: "test", deleted_by: null }],
+    ownerUserIds: [9], memories: [], recaps: [],
+  };
+}
+
+test("PostgreSQL review adapter commits one atomic, cursor-checked result and redacts prompt input", async () => {
+  const commits: any[] = [];
+  const store = {
+    async readMemoryReview() { return storeSnapshot("Please remember that I prefer tabs.\npassword: super-secret"); },
+    async commitMemoryReview(input: any) { commits.push(input); return { state: "completed" as const, reviewId: 12 }; },
+  };
+  const { runtime, prompts } = fakeRuntime(script(fenced({ recap: "prefers tabs", actions: [{ op: "add", body: "The owner prefers tabs.", source_message_ids: [11], source_recap_ids: [] }] })));
+  const result = await reviewSessionWithStore(store, runtime, 1, { maxChars: 20_000 });
+  assert.deepEqual(result, { state: "completed", reviewId: 12, throughMessageId: 11, added: 1, updated: 0, deleted: 0, ignored: [] });
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0].cursor, 0);
+  assert.equal(commits[0].actions.length, 1);
+  assert.equal(prompts.some((prompt) => prompt.includes("super-secret")), false);
+});
+
+test("PostgreSQL review adapter fails closed before commit on unsafe recap and stale cursor", async () => {
+  let commits = 0;
+  const unsafe = {
+    async readMemoryReview() { return storeSnapshot("Please remember tabs."); },
+    async commitMemoryReview() { commits++; return { state: "completed" as const, reviewId: 1 }; },
+  };
+  const { runtime } = fakeRuntime(script(fenced({ recap: "password: leaked", actions: [] })));
+  assert.deepEqual(await reviewSessionWithStore(unsafe, runtime, 1, { maxChars: 20_000 }), { state: "failed", reason: "unsafe_recap" });
+  assert.equal(commits, 0);
+  const stale = {
+    async readMemoryReview() { return storeSnapshot("Please remember tabs."); },
+    async commitMemoryReview() { return { state: "stale_range" as const }; },
+  };
+  const { runtime: staleRuntime } = fakeRuntime(script(fenced({ recap: "tabs", actions: [] })));
+  assert.deepEqual(await reviewSessionWithStore(stale, staleRuntime, 1, { maxChars: 20_000 }), { state: "failed", reason: "stale_range" });
+});
 
 async function withArchive(fn: (archive: Awaited<ReturnType<typeof seedArchive>>) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "inoai-memory-review-"));

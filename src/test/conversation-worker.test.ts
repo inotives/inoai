@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
 import { ClaudeRuntime } from "../claude-runtime.js";
@@ -17,7 +19,8 @@ import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } f
 
 const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNER_USER_ID=owner",
   "DISCORD_STATUS_CHANNEL_ID=status", "CHAT_PROVIDER=discord", "AGENT_PROVIDER=codex",
-  "MEMORY_REVIEW_TIME=06:00", "MEMORY_REVIEW_MAX_CHARS=20000"].join("\n");
+  "MEMORY_REVIEW_TIME=06:00", "MEMORY_REVIEW_MAX_CHARS=20000",
+  "POSTGRES_URL=postgresql://inoai_sync:secret@example.test:5432/app", "AGENT_INSTANCE_ID=agent-test"].join("\n");
 
 class FakeTransport implements ChatTransport {
   private incoming?: (message: IncomingMessage) => void;
@@ -60,12 +63,21 @@ async function until(check: () => boolean): Promise<void> {
   throw new Error("Condition did not become true");
 }
 
+async function startWithTestStore(directory: string): Promise<Awaited<ReturnType<typeof start>> & { database: import("node:sqlite").DatabaseSync }> {
+  const home = await bootstrapRuntimeHome(directory);
+  const database = openDatabase(home);
+  const instance = await start(directory, undefined, () => sqliteStore(database));
+  const release = instance.release;
+  instance.release = async () => { await release(); database.close(); };
+  return Object.assign(instance, { database });
+}
+
 test("transport wakes one global FIFO worker; duplicates do not run twice", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-worker-"));
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, env);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const turns: string[] = [];
@@ -83,9 +95,9 @@ test("transport wakes one global FIFO worker; duplicates do not run twice", asyn
       async cancel() { releaseFirst(); }, health() { return { state: "ready" }; }, async close() {},
     };
     const transport = new FakeTransport();
-    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(instance.database), instance.runtimeHome, runtime, "codex");
     try {
-      await startTransport(instance, undefined, transport, undefined, worker);
+      await startTransport(instance, undefined, transport, undefined, worker, sqliteStore(instance.database));
       transport.emit(incoming("first", "channel"));
       transport.emit(incoming("first", "channel"));
       await until(() => turns.length === 1);
@@ -111,7 +123,7 @@ test("thread controls authorize the owner, isolate cancellation, and reset witho
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, env);
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     const add = (conversation: string, id: string) => {
       const session = createSession(instance.database, { user_id: instance.owner.id, transport: "discord",
         workspace_id: "guild", parent_conversation_id: "channel", conversation_id: conversation,
@@ -139,10 +151,10 @@ test("thread controls authorize the owner, isolate cancellation, and reset witho
       async cancel(id) { cancels.push(id); }, health() { return { state: "ready" }; }, async close() {},
     };
     const transport = new FakeTransport();
-    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(instance.database), instance.runtimeHome, runtime, "codex");
     try {
       worker.enablePerSessionConcurrency();
-      await startTransport(instance, undefined, transport, undefined, worker);
+      await startTransport(instance, undefined, transport, undefined, worker, sqliteStore(instance.database));
       await until(() => gates.has("a1") && gates.has("b1"));
       const before = instance.database.prepare("SELECT COUNT(*) AS count FROM messages WHERE direction = 'user'").get()?.count;
       assert.match(await transport.control("status"), /Queued: 1; running: 1/);
@@ -162,6 +174,7 @@ test("thread controls authorize the owner, isolate cancellation, and reset witho
       assert.equal(listMessages(instance.database, a.id).find((row) => row.body === "a1")?.state, "failed");
       assert.equal(listMessages(instance.database, b.id).find((row) => row.body === "b1")?.state, "processing");
       transport.emit(incoming("a3", "thread-a", "channel")); // Queued behind the active old turn.
+      await until(() => listMessages(instance.database, a.id).filter((row) => row.direction === "user").length === 3);
       assert.match(await transport.control("reset"), /Session reset/);
       assert.deepEqual(cancels, ["codex-a1", "codex-a1"]); // Both turns share the old Agent Session.
       assert.deepEqual(listMessages(instance.database, a.id).filter((row) => row.direction === "user").map((row) => row.state), ["failed", "failed", "failed"]);
@@ -213,7 +226,7 @@ test("restart requeues only pre-start work and preserves post-start Session iden
       async *runTurn(_id, prompt) { turns.push(prompt); yield { type: "answer" as const, text: "ok" }; },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(recovered, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(recovered), home, runtime, "codex");
     try {
       worker.wake();
       await worker.idle();
@@ -248,7 +261,7 @@ test("terminal runtime failure is recorded once and does not block the next turn
       },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     try {
       worker.wake();
       await worker.idle();
@@ -265,7 +278,7 @@ test("a Session from another provider is refused without a runtime call until re
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, env.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=claude"));
-    const instance = await start(directory);
+    const instance = await startWithTestStore(directory);
     const old = createSession(instance.database, { user_id: instance.owner.id, transport: "discord", workspace_id: "guild",
       parent_conversation_id: "channel", conversation_id: "thread-a", initiating_external_message_id: "m1",
       agent_provider: "codex", agent_session_id: "codex-thread", project_path: directory });
@@ -281,12 +294,13 @@ test("a Session from another provider is refused without a runtime call until re
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
     const transport = new FakeTransport();
-    const worker = new ConversationWorker(instance.database, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {}, transport);
+    const worker = new ConversationWorker(sqliteStore(instance.database), instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {}, transport);
     const notice = "This thread belongs to a Codex session. Use /inoai reset to start a new Claude session here, or start a new thread.";
     try {
-      await startTransport(instance, undefined, transport, undefined, worker);
+      await startTransport(instance, undefined, transport, undefined, worker, sqliteStore(instance.database));
       await worker.idle();
       transport.emit(incoming("m2", "thread-a", "channel"));
+      await until(() => listMessages(instance.database, old.id).some((row) => row.body === "m2"));
       await worker.idle();
       assert.deepEqual(calls, []);
       const refused = listMessages(instance.database, old.id);
@@ -332,7 +346,7 @@ test("an unrecognized stored provider is never echoed into the mismatch notice",
       async *runTurn() { throw new Error("Unexpected turn"); },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     try {
       worker.wake();
       await worker.idle();
@@ -368,7 +382,7 @@ test("the mismatch notice names OpenCode for an OpenCode-bound thread and names 
         async *runTurn() { throw new Error("Unexpected turn"); },
         async cancel() {}, health() { return { state: "ready" }; }, async close() {},
       };
-      const worker = new ConversationWorker(database, home, runtime, current);
+      const worker = new ConversationWorker(sqliteStore(database), home, runtime, current);
       try {
         worker.wake();
         await worker.idle();
@@ -400,7 +414,7 @@ test("a missing runtime session fails once and tells the owner to reset", async 
       async *runTurn() { attempts++; throw new RuntimeFailure("session_missing"); },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime, "claude");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "claude");
     try {
       worker.wake();
       await worker.idle();
@@ -436,7 +450,7 @@ async function failedTurnNotice(provider: "codex" | "claude" | "opencode", kind:
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
     const transport = new FakeTransport();
-    const worker = new ConversationWorker(database, home, runtime, provider, () => {}, transport);
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, provider, () => {}, transport);
     try {
       worker.enablePerSessionConcurrency();
       worker.wake();
@@ -503,7 +517,7 @@ test("shutdown cancels the active turn and leaves later pending input for restar
       async *runTurn() { entered(); await cancelled; throw new RuntimeFailure("cancelled"); },
       async cancel() { cancel(); }, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     worker.wake();
     await running;
     await worker.stop();
@@ -538,7 +552,7 @@ test("shutdown during a replay-safe backoff never retries after runtime close", 
       },
       async cancel() {}, health() { return { state: "ready" }; }, async close() { closed = true; },
     };
-    const worker = new ConversationWorker(database, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     worker.wake();
     await until(() => database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'runtime_failure'").get()?.count === 1);
     await worker.stop();
@@ -589,7 +603,7 @@ test("validated cross-session overlap keeps Session FIFO and falls back globally
       },
       async cancel() { releaseA(); releaseB(); }, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     try {
       assert.equal(worker.concurrencyMode(), "global");
       worker.wake();
@@ -611,7 +625,7 @@ test("validated cross-session overlap keeps Session FIFO and falls back globally
       assert.equal(sameSessionOverlap, false);
       assert.deepEqual(listMessages(database, a.id).filter((row) => row.direction === "user").map((row) => row.state), ["failed", "completed"]);
     } finally { await worker.stop(); }
-    const restarted = new ConversationWorker(database, home, runtime, "codex");
+    const restarted = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     assert.equal(restarted.concurrencyMode(), "global");
     database.close();
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -630,7 +644,7 @@ test("concurrency fallback log names the runtime", async () => {
       async *runTurn() { throw new Error("Unexpected turn"); },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(database, home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
     console.warn = (message: unknown) => { warnings.push(message); };
     worker.enablePerSessionConcurrency();
     worker.fallbackToGlobal();

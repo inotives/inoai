@@ -222,7 +222,7 @@ test("bootstraps one active configured owner across restarts", async () => {
     const home = await bootstrapRuntimeHome(deployment);
     const configuration = validateConfiguration({
        DISCORD_BOT_TOKEN: "token", DISCORD_GUILD_ID: "guild", DISCORD_OWNER_USER_ID: "owner", DISCORD_STATUS_CHANNEL_ID: "channel",
-      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000",
+      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000", POSTGRES_URL: "postgresql://inoai_sync:secret@example.test:5432/app", AGENT_INSTANCE_ID: "agent-test",
     });
     const database = openDatabase(home);
     const first = bootstrapOwner(database, configuration);
@@ -246,7 +246,7 @@ test("bootstrap reactivates a soft-deleted configured owner", async () => {
     const database = openDatabase(await bootstrapRuntimeHome(deployment));
     const configuration = validateConfiguration({
        DISCORD_BOT_TOKEN: "token", DISCORD_GUILD_ID: "guild", DISCORD_OWNER_USER_ID: "owner", DISCORD_STATUS_CHANNEL_ID: "channel",
-      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000",
+      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000", POSTGRES_URL: "postgresql://inoai_sync:secret@example.test:5432/app", AGENT_INSTANCE_ID: "agent-test",
     });
     const first = bootstrapOwner(database, configuration);
     database.prepare("UPDATE users SET deleted_at = unixepoch(), deleted_by = 'test' WHERE id = ?").run(first.id);
@@ -267,11 +267,11 @@ test("bootstrap disables a replaced configured owner", async () => {
     const database = openDatabase(await bootstrapRuntimeHome(deployment));
     const first = validateConfiguration({
        DISCORD_BOT_TOKEN: "token", DISCORD_GUILD_ID: "guild", DISCORD_OWNER_USER_ID: "first", DISCORD_STATUS_CHANNEL_ID: "channel",
-      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000",
+      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000", POSTGRES_URL: "postgresql://inoai_sync:secret@example.test:5432/app", AGENT_INSTANCE_ID: "agent-test",
     });
     const second = validateConfiguration({
        DISCORD_BOT_TOKEN: "token", DISCORD_GUILD_ID: "guild", DISCORD_OWNER_USER_ID: "second", DISCORD_STATUS_CHANNEL_ID: "channel",
-      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000",
+      CHAT_PROVIDER: "discord", AGENT_PROVIDER: "codex", MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000", POSTGRES_URL: "postgresql://inoai_sync:secret@example.test:5432/app", AGENT_INSTANCE_ID: "agent-test",
     });
     bootstrapOwner(database, first);
     const active = bootstrapOwner(database, second);

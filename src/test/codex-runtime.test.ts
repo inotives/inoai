@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { sqliteStore } from "./sqlite-store.js";
+
 import { resumeAgentSession, startAgentSession } from "../agent-session.js";
 import type { CodexAppServer } from "../codex-app-server.js";
 import { CodexRuntime } from "../codex-runtime.js";
@@ -52,12 +54,12 @@ test("starts a persistent thread, stores its ID, and resumes with project instru
       const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "message", agent_provider: "codex", agent_session_id: "pending:message", project_path: project });
       const fake = new FakeServer();
       const runtime = new CodexRuntime(fake.client());
-      assert.equal(await startAgentSession(database, runtime, session.id, home), "real-thread");
+      assert.equal(await startAgentSession(sqliteStore(database), runtime, session.id, home), "real-thread");
       assert.equal(getSession(database, session.id)?.agent_session_id, "real-thread");
       assert.deepEqual(fake.sent[0], { method: "thread/start", params: { cwd: project, developerInstructions: "Planner personality" } });
-      assert.equal(await resumeAgentSession(database, runtime, session.id, home), "real-thread");
+      assert.equal(await resumeAgentSession(sqliteStore(database), runtime, session.id, home), "real-thread");
       assert.deepEqual(fake.sent[1], { method: "thread/resume", params: { threadId: "real-thread", cwd: project, developerInstructions: "Planner personality" } });
-      await assert.rejects(startAgentSession(database, runtime, session.id, home), /not pending/);
+      await assert.rejects(startAgentSession(sqliteStore(database), runtime, session.id, home), /not pending/);
     } finally { database.close(); }
   } finally { await rm(project, { recursive: true, force: true }); }
 });
