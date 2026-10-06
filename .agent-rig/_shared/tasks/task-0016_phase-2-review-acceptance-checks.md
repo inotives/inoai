@@ -17,6 +17,9 @@ depends_on:
   - task-0013
   - task-0014
   - task-0015
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

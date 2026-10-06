@@ -13,6 +13,9 @@ depends_on:
   - task-0026
 message: Legacy approval recovery independently reviewed; 59 tests, typecheck,
   build and diff check pass; owner accepted at-most-once notice
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -5,6 +5,9 @@ tool: claude
 task: task-0055
 task_title: "Phase 5b: Live OpenCode Discord smoke acceptance"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0055 live OpenCode smoke handoff

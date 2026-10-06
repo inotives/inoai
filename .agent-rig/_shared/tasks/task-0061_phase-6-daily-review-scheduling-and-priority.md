@@ -13,6 +13,9 @@ depends_on:
   - task-0060
 message: "Daily review scheduler: once per date, chat-first preemption, retries,
   skips; re-review clean, 187 tests"
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

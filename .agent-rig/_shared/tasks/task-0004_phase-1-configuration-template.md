@@ -12,6 +12,9 @@ parent: ""
 depends_on:
   - task-0001
 message: Accepted by the human after review
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

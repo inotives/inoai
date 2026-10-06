@@ -5,6 +5,9 @@ tool: codex
 task: task-0028
 task_title: "Phase 4: Runtime failures and safe retry"
 status: blocked
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0028 independent review

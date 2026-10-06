@@ -5,6 +5,9 @@ tool: codex
 task: task-0036
 task_title: "Phase 5: Native Discord thread controls"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0036 independent review

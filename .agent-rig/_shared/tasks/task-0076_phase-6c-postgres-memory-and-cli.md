@@ -18,6 +18,9 @@ blocked_on: 2026-10-04
 message: "Final re-review clean: BigQuery dependency removed; prior Memory
   Review fixes remain intact; npm test 210 passing, typecheck, build, and diff
   check pass."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

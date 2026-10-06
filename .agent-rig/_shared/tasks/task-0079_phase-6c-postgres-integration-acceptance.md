@@ -17,6 +17,9 @@ message: "Independent final re-review clean: both stores are explicitly closed
   failure; runtime role/DML/DDL checks remain; integration skips safely without
   URL. npm test, typecheck, build, diff-check pass; Docker-backed positive run
   unavailable because no Docker daemon."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -5,6 +5,9 @@ tool: codex
 task: task-0024
 task_title: "Phase 4: Agent Session lifecycle and streaming"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0024 independent review

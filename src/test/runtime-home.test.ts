@@ -10,6 +10,7 @@ import test from "node:test";
 import {
   acquireRuntimeHomeLock,
   bootstrapRuntimeHome,
+  getMacProcessStartTime,
   InvalidRuntimeHomeError,
   RuntimeHomeLockedError,
   UnsafeRuntimeHomeError,
@@ -85,6 +86,89 @@ test("locks one runtime home while allowing an alternate home", async () => {
     } finally {
       await releasePrimary();
     }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("writes a process-identifying JSON lock record", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    const release = await acquireRuntimeHomeLock(home);
+    try {
+      const record = JSON.parse(await readFile(home.lockFile, "utf8")) as { pid: number; started_at: string; token: string };
+      assert.equal(record.pid, process.pid);
+      assert.equal(typeof record.started_at, "string");
+      assert.ok(record.started_at.length > 0);
+      assert.match(record.token, /^[0-9a-f-]{36}$/);
+      const currentStart = await getMacProcessStartTime(process.pid);
+      assert.equal(currentStart !== undefined, process.platform === "darwin");
+      if (currentStart !== undefined) assert.equal(record.started_at, currentStart);
+    } finally {
+      await release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("legacy or malformed lock contents are not released", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    const release = await acquireRuntimeHomeLock(home);
+    await writeFile(home.lockFile, "legacy-token");
+    await release();
+    assert.equal(await readFile(home.lockFile, "utf8"), "legacy-token");
+
+    await writeFile(home.lockFile, "not-json");
+    const releaseAgain = await acquireRuntimeHomeLock(home).catch(() => undefined);
+    assert.equal(releaseAgain, undefined);
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("reclaims a lock whose recorded process has exited", { skip: process.platform !== "darwin" }, async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    const childPid = child.pid;
+    assert.ok(childPid);
+    await once(child, "exit");
+    await writeFile(home.lockFile, JSON.stringify({
+      pid: childPid,
+      started_at: "stopped-process",
+      token: "dead-owner-token",
+    }));
+
+    const release = await acquireRuntimeHomeLock(home);
+    try {
+      const record = JSON.parse(await readFile(home.lockFile, "utf8")) as { pid: number };
+      assert.equal(record.pid, process.pid);
+    } finally {
+      await release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("reclaims a lock when the PID start time does not match", { skip: process.platform !== "darwin" }, async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    await writeFile(home.lockFile, JSON.stringify({
+      pid: process.pid,
+      started_at: "different-process-start",
+      token: "reused-pid-token",
+    }));
+
+    const release = await acquireRuntimeHomeLock(home);
+    await release();
+    await assert.rejects(readFile(home.lockFile, "utf8"));
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }

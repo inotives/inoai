@@ -5,6 +5,9 @@ tool: codex
 task: task-0069
 task_title: "Phase 6b: Codex review documentation"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Review outcome

@@ -13,6 +13,9 @@ depends_on:
   - task-0052
 message: OpenCode denials fail closed from stdout-only count; real check
   stdout=stderr=2; review clean, 142 tests
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

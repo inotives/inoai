@@ -4,5 +4,9 @@
   "created_by": {
     "name": "agent-rig",
     "version": "0.0.1"
-  }
+  },
+  "workflow_store": {
+    "provider": "sqlite"
+  },
+  "project_identifier": "ino-ai"
 }

@@ -20,6 +20,9 @@ depends_on:
   - task-0037
 message: Final integrated review clean; 86 tests, typecheck, build, diff check
   and task reviews pass
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -15,6 +15,9 @@ depends_on:
 message: "Independent final review approved: npm test 214/214, focused consumer
   suites 57/57, typecheck, build, and diff checks passed; startup wiring remains
   deferred to task-0078."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

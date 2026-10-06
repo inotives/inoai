@@ -21,6 +21,9 @@ depends_on:
   - task-0047
   - task-0048
 message: Integrated Phase 5a review clean; 122 tests, typecheck, build, diff checks pass
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

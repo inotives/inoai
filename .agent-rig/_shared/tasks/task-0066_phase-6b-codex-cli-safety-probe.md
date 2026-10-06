@@ -14,6 +14,9 @@ message: "Reviewed worker handoff and Phase 6b spike: real Codex probe used
   ephemeral read-only/never settings and synthetic injection input; MCP startup
   notifications were observed, so safety gate correctly fails closed. No source
   changes, no secret leakage, cleanup and diff checks verified."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

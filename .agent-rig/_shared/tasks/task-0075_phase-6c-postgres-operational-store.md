@@ -14,6 +14,9 @@ depends_on:
 message: Independent review clean. Focused store tests (3), typecheck, build,
   and diff check passed; repository-wide npm test has unrelated missing BigQuery
   dependency noted in reviewer handoff.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

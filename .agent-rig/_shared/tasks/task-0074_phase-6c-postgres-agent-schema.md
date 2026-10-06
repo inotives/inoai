@@ -15,6 +15,9 @@ message: Re-review clean after application-enforced isolation policy fix;
   POSTGRES_ISOLATION_MODE defaults application and unsupported modes fail
   closed. Focused build/typecheck/config tests pass; full test has unrelated
   missing @google-cloud/bigquery dependency.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

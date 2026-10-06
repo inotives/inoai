@@ -5,6 +5,9 @@ tool: codex
 task: task-0016
 task_title: "Phase 2: Review acceptance checks"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Phase 2 final acceptance review

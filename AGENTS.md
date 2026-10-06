@@ -25,6 +25,15 @@ Apply this section when `.agent-rig/` exists.
 
 Project-local AgentRig instructions, skills, and tools take precedence over similar global versions unless the user directs otherwise.
 
+### AgentRig workflow storage
+
+- This repository uses AgentRig `0.1.4` with SQLite as the canonical workflow provider.
+- The active provider is recorded in `.agent-rig/_shared/agent-rig.json`; use `agent-rig status --json` to verify it before workflow work.
+- The live task and handoff store is `.agent-rig/_shared/workflow.sqlite`. Use AgentRig commands for task/status/handoff mutations; do not edit SQLite directly.
+- The original Markdown task and task-linked handoff files remain historical reference material after migration. Do not switch the provider back to Markdown without an explicit migration decision.
+- A safety backup can be created with `agent-rig workflow backup --output .agent-rig/_shared/workflow.sqlite.backup`.
+- Phase-level planner handoffs that do not reference a task are preserved in `.agent-rig/_shared/phase_handoffs/`; they are reference documents, not live task handoffs.
+
 ## Source of truth
 
 - Read `docs/discord-codex-cli-harness-proposal.md` for V1 behavior and boundaries.
@@ -76,13 +85,15 @@ agent-rig tasks block <task-id> --reason "<reason>"
 
 ## Handoff
 
-When AgentRig is active, write handoffs to `.agent-rig/_shared/handoff_logs/` using:
+When AgentRig is active, write task handoffs to `.agent-rig/_shared/handoff_logs/` using:
 
 ```text
 <date-YYYY-MM-DD-hhmm>_<session_id>_<tool>_<role>.md
 ```
 
 Include YAML frontmatter with `agent`, `role`, `tool`, `task`, `task_title`, and `status` (`done`, `blocked`, or `handoff`). If blocked, record the blocker in the AgentRig task and write a handoff.
+
+Planner phase summaries without a task ID belong in `.agent-rig/_shared/phase_handoffs/` and must not be presented as task-level worker or reviewer handoffs.
 
 ## Project phase workflow
 

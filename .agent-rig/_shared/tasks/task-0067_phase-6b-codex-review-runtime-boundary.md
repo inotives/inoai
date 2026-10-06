@@ -14,6 +14,9 @@ depends_on:
 message: "Review clean: Codex remains fail-closed after unsafe MCP probe; skip
   event and unchanged cursor are covered by tests. Full 190-test suite,
   typecheck, and diff check pass."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

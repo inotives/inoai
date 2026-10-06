@@ -14,6 +14,9 @@ depends_on:
   - task-0065
 message: Live seeded Claude review passes 2/2 after task-0065; independent
   reproduction clean
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

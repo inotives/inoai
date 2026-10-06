@@ -5,6 +5,9 @@ tool: codex
 task: task-0019
 task_title: "Phase 3: Inbound Discord eligibility policy"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0019 reply mention fix

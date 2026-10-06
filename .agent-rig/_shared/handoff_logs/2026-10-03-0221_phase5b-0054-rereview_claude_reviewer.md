@@ -5,6 +5,9 @@ tool: claude
 task: task-0054
 task_title: "Phase 5b: README OpenCode setup"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # task-0054 re-review (reviewer)

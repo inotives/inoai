@@ -11,6 +11,9 @@ priority: high
 parent: ""
 depends_on: []
 message: OpenCode v2.0.22 headless contract verified; three review rounds, final clean
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

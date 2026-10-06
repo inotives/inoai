@@ -5,6 +5,9 @@ tool: claude
 task: task-0050
 task_title: "Phase 5b: OpenCode headless contract spike"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Handoff: task-0050 review fixes

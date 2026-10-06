@@ -12,6 +12,9 @@ parent: ""
 depends_on: []
 message: Claude text-only review contract verified incl.
   --safe-mode/--system-prompt; re-review clean
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -18,6 +18,9 @@ depends_on:
   - task-0028
 message: Phase 4 integrated acceptance independently reviewed; 64 tests,
   typecheck, build and diff check pass; Phase 8 docs correction verified
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

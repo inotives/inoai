@@ -5,6 +5,9 @@ tool: claude
 task: task-0060
 task_title: "Phase 6: Review engine and validation"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # task-0060 worker fix handoff

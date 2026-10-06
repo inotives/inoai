@@ -5,6 +5,9 @@ tool: codex
 task: task-0001
 task_title: "Phase 1: TypeScript project scaffold"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0001 review handoff

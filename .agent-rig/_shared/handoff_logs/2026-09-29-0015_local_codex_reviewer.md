@@ -5,6 +5,9 @@ tool: codex
 task: task-0015
 task_title: "Phase 2: Manual Memory management CLI"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Review: no issues

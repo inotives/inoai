@@ -19,6 +19,9 @@ blocked_reason: Final review found reply-ping mention bypass; reopen task-0019
   for fix and re-review
 blocked_on: 2026-09-29
 message: Phase 3 integrated acceptance reviewed; 45 tests and build checks pass
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

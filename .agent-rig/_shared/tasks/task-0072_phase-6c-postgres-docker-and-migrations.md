@@ -15,6 +15,9 @@ message: "Re-review clean: transaction-scoped advisory lock is acquired
   immediately after BEGIN; focused regression test verifies ordering;
   typecheck/build/focused tests/diff checks pass. Full suite has one unrelated
   stale BigQuery dependency failure; Docker health remains unverified."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

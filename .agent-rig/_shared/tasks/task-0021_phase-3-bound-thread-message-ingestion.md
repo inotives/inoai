@@ -12,6 +12,9 @@ parent: ""
 depends_on:
   - task-0020
 message: Bound-thread ingestion independently reviewed and verified
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

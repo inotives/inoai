@@ -5,6 +5,9 @@ tool: codex
 task: task-0027
 task_title: "Phase 4: Legacy approval restart recovery"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0027 independent review

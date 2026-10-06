@@ -5,6 +5,9 @@ tool: codex
 task: task-0017
 task_title: "Phase 3: Discord gateway adapter"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0017 re-review: accepted

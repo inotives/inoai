@@ -13,6 +13,9 @@ depends_on:
   - task-0011
 message: "Reviewer accepted: transactional FIFO claim/finalize, same-session
   exclusion, and global fallback verified."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

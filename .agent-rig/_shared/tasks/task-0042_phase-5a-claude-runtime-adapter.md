@@ -14,6 +14,9 @@ depends_on:
   - task-0041
 message: Claude headless adapter; session_missing fails closed; re-review clean,
   106 tests
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 
