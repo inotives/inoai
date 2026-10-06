@@ -8,13 +8,13 @@ import { sqliteStore } from "./sqlite-store.js";
 
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { RuntimeEvent } from "../agent-runtime.js";
-import { resumeAgentSession, startAgentSession } from "../agent-session.js";
+import { resumeAgentSession, startAgentSession } from "../conversation/agent-session.js";
 import { openCodePermissionDenialNotifier } from "../approval-relay.js";
-import { ConversationWorker } from "../conversation-worker.js";
+import { ConversationWorker } from "../conversation/conversation-worker.js";
 import { archiveMessage, createSession, getSession, listMessages, openDatabase, upsertUser } from "../database.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
-import { runRuntimeTurn } from "../runtime-turn.js";
+import { runRuntimeTurn } from "../conversation/runtime-turn.js";
 
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[]; stderr?: string };
 type Check = "exists" | "missing" | "error" | "hang";

@@ -8,7 +8,7 @@ import { sqliteStore } from "./sqlite-store.js";
 
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
-import { ConversationWorker, splitFinalAnswer } from "../conversation-worker.js";
+import { ConversationWorker, splitFinalAnswer } from "../conversation/conversation-worker.js";
 import { archiveMessage, claimNextMessage, createSession, listMessages, markRuntimeStarted, openDatabase, upsertUser } from "../database.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import { KnownDeliveryFailure } from "../transport.js";

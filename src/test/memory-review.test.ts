@@ -8,15 +8,15 @@ import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeFailureKind } from "../agent-runtime.js";
 import { permissionDeclinedNotice } from "../approval-relay.js";
 import { ClaudeRuntime } from "../claude-runtime.js";
-import { fixedTurnNotices, providerMismatchNotice } from "../conversation-worker.js";
+import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conversation-worker.js";
 import { archiveMessage, completeMemoryReview, createMemory, createMemoryReview, createSession, listEvents, listMemories, messagesForMemoryReview, openDatabase, upsertUser } from "../database.js";
 import type { MemoryRecord, MemoryReviewRecord, MessageRecord } from "../database.js";
 import { createCodexRuntime } from "../index.js";
-import { parseReviewJson, redactSecrets, reviewSession, reviewSessionWithStore } from "../memory-review.js";
+import { parseReviewJson, redactSecrets, reviewSession, reviewSessionWithStore } from "../memory/memory-review.js";
 import type { MemoryReviewSnapshot } from "../operational-store.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
-import { runtimeFailureNotice } from "../runtime-turn.js";
+import { runtimeFailureNotice } from "../conversation/runtime-turn.js";
 import type { DatabaseSync } from "node:sqlite";
 
 type Reply = (prompt: string, call: number, signal?: AbortSignal) => string | Promise<string>;

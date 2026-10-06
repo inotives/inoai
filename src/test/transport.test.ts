@@ -14,7 +14,7 @@ import type { IncomingMessage } from "../transport.js";
 import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages, openDatabase } from "../database.js";
 import { run, start, startTransport } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
-import type { SchedulerClock } from "../memory-review-scheduler.js";
+import type { SchedulerClock } from "../memory/memory-review-scheduler.js";
 import { sqliteStore } from "./sqlite-store.js";
 
 class FakeClient extends EventEmitter {

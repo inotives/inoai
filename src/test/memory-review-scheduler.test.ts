@@ -9,12 +9,12 @@ import { sqliteStore } from "./sqlite-store.js";
 
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
-import { ConversationWorker, fixedTurnNotices } from "../conversation-worker.js";
+import { ConversationWorker, fixedTurnNotices } from "../conversation/conversation-worker.js";
 import { archiveMessage, createEvent, createMemoryReview, createSession, listEvents, openDatabase, upsertUser } from "../database.js";
 import type { MemoryReviewRecord, MessageRecord } from "../database.js";
 import { createCodexRuntime } from "../index.js";
-import { MemoryReviewScheduler } from "../memory-review-scheduler.js";
-import type { SchedulerClock } from "../memory-review-scheduler.js";
+import { MemoryReviewScheduler } from "../memory/memory-review-scheduler.js";
+import type { SchedulerClock } from "../memory/memory-review-scheduler.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import type { RuntimeHome } from "../runtime-home.js";
