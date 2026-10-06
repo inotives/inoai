@@ -13,6 +13,9 @@ depends_on:
   - task-0025
 message: Fail-closed Codex approval handling independently reviewed; 57 tests,
   typecheck, build and diff check pass
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -14,6 +14,9 @@ depends_on:
 message: "Independent review clean: CLI behavior, idempotency, guild scoping,
   defaults, owner protection, audit fields, secret-safe errors/docs verified;
   tests/typecheck/build/diff pass."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

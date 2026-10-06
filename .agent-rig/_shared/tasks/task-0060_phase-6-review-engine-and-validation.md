@@ -13,6 +13,9 @@ depends_on:
   - task-0059
 message: Review engine and deterministic validation; four review rounds, final
   clean; 176 tests
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

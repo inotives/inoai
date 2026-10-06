@@ -5,6 +5,9 @@ tool: codex
 task: task-0011
 task_title: "Phase 2: Archived record persistence"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0011 reviewer-finding fix

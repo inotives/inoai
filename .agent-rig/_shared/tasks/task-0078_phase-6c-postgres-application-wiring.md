@@ -17,6 +17,9 @@ message: "Re-review clean after explicit test-fixture migration: PostgreSQL-only
   production startup, lease lifecycle, no compatibility database field,
   sanitized errors, 213 passing and 1 explicit legacy SQLite skip;
   typecheck/build/diff clean."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

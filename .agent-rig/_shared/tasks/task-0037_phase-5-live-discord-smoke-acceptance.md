@@ -14,6 +14,9 @@ depends_on:
 message: Independent live-smoke review clean; 3 acceptance checks verified;
   later failed turn archived with failure notice, not counted as successful
   answer
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

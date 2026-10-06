@@ -15,6 +15,9 @@ message: Reviewed README, Phase 6b implementation plan, ADR 0011, and handoffs;
   no findings. Exact Codex 0.159.3 MCP evidence, disabled fail-closed behavior,
   cursor preservation, synthetic secret-free fixtures, and no-Discord scope are
   consistent. git diff --check passed.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -5,6 +5,9 @@ tool: claude
 task: task-0052
 task_title: "Phase 5b: OpenCode runtime adapter"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # task-0052 re-review handoff (after the L1/L2/L4 fix round)

@@ -58,7 +58,14 @@ grace period before another process may recover the lease, and
 `POSTGRES_LEASE_REFRESH_MS` controls the heartbeat interval. The refresh value
 must be lower than the TTL. The local runtime-home `inoai.lock` remains the
 fast same-machine guard; the PostgreSQL lease prevents duplicate ownership
-across machines.
+across machines. The local lock is a `0600` JSON record containing the owning
+PID, macOS process start time, and release token. Startup reclaims it only when
+the PID is gone or its start time differs, and otherwise fails closed. Recovery
+is startup-only; the lock is not refreshed by a watcher. Legacy UUID-only and
+malformed lock files are deliberately not reclaimed because their ownership
+cannot be verified safely. See [ADR 0015](adr/0015-runtime-home-lock-stale-recovery.md)
+for the recovery decision and [CONTEXT.md](../CONTEXT.md) for the lock/lease
+terminology.
 
 Normal startup requires the runtime role to reach PostgreSQL, the numbered
 migrations to have been applied by an administrator, and the configured

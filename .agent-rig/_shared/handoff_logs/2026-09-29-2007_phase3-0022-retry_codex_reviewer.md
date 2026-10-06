@@ -5,6 +5,9 @@ tool: codex
 task: task-0022
 task_title: "Phase 3: Review acceptance checks"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Phase 3 integrated acceptance re-review

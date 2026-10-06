@@ -5,6 +5,9 @@ tool: codex
 task: task-0018
 task_title: "Phase 3: Startup health announcement"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0018 review: changes requested

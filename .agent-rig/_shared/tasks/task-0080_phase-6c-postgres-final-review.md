@@ -19,6 +19,9 @@ message: Final integrated re-review approved after task 0082 idempotency fix.
   npm test 214 passing/2 skipped; real Docker acceptance recorded by task-0082
   as 1 passing/0 skipped; typecheck/build/diff clean; credential scan clean. See
   2026-10-04-1807 final reviewer handoff.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

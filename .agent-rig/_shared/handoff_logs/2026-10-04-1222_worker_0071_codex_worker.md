@@ -5,6 +5,9 @@ tool: codex
 task: task-0071
 task_title: "Phase 6c: PostgreSQL driver, configuration, and OperationalStore contract"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 ## Completed

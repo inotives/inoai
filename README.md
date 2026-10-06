@@ -62,6 +62,15 @@ my-project/
 
 On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. The runtime home contains configuration and the local same-machine lock; operational data lives in the configured PostgreSQL Agent Schema. Only one core process may use a runtime home at a time; the PostgreSQL lease also prevents duplicate ownership across machines. Runtime homes are git-ignored and must never be committed.
 
+The local `inoai.lock` is a `0600` JSON record containing the owning process
+PID, its macOS process start time, and a release token. If startup finds an
+existing lock, it reclaims it only when that exact process is gone or its
+start time no longer matches (protecting against PID reuse). Recovery runs
+only during startup; there is no lock refresher. Legacy UUID-only and malformed
+locks cannot be verified safely and remain locked until removed deliberately.
+The PostgreSQL lease is still the cross-machine authority and is refreshed by
+the healthy process.
+
 `agent.md` defines that instance's role and personality. Project guidance comes from each CLI's own loading: `AGENTS.md` for Codex and OpenCode, `CLAUDE.md` for Claude.
 
 Discord rules:

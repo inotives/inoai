@@ -17,6 +17,9 @@ depends_on:
   - task-0047
 message: "Live Claude Discord smoke: start, continue, denial, cancel, status,
   reset, status-channel all pass; review clean"
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

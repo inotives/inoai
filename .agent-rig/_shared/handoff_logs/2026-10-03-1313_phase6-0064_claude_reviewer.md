@@ -5,6 +5,9 @@ tool: claude
 task: task-0064
 task_title: "Phase 6: Integrated review and acceptance"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # task-0064 integrated review (reviewer handoff)

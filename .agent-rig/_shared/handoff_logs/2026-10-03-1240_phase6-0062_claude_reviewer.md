@@ -5,6 +5,9 @@ tool: claude
 task: task-0062
 task_title: "Phase 6: README Memory Review"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Reviewer handoff: task-0062

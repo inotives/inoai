@@ -75,3 +75,17 @@ _Avoid_: Analytics sink, archive copy
 **Agent Schema**:
 A database namespace containing one Agent Instance's operational records, identified by the shared coordination model.
 _Avoid_: Runtime home, database
+
+**Runtime Home Lock**:
+A local, same-machine ownership marker for one Agent Instance runtime home. It
+is a `0600` JSON record with the owning PID, macOS process start time, and a
+release token. Startup may reclaim it only when process identity proves it is
+stale; legacy or malformed records fail closed. It is a fast startup guard and
+is not the cross-machine authority.
+_Avoid_: PostgreSQL lease, heartbeat
+
+**PostgreSQL Lease**:
+A database-backed ownership record for an Agent Instance that prevents duplicate
+ownership across machines and is refreshed while the process is healthy. It
+remains authoritative even when the local runtime-home lock is reclaimed.
+_Avoid_: Runtime Home Lock, file lock

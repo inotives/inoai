@@ -13,6 +13,9 @@ depends_on:
   - task-0031
 message: Independent re-review clean after shutdown retry fix; 74 tests and full
   checks passed
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

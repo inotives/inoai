@@ -17,6 +17,9 @@ depends_on:
 message: "Integrated Phase 6b review clean: Codex 0.159.3 safety gate remains
   failed on MCP startup notifications; fail-closed skip and cursor preservation
   verified; 191 tests, typecheck, build, and diff check pass."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

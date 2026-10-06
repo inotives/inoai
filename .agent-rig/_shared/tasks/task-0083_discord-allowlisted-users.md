@@ -14,6 +14,9 @@ depends_on:
 message: "Independent review clean: active family allowlist accepted;
   unknown/disabled rejected; owner-only controls preserved;
   tests/typecheck/build/diff checks pass."
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

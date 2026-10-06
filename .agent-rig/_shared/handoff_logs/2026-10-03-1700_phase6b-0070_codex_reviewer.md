@@ -5,6 +5,9 @@ tool: codex
 task: task-0070
 task_title: "Phase 6b: Integrated review and acceptance"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 # Task 0070 final reviewer handoff
 

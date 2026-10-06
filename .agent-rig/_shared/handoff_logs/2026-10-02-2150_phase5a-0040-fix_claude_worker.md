@@ -5,6 +5,9 @@ tool: claude
 task: task-0040
 task_title: "Phase 5a: Claude provider configuration"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # task-0040 worker fix handoff (F1)

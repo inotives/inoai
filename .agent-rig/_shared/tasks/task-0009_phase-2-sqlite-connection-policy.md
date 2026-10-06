@@ -12,6 +12,9 @@ parent: ""
 depends_on: []
 message: Added guarded node:sqlite opener with WAL and 5s busy timeout; tests,
   typecheck, and build pass.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

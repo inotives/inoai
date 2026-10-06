@@ -5,6 +5,9 @@ tool: claude
 task: task-0057
 task_title: "Phase 5b: Provider-worded authentication and usage notices"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # task-0057 reviewer handoff

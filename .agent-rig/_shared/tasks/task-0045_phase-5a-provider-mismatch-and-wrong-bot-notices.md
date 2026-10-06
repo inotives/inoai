@@ -12,6 +12,9 @@ parent: ""
 depends_on:
   - task-0041
 message: Provider-mismatch refusal and wrong-bot notice; review clean, 115 tests
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

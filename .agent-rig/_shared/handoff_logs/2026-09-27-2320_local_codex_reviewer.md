@@ -5,6 +5,9 @@ tool: codex
 task: task-0003
 task_title: "Phase 1: Runtime home bootstrap"
 status: handoff
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0003 final re-review handoff

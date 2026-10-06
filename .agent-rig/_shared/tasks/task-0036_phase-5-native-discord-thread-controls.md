@@ -12,6 +12,9 @@ parent: ""
 depends_on:
   - task-0035
 message: Independent review clean; 86 tests and full checks passed
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

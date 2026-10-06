@@ -5,6 +5,9 @@ tool: claude
 task: task-0048
 task_title: "Phase 5a: Live Claude Discord smoke acceptance"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 # Task 0048 independent review

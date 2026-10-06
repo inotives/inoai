@@ -14,6 +14,9 @@ depends_on:
 message: Reviewed the synthetic Codex safe-skip acceptance regression and
   existing Phase 6 safety/cursor coverage; all checks pass with no findings. See
   2026-10-03-1531_phase6b-0068_codex_reviewer.md.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

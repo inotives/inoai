@@ -5,6 +5,9 @@ tool: codex
 task: task-0011
 task_title: "Phase 2: Archived record persistence"
 status: done
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 Implemented the focused SQLite archive API in `src/database.ts`: User upsert for the next owner-bootstrap task, Session/Message/Event/Memory/Memory Review persistence, uniform actor and timestamp fields, normal-read soft-delete filtering, message delivery idempotency, and the completed-review source cursor.

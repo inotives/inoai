@@ -13,6 +13,9 @@ depends_on:
   - task-0042
 message: Tool-free Claude concurrency probe with bounded wait and safe kill
   guard; re-review clean, 122 tests
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

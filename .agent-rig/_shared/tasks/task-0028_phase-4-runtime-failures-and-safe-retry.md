@@ -14,6 +14,9 @@ depends_on:
   - task-0027
 message: Runtime failure and safe retry independently reviewed after timeout
   fix; 64 tests, typecheck, build and diff check pass
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -15,6 +15,9 @@ message: "Independent review clean. Typecheck/build/focused tests/diff-check
   handoff:
   .agent-rig/_shared/handoff_logs/2026-10-04-1240_reviewer_0071_codex_reviewer.\
   md"
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

@@ -12,6 +12,9 @@ parent: ""
 depends_on: []
 message: AGENT_PROVIDER=opencode, mismatch map, opencode switch branch; review
   clean, 125 tests
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

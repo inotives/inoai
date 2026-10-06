@@ -14,6 +14,9 @@ depends_on:
 message: Ensured a configured owner change disables other active owners in the
   Discord guild, retained soft-delete reactivation, added regression coverage,
   and verified npm test, typecheck, build, and diff check.
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 

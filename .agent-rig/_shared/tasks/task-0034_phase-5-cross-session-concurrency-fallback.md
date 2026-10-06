@@ -13,6 +13,9 @@ depends_on:
   - task-0033
 message: Independent re-review clean; real probe unavailable, global FIFO
   retained; 78 tests and full checks passed
+storage_status: migrated
+migrated_to: sqlite
+migrated_at: 2026-10-06T13:48:17.599Z
 ---
 
 
