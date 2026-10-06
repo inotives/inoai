@@ -14,10 +14,11 @@ import type {
   SessionRecord,
   UserRecord,
 } from "./legacy-database.js";
-import type { Configuration } from "../config.js";
+import type { Configuration } from "../platform/config.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { agentSchemaName } from "../agent-identity.js";
+import { agentSchemaName } from "../platform/agent-identity.js";
+import type { MemoryOperationsStore } from "../application/memory/ports.js";
 
 export type MemoryReviewSnapshot = {
   cursor: number;
@@ -156,7 +157,7 @@ export interface OperationalStore {
  * application-enforced isolation: the shared runtime role has DML access to
  * provisioned schemas, so every operation must use this instance's schema.
  */
-export class PostgresOperationalStore implements OperationalStore {
+export class PostgresOperationalStore implements OperationalStore, MemoryOperationsStore {
   private readonly schema: string;
 
   constructor(private readonly pool: Pool, agentInstanceId: string) {

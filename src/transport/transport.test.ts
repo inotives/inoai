@@ -15,7 +15,7 @@ import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprova
 import { run, start, startTransport } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import type { SchedulerClock } from "../memory/memory-review-scheduler.js";
-import { sqliteStore } from "./sqlite-store.js";
+import { sqliteStore } from "../test/sqlite-store.js";
 
 class FakeClient extends EventEmitter {
   user = { id: "inoai" };

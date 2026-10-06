@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { sqliteStore } from "./sqlite-store.js";
+import { sqliteStore } from "../test/sqlite-store.js";
 
 import { ApprovalRelay } from "../approval-relay.js";
 import { CodexAppServer } from "../codex-app-server.js";

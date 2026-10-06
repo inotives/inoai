@@ -1,13 +1,13 @@
-import type { AgentRuntime, RuntimeFailureKind } from "../runtime/agent-runtime.js";
-import { resumeAgentSession, startAgentSession } from "./agent-session.js";
-import type { Configuration } from "../config.js";
+import type { AgentRuntime, RuntimeFailureKind } from "../application/conversation/runtime-port.js";
+import { resumeAgentSession, startAgentSession } from "../application/conversation/agent-session.js";
+import type { Configuration } from "../platform/config.js";
 import type { MessageRecord } from "../persistence/legacy-database.js";
 import type { OperationalStore } from "../persistence/operational-store.js";
-import type { RuntimeHome } from "../runtime-home.js";
+import type { RuntimeHome } from "../platform/runtime-home.js";
 import { composeTurnPrompt } from "./prompt-context.js";
-import { runRuntimeTurn } from "./runtime-turn.js";
-import { KnownDeliveryFailure } from "../transport/discord.js";
-import type { ChatTransport } from "../transport/discord.js";
+import { runRuntimeTurn } from "../application/conversation/runtime-turn.js";
+import { KnownDeliveryFailure } from "../application/conversation/transport-port.js";
+import type { ConversationTransport } from "../application/conversation/transport-port.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
@@ -56,7 +56,7 @@ export class ConversationWorker {
     private readonly runtime: AgentRuntime,
     private readonly agentProvider: Configuration["agentProvider"],
     private readonly onFailure: (error: Error) => void = () => {},
-    private readonly transport?: Pick<ChatTransport, "sendMessage" | "showWorking">,
+    private readonly transport?: ConversationTransport,
   ) {}
 
   wake(): Promise<void> {

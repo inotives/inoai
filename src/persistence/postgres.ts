@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 
-import type { Configuration } from "../config.js";
+import type { Configuration } from "../platform/config.js";
 
 export type PostgresPoolOptions = {
   max: number;

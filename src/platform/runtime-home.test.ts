@@ -17,7 +17,7 @@ import {
 } from "../runtime-home.js";
 import { start } from "../index.js";
 import { openDatabase } from "../database.js";
-import { sqliteStore } from "./sqlite-store.js";
+import { sqliteStore } from "../test/sqlite-store.js";
 
 async function temporaryDeployment(): Promise<string> {
   return mkdtemp(join(tmpdir(), "inoai-test-"));
