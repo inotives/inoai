@@ -7,9 +7,9 @@ import test from "node:test";
 import { sqliteStore } from "./sqlite-store.js";
 
 import type { AgentRuntime } from "../agent-runtime.js";
-import { ConversationWorker } from "../conversation-worker.js";
+import { ConversationWorker } from "../conversation/conversation-worker.js";
 import { archiveMessage, createMemory, createSession, listMessages, openDatabase, softDeleteMemory, upsertUser } from "../database.js";
-import { composeTurnPrompt } from "../prompt-context.js";
+import { composeTurnPrompt } from "../conversation/prompt-context.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 
 test("late replies quote only their archived target while retaining the Agent Session", async () => {

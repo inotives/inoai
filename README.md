@@ -314,12 +314,20 @@ npm run build
 
 For each phase, follow the workflow in [AGENTS.md](AGENTS.md): grill the phase docs, branch from `main`, split the phase into AgentRig tasks, and drive each task through an independent worker and reviewer before the integrated phase review.
 
+The TypeScript source is organized by capability boundary. `app/` is the
+composition root; `conversation/`, `memory/`, `persistence/`, `runtime/`, and
+`transport/` contain the corresponding application capabilities. Dependencies
+point inward through the existing narrow seams, while the root-level modules
+listed as compatibility entry points preserve existing imports during the
+incremental refactor. This restructuring does not change CLI, Discord,
+provider, persistence, or Memory Review behavior.
+
 ## Repository Layout
 
 ```text
 inoai/
 ├── docs/
-│   ├── adr/                                  # architecture decisions 0001–0010
+│   ├── adr/                                  # architecture decisions 0001–0016
 │   ├── discord-codex-cli-harness-proposal.md
 │   ├── implementation-phases.md
 │   ├── postgres-local.md
@@ -328,24 +336,40 @@ inoai/
 │   ├── repository-structure.md               # initial planned layout
 │   └── phase-*-spike.md                      # verified CLI contracts
 ├── src/
-│   ├── index.ts                              # CLI entry, wiring, provider switch, Memory commands
+│   ├── index.ts                              # thin executable launcher delegating to app/application.ts
+│   ├── app/application.ts                    # CLI wiring, provider switch, Memory commands, composition root
 │   ├── config.ts, runtime-home.ts            # .env validation, runtime-home bootstrap and lock
-│   ├── transport.ts, inbound-policy.ts       # Discord transport and routing
-│   ├── conversation-worker.ts                # per-Session FIFO worker
-│   ├── runtime-turn.ts, agent-session.ts     # Turn retries, notices, session binding
-│   ├── prompt-context.ts                     # Memory context and secret filter
-│   ├── agent-runtime.ts                      # provider-neutral runtime seam
-│   ├── codex-runtime.ts, codex-app-server.ts # Codex adapter
-│   ├── claude-runtime.ts                     # Claude adapter
-│   ├── opencode-runtime.ts                   # OpenCode adapter
-│   ├── approval-relay.ts                     # fail-closed permission notices
-│   ├── concurrency-probe.ts                  # startup concurrency probes
-│   ├── memory-review.ts                      # Daily Memory Review engine
-│   ├── memory-review-scheduler.ts            # daily cycle and chat-first scheduling
-│   ├── postgres.ts, operational-store.ts     # PostgreSQL pool and operational state
-│   ├── postgres-migrations.ts                # administrator migration runner
-│   ├── postgres-provision.ts                 # credential-free provisioning SQL factory
-│   ├── database.ts                           # legacy/UI SQLite compatibility
+│   ├── transport/                            # Discord adapter and inbound policy
+│   │   ├── discord.ts                         # Discord transport seam
+│   │   ├── inbound-policy.ts                  # message authorization and routing
+│   │   └── approval-relay.ts                  # fail-closed approval notices
+│   ├── conversation/                         # Session, Turn, FIFO worker, prompt context
+│   │   ├── conversation-worker.ts            # per-Session FIFO worker
+│   │   ├── runtime-turn.ts, agent-session.ts # Turn retries, notices, session binding
+│   │   └── prompt-context.ts                 # Memory context and secret filter
+│   ├── runtime/                              # provider-neutral seam and adapters
+│   │   ├── agent-runtime.ts                  # provider-neutral runtime seam
+│   │   ├── codex-runtime.ts, codex-app-server.ts # Codex adapter
+│   │   ├── claude-runtime.ts                 # Claude adapter
+│   │   ├── concurrency-probe.ts              # startup concurrency probes
+│   │   └── opencode-runtime.ts               # OpenCode adapter
+│   ├── memory/                               # Memory Review policy, scheduling, and operations
+│   │   ├── memory-review.ts                  # Daily Memory Review engine
+│   │   ├── memory-review-scheduler.ts        # daily cycle and chat-first scheduling
+│   │   └── memory-operations.ts              # memory persistence and query operations
+│   ├── persistence/                          # operational PostgreSQL and legacy/UI SQLite boundaries
+│   │   ├── operational-store.ts, postgres.ts  # operational state and PostgreSQL pool
+│   │   ├── postgres-*.ts                      # lease, migration, provisioning, and connection tools
+│   │   └── legacy-database.ts                 # legacy/UI SQLite implementation
+│   ├── memory-review.ts                      # compatibility entry point for memory-review.ts
+│   ├── memory-review-scheduler.ts            # compatibility entry point for memory-review-scheduler.ts
+│   ├── conversation-worker.ts, agent-session.ts,
+│   │   runtime-turn.ts, prompt-context.ts     # compatibility entry points for conversation modules
+│   ├── agent-runtime.ts, *-runtime.ts        # compatibility entry points for runtime modules
+│   ├── transport.ts, inbound-policy.ts,
+│   │   approval-relay.ts                      # compatibility entry points for transport modules
+│   ├── postgres*.ts, operational-store.ts    # persistence compatibility entry points
+│   ├── database.ts                           # legacy/UI SQLite compatibility entry point
 │   ├── ui.ts                                 # Electron UI launcher
 │   └── test/
 ├── .agent-rig/                               # AgentRig tasks and handoffs

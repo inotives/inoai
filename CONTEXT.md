@@ -89,3 +89,10 @@ A database-backed ownership record for an Agent Instance that prevents duplicate
 ownership across machines and is refreshed while the process is healthy. It
 remains authoritative even when the local runtime-home lock is reclaimed.
 _Avoid_: Runtime Home Lock, file lock
+
+**Capability Boundary**:
+A stable area of responsibility in the inoai system, such as Conversation,
+Memory, Persistence, Runtime, Transport, or Platform. A Capability Boundary
+groups behavior by the concept it serves and hides implementation details from
+other boundaries.
+_Avoid_: Utility bucket, service layer

@@ -10,7 +10,7 @@ import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
 import { ClaudeRuntime } from "../claude-runtime.js";
 import { CodexRuntime } from "../codex-runtime.js";
-import { ConversationWorker } from "../conversation-worker.js";
+import { ConversationWorker } from "../conversation/conversation-worker.js";
 import { archiveMessage, claimNextMessage, createSession, listMessages, markRuntimeStarted, openDatabase, upsertUser } from "../database.js";
 import { start, startTransport } from "../index.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";

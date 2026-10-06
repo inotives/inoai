@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { sqliteStore } from "./sqlite-store.js";
 
-import { resumeAgentSession, startAgentSession } from "../agent-session.js";
+import { resumeAgentSession, startAgentSession } from "../conversation/agent-session.js";
 import type { CodexAppServer } from "../codex-app-server.js";
 import { CodexRuntime } from "../codex-runtime.js";
 import { RuntimeFailure } from "../agent-runtime.js";
