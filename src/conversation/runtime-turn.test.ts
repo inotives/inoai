@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { sqliteStore } from "./sqlite-store.js";
+import { sqliteStore } from "../test/sqlite-store.js";
 
 import { RuntimeFailure } from "../agent-runtime.js";
 import type { AgentRuntime, RuntimeEvent } from "../agent-runtime.js";
 import { createSession, listEvents, openDatabase, upsertUser } from "../database.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
-import { runRuntimeTurn } from "../conversation/runtime-turn.js";
+import { runRuntimeTurn } from "./runtime-turn.js";
 
 async function withSession(check: (database: ReturnType<typeof openDatabase>, sessionId: number) => Promise<void>): Promise<void> {
   const project = await mkdtemp(join(tmpdir(), "inoai-retry-test-"));

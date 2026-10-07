@@ -1,7 +1,11 @@
 import { ChannelType, Client, Events, GatewayIntentBits, MessageFlags, SlashCommandBuilder } from "discord.js";
 import type { Message } from "discord.js";
 
-import type { Configuration } from "../config.js";
+import type { Configuration } from "../platform/config.js";
+import { KnownDeliveryFailure } from "../application/conversation/transport-port.js";
+import type { ConversationTransport } from "../application/conversation/transport-port.js";
+
+export { KnownDeliveryFailure } from "../application/conversation/transport-port.js";
 
 export type IncomingMessage = {
   transport: "discord";
@@ -34,7 +38,7 @@ export type ThreadControl = {
   respond(text: string): Promise<void>;
 };
 
-export interface ChatTransport {
+export interface ChatTransport extends ConversationTransport {
   start(onIncomingMessage: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, onFailure?: (error: Error) => void, onControl?: (control: ThreadControl) => Promise<void>): Promise<void>;
   registerThreadControls?(guildId: string): Promise<void>;
   stop(): Promise<void>;
@@ -46,8 +50,6 @@ export interface ChatTransport {
   publishHealth(targetConversationId: string, text: string, workspaceId: string): Promise<string>;
   health(): TransportHealth;
 }
-
-export class KnownDeliveryFailure extends Error {}
 
 export class DiscordTransport implements ChatTransport {
   private state: TransportHealth["state"] = "idle";

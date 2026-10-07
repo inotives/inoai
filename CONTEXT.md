@@ -24,6 +24,10 @@ _Avoid_: Model, bot
 One independently configured inoai identity represented by a `.inoai-connect*` runtime home. It selects one Agent Runtime provider, one Discord bot configuration, one role-specific `agent.md`, and one agent-wide Memory/archive database.
 _Avoid_: User, session, profile
 
+**Agent Account**:
+An external runtime or service identity that an Agent Instance may use, such as a provider login, Discord bot identity, or later trading connection. Account credentials and policies are distinct from an instance's role, archive, and operational state.
+_Avoid_: Agent Instance, User
+
 **Agent Session**:
 The Agent Runtime's persisted context for one Conversation or Task.
 _Avoid_: Conversation, thread
@@ -55,6 +59,10 @@ _Avoid_: Memory, transcript
 **Memory Signal**:
 Either an explicit user request to remember something or a useful pattern repeated across Recaps. A Memory Signal may promote information into shared agent Memory.
 _Avoid_: Every fact, summary
+
+**Knowledge**:
+External or shared information made available through indexing, retrieval, and provenance-aware sources. Knowledge is distinct from agent-maintained Memory and is not promoted automatically by retrieval alone.
+_Avoid_: Memory, transcript
 
 **Manual Memory Entry**:
 An important Memory item created directly through inoai's local management CLI or Electron UI, without waiting for a Recap.
@@ -96,3 +104,10 @@ Memory, Persistence, Runtime, Transport, or Platform. A Capability Boundary
 groups behavior by the concept it serves and hides implementation details from
 other boundaries.
 _Avoid_: Utility bucket, service layer
+
+**Platform**:
+The capability that owns environment and process integration, including
+configuration, runtime-home lifecycle, instance identity, and local application
+launching. Platform concerns support capabilities but do not define their
+business behavior.
+_Avoid_: Infrastructure bucket, composition root

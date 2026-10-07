@@ -1,29 +1,31 @@
 import { dirname } from "node:path";
 
-import type { AgentRuntime } from "../runtime/agent-runtime.js";
+import type { AgentRuntime } from "../application/conversation/runtime-port.js";
 import { ApprovalRelay, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "../transport/approval-relay.js";
 import { ClaudeRuntime } from "../runtime/claude-runtime.js";
 import { CodexAppServer } from "../runtime/codex-app-server.js";
 import { CodexRuntime } from "../runtime/codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "../runtime/concurrency-probe.js";
-import { loadConfiguration } from "../config.js";
-import type { MemoryRecord, UserRecord } from "../persistence/legacy-database.js";
+import { loadConfiguration } from "../platform/config.js";
+import type { UserRecord } from "../persistence/legacy-database.js";
+import type { MemoryRecord } from "../application/memory/ports.js";
 import { ConversationWorker } from "../conversation/conversation-worker.js";
-import { classifyIncomingMessage } from "../transport/inbound-policy.js";
+import { classifyIncomingMessage } from "../application/conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "../memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "../memory/memory-review-scheduler.js";
 import { OpenCodeRuntime } from "../runtime/opencode-runtime.js";
-import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "../runtime-home.js";
+import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "../platform/runtime-home.js";
 import { createChatTransport } from "../transport/discord.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "../transport/discord.js";
-import { launchUi } from "../ui.js";
+import { launchUi } from "../platform/ui.js";
 import type { OperationalStore } from "../persistence/operational-store.js";
 import { createPostgresPool } from "../persistence/postgres.js";
 import { PostgresOperationalStore } from "../persistence/operational-store.js";
 import { acquireAgentInstanceLease } from "../persistence/postgres-lease.js";
+import { manageMemoryWithStore } from "../application/memory/memory-operations.js";
 
 export const appName = "inoai";
-export * from "../config.js";
+export * from "../platform/config.js";
 export * from "../runtime/agent-runtime.js";
 export * from "../conversation/agent-session.js";
 export * from "../transport/approval-relay.js";
@@ -37,10 +39,10 @@ export * from "../memory/memory-review.js";
 export * from "../memory/memory-review-scheduler.js";
 export * from "../memory/memory-operations.js";
 export * from "../persistence/postgres-lease.js";
-export * from "../runtime-home.js";
+export * from "../platform/runtime-home.js";
 export * from "../conversation/runtime-turn.js";
 export * from "../transport/discord.js";
-export * from "../ui.js";
+export * from "../platform/ui.js";
 
 // Owner decision D2: only Claude homes review in V1. The wired Codex runtime never enables its review method, so the
 // Memory Review engine skips Codex homes like OpenCode ones.
@@ -281,23 +283,7 @@ export async function manageMemory(
   const store = new PostgresOperationalStore(pool, configuration.agentInstanceId);
   try {
     const owner = await store.bootstrapOwner(configuration);
-    const actor = `manual-cli:user:${owner.id}`;
-    if (operation === "list") return store.listMemories();
-    if (operation === "add") {
-      const body = argument?.trim();
-      if (!body) throw new Error("Usage: inoai memory add <text>");
-      return store.createMemory({
-        body,
-        source_message_id: null,
-        created_by_user_id: owner.id,
-        review_id: null,
-        origin: "manual",
-      }, actor);
-    }
-    const id = Number(argument);
-    if (!Number.isSafeInteger(id) || id < 1) throw new Error("Usage: inoai memory delete <id>");
-    if (!(await store.listMemories()).some((memory) => memory.id === id)) throw new Error(`Manual Memory Entry not found: ${id}`);
-    await store.softDeleteMemory(id, actor);
+    return await manageMemoryWithStore(store, operation, argument, owner.id);
   } finally {
     await store.close();
   }

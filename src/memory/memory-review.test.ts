@@ -12,7 +12,7 @@ import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conver
 import { archiveMessage, completeMemoryReview, createMemory, createMemoryReview, createSession, listEvents, listMemories, messagesForMemoryReview, openDatabase, upsertUser } from "../database.js";
 import type { MemoryRecord, MemoryReviewRecord, MessageRecord } from "../database.js";
 import { createCodexRuntime } from "../index.js";
-import { parseReviewJson, redactSecrets, reviewSession, reviewSessionWithStore } from "../memory/memory-review.js";
+import { parseReviewJson, redactSecrets, reviewSession, reviewSessionWithStore } from "./memory-review.js";
 import type { MemoryReviewSnapshot } from "../operational-store.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";

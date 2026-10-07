@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import type { Configuration } from "../config.js";
-import type { RuntimeHome } from "../runtime-home.js";
+import type { Configuration } from "../platform/config.js";
+import type { RuntimeHome } from "../platform/runtime-home.js";
 
 export const databaseBusyTimeoutMs = 5_000;
 

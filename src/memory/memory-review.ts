@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
-import { RuntimeFailure } from "../runtime/agent-runtime.js";
-import type { AgentRuntime, RuntimeFailureKind } from "../runtime/agent-runtime.js";
+import { RuntimeFailure } from "../application/conversation/runtime-port.js";
+import type { AgentRuntime, RuntimeFailureKind } from "../application/conversation/runtime-port.js";
 import { legacyApprovalNotice, permissionDeclinedNotice } from "../transport/approval-relay.js";
 import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conversation-worker.js";
 import { completeMemoryReview, createEvent, createMemory, createMemoryReview, listMemories, messagesForMemoryReview, softDeleteMemory } from "../persistence/legacy-database.js";

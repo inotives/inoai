@@ -1,4 +1,4 @@
-import type { AgentRuntime } from "../runtime/agent-runtime.js";
+import type { AgentRuntime } from "../application/conversation/runtime-port.js";
 import type { MemoryReviewRecord, MessageRecord } from "../persistence/legacy-database.js";
 import { reviewSessionWithStore } from "./memory-review.js";
 import type { MemoryReviewResult } from "./memory-review.js";

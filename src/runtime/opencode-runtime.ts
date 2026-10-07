@@ -3,8 +3,8 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
-import { RuntimeFailure } from "./agent-runtime.js";
-import type { AgentRuntime, RuntimeEvent } from "./agent-runtime.js";
+import { RuntimeFailure } from "../application/conversation/runtime-port.js";
+import type { AgentRuntime, RuntimeEvent } from "../application/conversation/runtime-port.js";
 
 // OpenCode creates its own session ID on the first Turn (a pre-assigned ID is refused by the free tier), so a new
 // Agent Session starts under an inoai key and is rebound to the streamed `ses_` ID. Both keys map to one state.

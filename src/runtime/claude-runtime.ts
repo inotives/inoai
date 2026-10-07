@@ -6,8 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { RuntimeFailure, reviewInstructions } from "./agent-runtime.js";
-import type { AgentRuntime, ReviewOptions, RuntimeEvent } from "./agent-runtime.js";
+import { RuntimeFailure, reviewInstructions } from "../application/conversation/runtime-port.js";
+import type { AgentRuntime, ReviewOptions, RuntimeEvent } from "../application/conversation/runtime-port.js";
 import { killProbe, removeProbeProjectFolder } from "./concurrency-probe.js";
 
 // "new": created here and never seen to start, so the next Turn uses --session-id.

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 
-import { normalizeAgentInstanceId } from "../agent-identity.js";
+import { normalizeAgentInstanceId } from "../platform/agent-identity.js";
 
 export type AgentLeaseOptions = {
   agentInstanceId: string;

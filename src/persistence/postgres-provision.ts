@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { agentSchemaName, normalizeAgentInstanceId } from "../agent-identity.js";
+import { agentSchemaName, normalizeAgentInstanceId } from "../platform/agent-identity.js";
 
 export type AgentProvisioningInput = {
   agentInstanceId: string;

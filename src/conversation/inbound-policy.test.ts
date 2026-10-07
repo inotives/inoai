@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { sqliteStore } from "./sqlite-store.js";
+import { sqliteStore } from "../test/sqlite-store.js";
 
 import { validateConfiguration } from "../config.js";
 import { bootstrapOwner, createSession, openDatabase, upsertUser } from "../database.js";

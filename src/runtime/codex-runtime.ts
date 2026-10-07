@@ -2,8 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { RuntimeFailure, reviewInstructions } from "./agent-runtime.js";
-import type { AgentRuntime, ReviewOptions, RuntimeEvent } from "./agent-runtime.js";
+import { RuntimeFailure, reviewInstructions } from "../application/conversation/runtime-port.js";
+import type { AgentRuntime, ReviewOptions, RuntimeEvent } from "../application/conversation/runtime-port.js";
 import { CodexAppServer } from "./codex-app-server.js";
 
 type ActiveTurn = { started: Promise<string>; interrupt?: Promise<void>; cancelRequested?: boolean };
