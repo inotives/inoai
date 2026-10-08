@@ -8,6 +8,8 @@ import { composeTurnPrompt } from "./prompt-context.js";
 import { runRuntimeTurn } from "../application/conversation/runtime-turn.js";
 import { KnownDeliveryFailure } from "../application/conversation/transport-port.js";
 import type { ConversationTransport } from "../application/conversation/transport-port.js";
+import { buildEnabledSkillIndex, loadSelectedSkill, selectEnabledSkill } from "../platform/skill-loader.js";
+import { prepareSkillScripts, skillExecutionInstructions } from "../platform/skill-execution.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
@@ -172,7 +174,16 @@ export class ConversationWorker {
       const agentSessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.database, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
-      const prompt = await composeTurnPrompt(this.database, message);
+      let prompt = await composeTurnPrompt(this.database, message);
+      const skillInstructions = await loadSelectedSkill(this.home, { prompt: message.body });
+      if (skillInstructions) prompt += skillInstructions;
+      if (skillInstructions) {
+        const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
+        if (selected) {
+          const scripts = await prepareSkillScripts(this.home, session.project_path, { skillId: selected.id });
+          if (scripts.length) prompt += scripts.map(skillExecutionInstructions).join("\n");
+        }
+      }
       if (this.stopping || cancellation.signal.aborted || !await this.database.markRuntimeStarted(message.id)) {
         if (cancellation.signal.aborted) await this.database.failProcessingMessage(message.id, "Cancelled by owner", "user:owner");
         return;

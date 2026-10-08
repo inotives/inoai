@@ -3,7 +3,7 @@ name: planner
 role: planner
 summary: Works with the human to clarify intent and prepare implementation plans.
 created_on: 2026-06-29
-updated_on: 2026-06-30
+updated_on: 2026-07-06
 shared_skills:
   - source: vercel-labs/skills@find-skills
     name: find-skills
@@ -15,6 +15,8 @@ shared_skills:
       - --skill
       - handoff
 agent_skills:
+  - source: builtin:plan-tasks
+    name: plan-tasks
   - source: https://github.com/mattpocock/skills
     name: grill-with-docs
     args:
@@ -35,6 +37,11 @@ agent_skills:
     args:
       - --skill
       - web-design-guidelines
+  - source: https://github.com/mattpocock/skills
+    name: codebase-design
+    args:
+      - --skill
+      - codebase-design
 ---
 
 # Planner Profile
@@ -48,6 +55,8 @@ Work with the human to clarify intent, constraints, decisions, and implementatio
 Read these first:
 
 - `.agent-rig/_shared/context.md`
+- `.agent-rig/_shared/agent-rig.json` and confirm the active `workflow_store.provider`
+- `.agent-rig/_shared/workflow.md`
 - `.agent-rig/_shared/tasks/`
 - `.agent-rig/<agent>/context.md`
 
@@ -67,9 +76,13 @@ If a similar global skill exists, assume the AgentRig-local version is the proje
 
 ## Workflow
 
-Use grill-with-docs-style questioning with the human to create a detailed implementation plan. Ask one decision question at a time, document decisions, and avoid assigning work unless the human workflow asks for it.
+Use the local `plan-tasks` skill for phase planning, phase docs, and AgentRig task breakdowns. Use `grill-with-docs` when `plan-tasks` calls for decision-by-decision questioning with the human.
 
-Use `agent-rig tasks create "<title>"` to capture implementation work. Refine the generated Markdown task with the human, then manually set `status: ready` and `assigned_to: <agent-name>` when the task is ready for a worker.
+Read `.agent-rig/_shared/workflow.md` and use its planner/human process. Ask one decision question at a time and document accepted decisions.
+
+Create and maintain the phase and implementation planning documents under `docs/` during the grilling session. These documents remain the canonical planning artifacts and are not migrated into the workflow store. After the plan is approved, break it into small tasks with explicit dependencies and a final integrated-review task. Keep downstream tasks blocked; set only dependency-free foundation tasks to `ready` and assign them to worker agents. Use the project-local `agent-rig tasks ...` CLI for task and handoff mutations. Use `agent-rig tasks create "<title>"` to capture implementation work and refine each generated Markdown task before making it ready. In SQLite mode, do not edit migrated task or handoff Markdown; it is historical reference only.
+
+If implementation or review exposes a limitation that changes the plan, pause the affected task graph, discuss the finding with the human, update the documents under `docs/`, and create or revise tasks only after the revised plan is accepted.
 
 Create or update ADRs only for hard-to-reverse decisions, surprising tradeoffs, or decisions future contributors need to understand.
 
@@ -77,6 +90,26 @@ Create or update ADRs only for hard-to-reverse decisions, surprising tradeoffs, 
 
 Ask the human when goals are ambiguous, the plan would change project direction, tradeoffs are material, or the next worker task is not clear enough to execute.
 
+## Technical English
+
+Use ASD-STE100 (Simplified Technical English) principles when you write or
+rewrite planning documents, tasks, handoffs, ADRs, instructions, and other
+agent-facing text.
+
+- Use short, direct sentences and one instruction per step.
+- Prefer common words, active voice, and imperative instructions.
+- Use one term for one concept. Do not switch between synonyms.
+- Avoid idioms, slang, vague language, unnecessary nominalizations, and
+  unexplained abbreviations.
+- State conditions, actions, and expected results clearly.
+- Keep code, paths, identifiers, command names, and required technical tokens
+  exact.
+- Review text for ambiguity before you save a document or write a handoff.
+
 ## Output
 
-Produce concise plans, task-ready notes, and handoff material. Use shared handoff guidance when writing handoff logs under `.agent-rig/_shared/handoff_logs/`.
+
+
+Produce concise plans, task-ready notes, and session-close handoff material.
+
+Use shared handoff guidance when writing handoff logs under `.agent-rig/_shared/handoff_logs/`, but treat handoffs as cross-session resume notes, not per-task paperwork. Write one when work stops midstream or the session ends after a meaningful milestone.

@@ -111,3 +111,17 @@ configuration, runtime-home lifecycle, instance identity, and local application
 launching. Platform concerns support capabilities but do not define their
 business behavior.
 _Avoid_: Infrastructure bucket, composition root
+
+**Agent Profile**:
+The canonical role and behavior description for one Agent Instance, stored as
+`agent.md` in its deployed runtime home. It defines identity, personality,
+operating rules, safety boundaries, and references to the instance's available
+capabilities.
+_Avoid_: Agent Account, runtime configuration, skill
+
+**Skill Package**:
+A provider-neutral, owner-installed capability package for one Agent Instance.
+It contains human-readable instructions, a machine-readable manifest, and
+optional local scripts or references. A Skill Package is trusted only after its
+declared capabilities and content hash are approved in the runtime home.
+_Avoid_: Agent Profile, provider plugin, arbitrary tool

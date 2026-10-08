@@ -3,18 +3,23 @@ import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { defaultAgentProfile } from "./agent-profile.js";
+import { EnabledSkillsDocument, validateEnabledSkills } from "./skill-manifest.js";
 
 const execFile = promisify(execFileCallback);
 
 const templates = {
   ".env": "",
-  "agent.md": "# inoai\n",
+  "agent.md": defaultAgentProfile,
+  "skills-enabled.json": `${JSON.stringify({ version: 1, skills: [] } satisfies EnabledSkillsDocument)}\n`,
 } as const;
 
 export type RuntimeHome = {
   directory: string;
   envFile: string;
   agentFile: string;
+  skillsDirectory: string;
+  skillsEnabledFile: string;
   databaseFile: string;
   lockFile: string;
 };
@@ -78,6 +83,8 @@ export function resolveRuntimeHome(launchDirectory: string, connectDirectory = "
     directory,
     envFile: join(directory, ".env"),
     agentFile: join(directory, "agent.md"),
+    skillsDirectory: join(directory, "skills"),
+    skillsEnabledFile: join(directory, "skills-enabled.json"),
     databaseFile: join(directory, "inoai.sqlite"),
     lockFile: join(directory, "inoai.lock"),
   };
@@ -89,6 +96,7 @@ export async function bootstrapRuntimeHome(
 ): Promise<RuntimeHome> {
   const home = resolveRuntimeHome(launchDirectory, connectDirectory);
   await mkdir(home.directory, { recursive: true, mode: 0o700 });
+  await mkdir(home.skillsDirectory, { recursive: true, mode: 0o700 });
   if ((await lstat(home.directory)).isSymbolicLink()) {
     throw new UnsafeRuntimeHomeError(home.directory);
   }
@@ -101,6 +109,7 @@ export async function bootstrapRuntimeHome(
       }
     }),
   );
+  validateEnabledSkills(JSON.parse(await readFile(home.skillsEnabledFile, "utf8")));
   return home;
 }
 
