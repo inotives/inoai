@@ -23,6 +23,8 @@ import { createPostgresPool } from "../persistence/postgres.js";
 import { PostgresOperationalStore } from "../persistence/operational-store.js";
 import { acquireAgentInstanceLease } from "../persistence/postgres-lease.js";
 import { manageMemoryWithStore } from "../application/memory/memory-operations.js";
+import { loadAgentProfile } from "../platform/agent-profile.js";
+import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, updateSkillPackage } from "../platform/skill-lifecycle.js";
 
 export const appName = "inoai";
 export * from "../platform/config.js";
@@ -40,6 +42,11 @@ export * from "../memory/memory-review-scheduler.js";
 export * from "../memory/memory-operations.js";
 export * from "../persistence/postgres-lease.js";
 export * from "../platform/runtime-home.js";
+export * from "../platform/agent-profile.js";
+export * from "../platform/skill-manifest.js";
+export * from "../platform/skill-lifecycle.js";
+export * from "../platform/skill-loader.js";
+export * from "../platform/skill-execution.js";
 export * from "../conversation/runtime-turn.js";
 export * from "../transport/discord.js";
 export * from "../platform/ui.js";
@@ -54,6 +61,12 @@ export async function validate(launchDirectory = process.cwd(), connectDirectory
   const runtimeHome = await bootstrapRuntimeHome(launchDirectory, connectDirectory);
   const configuration = await loadConfiguration(runtimeHome.envFile);
   return { runtimeHome, configuration };
+}
+
+export async function validateProfile(launchDirectory = process.cwd(), connectDirectory?: string) {
+  const runtimeHome = await bootstrapRuntimeHome(launchDirectory, connectDirectory);
+  const profile = await loadAgentProfile(runtimeHome.agentFile);
+  return { runtimeHome, profile };
 }
 
 export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore) {
@@ -349,6 +362,30 @@ function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation;
   return { operation, userId, ...(displayName === undefined ? {} : { displayName }), ...(connectDirectory === undefined ? {} : { connectDirectory }) };
 }
 
+type SkillOperation = "install" | "update" | "enable" | "disable" | "list";
+type SkillCommand = { operation: SkillOperation; connectDirectory?: string; packageDirectory?: string; skillId?: string; approvedBy?: string };
+
+function parseSkillsCommand(args: string[]): SkillCommand {
+  const operation = args[0] as SkillOperation | undefined;
+  const usage = "Usage: inoai skills <install|update> --package-dir <path> | <enable|disable> --skill-id <id> [--approved-by <owner>] | list [--connect-dir .inoai-connect*]";
+  if (!operation || !["install", "update", "enable", "disable", "list"].includes(operation)) throw new Error(usage);
+  const result: SkillCommand = { operation };
+  const values = args.slice(1);
+  for (let index = 0; index < values.length; index += 2) {
+    const flag = values[index];
+    if (flag === "--connect-dir" && values[index + 1]) { result.connectDirectory = values[++index]; continue; }
+    if (flag === "--package-dir" && values[index + 1]) { result.packageDirectory = values[++index]; continue; }
+    if (flag === "--skill-id" && values[index + 1]) { result.skillId = values[++index]; continue; }
+    if (flag === "--approved-by" && values[index + 1]) { result.approvedBy = values[++index]; continue; }
+    throw new Error(usage);
+  }
+  if ((operation === "install" || operation === "update") && !result.packageDirectory) throw new Error(usage);
+  if ((operation === "enable" || operation === "disable") && !result.skillId) throw new Error(usage);
+  if (operation === "enable" && !result.approvedBy) throw new Error("Skill enable requires explicit --approved-by");
+  if ((operation === "list") && (result.packageDirectory || result.skillId || result.approvedBy)) throw new Error(usage);
+  return result;
+}
+
 export async function manageAllowlist(operation: AllowlistOperation, userId: string, displayName: string | undefined, launchDirectory = process.cwd(), connectDirectory?: string): Promise<UserRecord> {
   const { configuration } = await validate(launchDirectory, connectDirectory);
   const pool = createPostgresPool(configuration);
@@ -385,6 +422,38 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   if (args[0] === "validate") {
     const { runtimeHome } = await validate(process.cwd(), parseConnectDirectory(args.slice(1)));
     console.log(`inoai configuration is valid: ${runtimeHome.directory}`);
+    return;
+  }
+  if (args[0] === "profile" && args[1] === "validate") {
+    const { runtimeHome } = await validateProfile(process.cwd(), parseConnectDirectory(args.slice(2)));
+    console.log(`inoai agent profile is valid: ${runtimeHome.agentFile}`);
+    return;
+  }
+  if (args[0] === "skills") {
+    const command = parseSkillsCommand(args.slice(1));
+    const runtimeHome = await bootstrapRuntimeHome(process.cwd(), command.connectDirectory);
+    if (command.operation === "install") {
+      const installed = await installSkillPackage(runtimeHome, command.packageDirectory!);
+      console.log(JSON.stringify({ action: "install", id: installed.manifest.id, version: installed.manifest.version, hash: installed.hash, enabled: false }));
+      return;
+    }
+    if (command.operation === "update") {
+      const installed = await updateSkillPackage(runtimeHome, command.packageDirectory!);
+      console.log(JSON.stringify({ action: "update", id: installed.manifest.id, version: installed.manifest.version, hash: installed.hash, enabled: false, approval_required: true }));
+      return;
+    }
+    if (command.operation === "enable") {
+      const record = await enableSkill(runtimeHome, command.skillId!, command.approvedBy!);
+      console.log(JSON.stringify({ action: "enable", id: record.id, version: record.version, hash: record.hash, approved_by: record.approved_by }));
+      return;
+    }
+    if (command.operation === "disable") {
+      console.log(JSON.stringify({ action: "disable", id: command.skillId, disabled: await disableSkill(runtimeHome, command.skillId!) }));
+      return;
+    }
+    console.log(JSON.stringify((await listInstalledSkills(runtimeHome)).map((skill) => ({
+      id: skill.manifest.id, version: skill.manifest.version, hash: skill.hash, enabled: skill.enabled,
+    }))));
     return;
   }
   const instance = await start(process.cwd(), parseConnectDirectory(args), supplied.storeFactory);

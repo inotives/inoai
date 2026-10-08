@@ -15,6 +15,7 @@ import { archiveMessage, claimNextMessage, createSession, listMessages, markRunt
 import { start, startTransport } from "../index.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
+import { enableSkill, installSkillPackage } from "../platform/skill-lifecycle.js";
 import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../transport.js";
 
 const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNER_USER_ID=owner",
@@ -655,5 +656,42 @@ test("concurrency fallback log names the runtime", async () => {
   } finally {
     console.warn = warn;
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("selected Discord skill exposes validated script paths to the runtime prompt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-skill-script-"));
+  const source = await mkdtemp(join(tmpdir(), "inoai-worker-skill-source-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, env);
+    const packageDirectory = join(source, "local-helper");
+    await (await import("node:fs/promises")).mkdir(join(packageDirectory, "scripts"), { recursive: true });
+    await writeFile(join(packageDirectory, "skill.yaml"), "id: local-helper\nversion: 1.0.0\ncapabilities:\n  filesystem: workspace\n  network: none\n  process/command: none\n  external_mutation: false\n");
+    await writeFile(join(packageDirectory, "SKILL.md"), "# local-helper\nUse the local helper script.\n");
+    await writeFile(join(packageDirectory, "scripts", "run.mjs"), "console.log(process.cwd())\n");
+    await installSkillPackage(home, packageDirectory);
+    await enableSkill(home, "local-helper", "owner");
+    const database = openDatabase(home);
+    const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: "Owner", role: "owner", state: "active" })!;
+    const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "first", agent_provider: "codex", agent_session_id: "pending:first", project_path: directory });
+    archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "first", external_author_id: "owner", user_id: user.id, direction: "user", body: "use local-helper", reply_to_external_message_id: null, in_reply_to_message_id: null });
+    let prompt = "";
+    const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
+      async createSession(_projectPath, instructions) { assert.match(instructions, /local-helper/); return "codex-session"; },
+      async resumeSession() {},
+      async *runTurn(_sessionId, receivedPrompt) { prompt = receivedPrompt; yield { type: "answer" as const, text: "ok" }; },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
+    try { worker.wake(); await worker.idle(); }
+    finally { await worker.stop(); }
+    assert.match(prompt, /[\\/]skills[\\/]local-helper[\\/]scripts[\\/]run\.mjs/);
+    assert.match(prompt, /current working directory:/);
+    database.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
   }
 });

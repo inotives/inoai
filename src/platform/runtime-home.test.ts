@@ -15,6 +15,7 @@ import {
   RuntimeHomeLockedError,
   UnsafeRuntimeHomeError,
 } from "../runtime-home.js";
+import { defaultAgentProfile } from "./agent-profile.js";
 import { start } from "../index.js";
 import { openDatabase } from "../database.js";
 import { sqliteStore } from "../test/sqlite-store.js";
@@ -40,9 +41,12 @@ test("bootstraps and preserves an isolated default runtime home", async () => {
   const deployment = await temporaryDeployment();
   try {
     const home = await bootstrapRuntimeHome(deployment);
-    await Promise.all([home.envFile, home.agentFile].map((file) => readFile(file)));
+    await Promise.all([home.envFile, home.agentFile, home.skillsEnabledFile].map((file) => readFile(file)));
     await assert.rejects(stat(home.databaseFile));
     assert.equal(await readFile(home.envFile, "utf8"), "");
+    assert.equal(await readFile(home.agentFile, "utf8"), defaultAgentProfile);
+    assert.deepEqual(JSON.parse(await readFile(home.skillsEnabledFile, "utf8")), { version: 1, skills: [] });
+    assert.equal((await stat(home.skillsDirectory)).mode & 0o777, 0o700);
     assert.equal((await stat(home.directory)).mode & 0o777, 0o700);
     assert.equal((await stat(home.envFile)).mode & 0o777, 0o600);
 
@@ -240,6 +244,20 @@ test("the executable validates --connect-dir without connecting", async () => {
     assert.equal(code, 0);
     await assert.rejects(stat(join(deployment, ".inoai-connect-2", "inoai.lock")));
     await assert.rejects(stat(join(deployment, ".inoai-connect", "inoai.lock")));
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("the executable validates the runtime-home agent profile offline", async () => {
+  const deployment = await temporaryDeployment();
+  const executable = fileURLToPath(new URL("../index.js", import.meta.url));
+  const home = await bootstrapRuntimeHome(deployment, ".inoai-connect-profile");
+  await writeFile(home.envFile, validEnv);
+  const child = spawn(process.execPath, [executable, "profile", "validate", "--connect-dir", ".inoai-connect-profile"], { cwd: deployment });
+  try {
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0);
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }

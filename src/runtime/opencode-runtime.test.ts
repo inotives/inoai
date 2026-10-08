@@ -14,6 +14,7 @@ import { ConversationWorker } from "../conversation/conversation-worker.js";
 import { archiveMessage, createSession, getSession, listMessages, openDatabase, upsertUser } from "../database.js";
 import { OpenCodeRuntime } from "../opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
+import { defaultAgentProfile } from "../platform/agent-profile.js";
 import { runRuntimeTurn } from "../conversation/runtime-turn.js";
 
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[]; stderr?: string };
@@ -165,7 +166,7 @@ test("binds the placeholder, rebinds it to the streamed OpenCode ID with the Ope
   const fake = await fakeCli([{ lines: [stepStart, rejectedTool, toolStepFinish, stepStart, text("Bound")] }, answered("Resumed")]);
   try {
     const home = await bootstrapRuntimeHome(project);
-    await writeFile(home.agentFile, "Planner personality");
+    await writeFile(home.agentFile, defaultAgentProfile.replace("You are inoai", "You are Planner"));
     const database = openDatabase(home);
     try {
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;

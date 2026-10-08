@@ -14,6 +14,7 @@ import { ClaudeRuntime } from "../claude-runtime.js";
 import { ConversationWorker } from "../conversation/conversation-worker.js";
 import { archiveMessage, createSession, getSession, listMessages, openDatabase, upsertUser } from "../database.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
+import { defaultAgentProfile } from "../platform/agent-profile.js";
 import { runRuntimeTurn } from "../conversation/runtime-turn.js";
 
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[] };
@@ -141,7 +142,8 @@ test("binds the assigned UUID with the Claude runtime actor and uses neutral res
   const project = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {
     const home = await bootstrapRuntimeHome(project);
-    await writeFile(home.agentFile, "Planner personality");
+    const profile = defaultAgentProfile.replace("You are inoai", "You are Planner");
+    await writeFile(home.agentFile, profile);
     const database = openDatabase(home);
     try {
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;

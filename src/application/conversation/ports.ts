@@ -27,6 +27,8 @@ export interface AgentSessionRuntime {
 
 export interface AgentSessionHome {
   agentFile: string;
+  skillsDirectory?: string;
+  skillsEnabledFile?: string;
 }
 
 export type AgentSessionRecord = {

@@ -143,6 +143,46 @@ Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it
 
 `npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
 
+The runtime-home profile is provider-neutral Markdown. It must contain the
+required identity, mission and scope, personality and communication, operating
+rules, safety and authority, and enabled skills sections. Validate it without
+starting the app or contacting a provider:
+
+```bash
+npm start -- profile validate --connect-dir .inoai-connect-planner
+```
+
+inoai reads and validates `agent.md` at the start of each new Turn. A valid
+edit applies to the next Turn without a restart. An active Turn keeps the
+profile snapshot that it started with. Invalid profiles fail closed before
+runtime work starts.
+
+Skills are installed per runtime home by the owner. Prepare a provider-neutral
+package with the skills.sh CLI, then stage it with inoai. Staging does not
+enable the package. A separate explicit enable command records the owner
+approval; updates revoke the old approval and require approval again.
+
+```bash
+# Prepare a package with skills.sh, then stage that local package.
+npx skills add <owner/repo> --copy
+npm start -- skills install --package-dir ./<skill-directory> --connect-dir .inoai-connect-planner
+npm start -- skills enable --skill-id <skill-id> --approved-by owner --connect-dir .inoai-connect-planner
+npm start -- skills list --connect-dir .inoai-connect-planner
+npm start -- skills disable --skill-id <skill-id> --connect-dir .inoai-connect-planner
+npm start -- skills update --package-dir ./<skill-directory> --connect-dir .inoai-connect-planner
+```
+
+The package must contain `SKILL.md` and a valid `skill.yaml`. The package is
+hashed before staging. The enabled record stores the package ID, version, hash,
+capability snapshot, approver, and approval time. Discord turns cannot install,
+enable, disable, or update skills, and inoai does not change global provider
+configuration. When a selected skill uses a package script, the provider runs
+that script with the Agent Runtime project workspace as its current directory.
+The package remains in the runtime home's `skills/` directory. The provider's
+sandbox, network, and approval policy remain authoritative. inoai does not
+spawn skill scripts itself, pass runtime-home credentials as script input, or
+allow a Turn to install, enable, update, or approve a skill.
+
 Any named runtime home works the same way with `--connect-dir` (a packaged deployment runs `inoai --connect-dir <home>` and `inoai ui --connect-dir <home>`):
 
 ```bash
@@ -211,6 +251,7 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | Command | Purpose |
 |---|---|
 | `npm run validate` | Create the runtime home if needed and validate its `.env` offline. |
+| `npm start -- profile validate --connect-dir <home>` | Validate a runtime-home `agent.md` without starting Discord. |
 | `npm start` | Start the core for the default runtime home. |
 | `npm start -- --connect-dir <home>` | Start a named runtime home. `npm run validate`, `ui`, and `memory` accept the same option. |
 | `npm start -- memory add "<text>"` | Add a Manual Memory Entry to PostgreSQL without starting an Agent Runtime. |
