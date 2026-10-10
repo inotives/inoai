@@ -27,7 +27,7 @@ Project-local AgentRig instructions, skills, and tools take precedence over simi
 
 ### AgentRig workflow storage
 
-- This repository uses AgentRig `0.1.4` with SQLite as the canonical workflow provider.
+- This repository uses AgentRig `0.1.8` with SQLite as the canonical workflow provider.
 - The active provider is recorded in `.agent-rig/_shared/agent-rig.json`; use `agent-rig status --json` to verify it before workflow work.
 - The live task and handoff store is `.agent-rig/_shared/workflow.sqlite`. Use AgentRig commands for task/status/handoff mutations; do not edit SQLite directly.
 - The original Markdown task and task-linked handoff files remain historical reference material after migration. Do not switch the provider back to Markdown without an explicit migration decision.

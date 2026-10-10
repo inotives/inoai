@@ -98,6 +98,12 @@ ownership across machines and is refreshed while the process is healthy. It
 remains authoritative even when the local runtime-home lock is reclaimed.
 _Avoid_: Runtime Home Lock, file lock
 
+**Heartbeat Supervisor**:
+An external process manager that starts one Agent Instance process, checks its
+health on a fixed interval, and restarts it when the process or its ownership
+state is unhealthy.
+_Avoid_: Agent Runtime, Runtime Home Lock
+
 **Capability Boundary**:
 A stable area of responsibility in the inoai system, such as Conversation,
 Memory, Persistence, Runtime, Transport, or Platform. A Capability Boundary
