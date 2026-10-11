@@ -49,7 +49,7 @@ app-server MCP finding.
 The temporary project was removed after each run. No repository source,
 runtime home, SQLite archive, global Codex configuration, credentials, Discord
 token, or real archived Message was read into a prompt or written by the
-probe. The initial sandbox-only attempt could not initialize `/Users/inotives/.codex`
+probe. The initial sandbox-only attempt could not initialize `<local-path>/.codex`
 or resolve the API host; it was not treated as a successful probe. The
 approved elevated run was limited to the disposable read-only session.
 

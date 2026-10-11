@@ -43,7 +43,7 @@ Clean. Both earlier Low findings and the transport-test Info are resolved. I fou
 
 - `src/test/transport.test.ts:704, 715-716, 726-727`: the previous HOME is saved, a temp HOME is set, and in `finally` HOME is deleted if it was unset and restored otherwise. Both Claude `run()` tests (739, 756) go through `withFakeClaude`.
 - Production code is unchanged. `index.ts` still calls `probeClaudeConcurrency()` with the default `homedir()`.
-- Node v24.20.0 on macOS: `HOME=/tmp/xyzhome node -e 'os.homedir()'` prints `/tmp/xyzhome`. With HOME unset, it falls back to the passwd entry.
+- Node v24.20.0 on macOS: `HOME=<temporary-path> node -e 'os.homedir()'` prints `<temporary-path>`. With HOME unset, it falls back to the passwd entry.
 
 ## 4. Argv and pass rule
 

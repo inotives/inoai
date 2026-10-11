@@ -58,7 +58,7 @@ export async function getMacProcessStartTime(pid: number): Promise<string | unde
 
 export class InvalidRuntimeHomeError extends Error {
   constructor(connectDirectory: string) {
-    super(`Runtime home must be a direct-child .inoai-connect* directory: ${connectDirectory}`);
+    super(`Runtime home must be a direct-child .inoai-connect* or .robin-* directory: ${connectDirectory}`);
     this.name = "InvalidRuntimeHomeError";
   }
 }
@@ -72,7 +72,7 @@ export class UnsafeRuntimeHomeError extends Error {
 
 export function resolveRuntimeHome(launchDirectory: string, connectDirectory = ".inoai-connect"): RuntimeHome {
   if (
-    !connectDirectory.startsWith(".inoai-connect") ||
+    (!connectDirectory.startsWith(".inoai-connect") && !connectDirectory.startsWith(".robin-")) ||
     connectDirectory.includes("/") ||
     connectDirectory.includes("\\")
   ) {

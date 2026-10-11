@@ -2,28 +2,29 @@
 
 The supervisor is optional. It owns one inoai child and applies the policy in
 [ADR 0019](adr/0019-external-heartbeat-supervisor.md). Normal core startup stays
-unchanged. The primary test runtime is `.inoai-connect-planner`. Foreground
+unchanged. The primary test runtime is `.robin-xai-test`. Foreground
 execution accepts `--connect-dir`; without it, it selects `.inoai-connect`.
-LaunchAgent commands default to `.inoai-connect-planner`.
+LaunchAgent commands default to `.robin-xai-test`.
 
 ## Prepare and test in the foreground
 
 Run commands from the selected checkout. Use Node.js 22 or newer on macOS.
 Build the checkout and configure the selected runtime home with a valid `.env`
-and `agent.md`. Provision its PostgreSQL Agent Instance and apply administrator
-migrations first. See [PostgreSQL setup](postgres-local.md). The child also
+and `agent.md`. The child opens or creates its local `inoai.sqlite`; no PostgreSQL
+service, provisioning, or Docker step is required. The child also
 needs its configured Discord bot and authenticated agent CLI.
 
 Stop any existing core or supervisor for this runtime home before starting
 another. Unload an existing LaunchAgent before foreground testing. The local
-lock and PostgreSQL lease reject duplicate core ownership. A second supervisor
+runtime-home lock rejects a second core writer. Do not share a runtime home
+between machines. UI and read-only tools may inspect SQLite; stop the core
+before running local write commands. A second supervisor
 can still start and retry rejected children, so use only one supervisor.
 
 ```sh
 npm run build
-npm run validate -- --connect-dir .inoai-connect-planner
-npm run postgres:test -- --connect-dir .inoai-connect-planner
-npm start -- heartbeat --connect-dir .inoai-connect-planner
+npm run validate -- --connect-dir .robin-xai-test
+npm start -- heartbeat --connect-dir .robin-xai-test
 ```
 
 The supervisor starts the compiled child directly with Node, without a shell.
@@ -44,22 +45,25 @@ stdout and stderr. No log rotation is supplied.
 
 | Condition | Behavior |
 | --- | --- |
-| Live child, matching local lock, fresh instance lease, successful query | Record `healthy` and check again after 60 minutes. |
-| One database or lease failure | Record `degraded` and keep the child. A healthy check resets the failure count. |
-| Two consecutive database or lease failures | Record `restart`, stop the child, and start a replacement. Each database probe has a five-second deadline. |
+| Live child, matching local lock, successful read-only SQLite query | Record `healthy` and check again after 60 minutes. |
+| One SQLite probe failure | Record `degraded` and keep the child. A healthy check resets the failure count. |
+| Two consecutive SQLite probe failures | Record `restart`, stop the child, and start a replacement. Each database probe has a five-second deadline. |
 | Proven stale local lock or dead child detected by a health check | Recover without waiting for a second failed check. Startup reclaims only a proven stale lock. |
 | Child exit or spawn failure | Retry after ten seconds. Allow three replacement attempts in a rolling five-minute window, then record `retry-limit` and exit with code 1. |
 | Missing, malformed, foreign, or unverifiable lock; unverifiable child | Record `health-blocked`, stop the child, and exit with code 1. Do not delete the lock. |
 | Child does not exit after SIGTERM | Send SIGKILL after ten seconds. Wait for confirmed exit before any replacement. |
 
-The hourly check cannot prove Discord or agent-provider readiness. A fresh lease
-checks the Agent Instance lease, not a child owner token. A probe deadline
-returns a timeout result but does not cancel all pending database work. If
-SIGKILL produces no exit event, the supervisor retains ownership and waits.
+The hourly check cannot prove Discord or agent-provider readiness. The SQLite
+probe opens the selected home's `inoai.sqlite` read-only in a worker and queries
+`sqlite_schema`. It never creates, migrates, recovers, or writes the database.
+Its five-second deadline cancels the worker. SQLite WAL/SHM files are normal
+artifacts and are not stale-lock evidence. If SIGKILL produces no exit event,
+the supervisor retains ownership and waits.
 
 For `health-blocked`, inspect local lock ownership before any manual action.
-For database failures, use the selected home's `postgres:test` command and
-check PostgreSQL availability and provisioning. For repeated child exits,
+For SQLite probe failures, check the selected home's database file, file
+permissions, and disk availability. Do not delete the database or its WAL/SHM
+files to clear a health failure. For repeated child exits,
 unload the service, then run the normal core in the foreground to obtain its
 safe startup diagnostics. Do not remove a lock while its owner can still run.
 
@@ -69,9 +73,9 @@ These are explicit operator actions. Automated acceptance must not install or
 enable the real service.
 
 ```sh
-npm start -- heartbeat launchagent render --connect-dir .inoai-connect-planner
-npm start -- heartbeat launchagent install --connect-dir .inoai-connect-planner
-npm start -- heartbeat launchagent status --connect-dir .inoai-connect-planner
+npm start -- heartbeat launchagent render --connect-dir .robin-xai-test
+npm start -- heartbeat launchagent install --connect-dir .robin-xai-test
+npm start -- heartbeat launchagent status --connect-dir .robin-xai-test
 ```
 
 `render` prints XML without writing files or initializing runtime data.
@@ -107,10 +111,10 @@ the target from the current checkout and runtime home.
 ## Service controls
 
 ```sh
-npm start -- heartbeat launchagent status --connect-dir .inoai-connect-planner
-npm start -- heartbeat launchagent stop --connect-dir .inoai-connect-planner
-npm start -- heartbeat launchagent unload --connect-dir .inoai-connect-planner
-npm start -- heartbeat launchagent uninstall --connect-dir .inoai-connect-planner
+npm start -- heartbeat launchagent status --connect-dir .robin-xai-test
+npm start -- heartbeat launchagent stop --connect-dir .robin-xai-test
+npm start -- heartbeat launchagent unload --connect-dir .robin-xai-test
+npm start -- heartbeat launchagent uninstall --connect-dir .robin-xai-test
 ```
 
 `status` reports whether the installed service is loaded; it does not prove
@@ -129,16 +133,12 @@ processes, and service controls; they do not write the real LaunchAgents folder.
 ```sh
 npm run typecheck
 npm run build
-node --test dist/test/heartbeat*.test.js dist/platform/runtime-home.test.js dist/persistence/postgres*.test.js
-npm run postgres:integration
+node --test dist/test/heartbeat*.test.js dist/platform/runtime-home.test.js dist/persistence/sqlite-operational-store.test.js
 npm test
 git diff --check
 ```
 
-The PostgreSQL integration suite requires both integration URLs and a reachable
-local test database. Without `POSTGRES_INTEGRATION_URL`, it reports a skip.
-Follow [the opt-in integration setup](postgres-local.md) to rerun it; do not use
-the planner's production credentials. A temporary rendered plist can be checked
+A temporary rendered plist can be checked
 with `plutil -lint`. A short isolated foreground smoke test can verify a real
 child start and SIGTERM shutdown with an injected temporary logger and fixture
 configuration. It does not establish live database, Discord, or hourly recovery

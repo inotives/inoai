@@ -34,7 +34,7 @@ Applied the reviewer findings from `2026-10-02-2059_phase5a-0039_claude_reviewer
 
 - `git diff --check` is clean.
 - A trailing-whitespace and tab grep on the untracked spike doc is clean.
-- A redaction grep (`@`, UUID pattern, `sk-<token>`, `/Users/`) on the spike doc found nothing.
+- A redaction grep (`@`, UUID pattern, `sk-<token>`, `<local-path>`) on the spike doc found nothing.
 - `agent-rig tasks set-status task-0039 review` returned `status=review`.
 
 ## Next

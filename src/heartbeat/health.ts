@@ -1,5 +1,4 @@
-import type { Pool, QueryConfig } from "pg";
-import { agentInstanceLeaseFresh } from "../persistence/postgres-lease.js";
+import { Worker } from "node:worker_threads";
 import {
   inspectRuntimeHomeLock, systemProcessIdentity,
   type ProcessIdentityProbe, type RuntimeHomeLockState,
@@ -12,7 +11,6 @@ export const DATABASE_FAILURE_THRESHOLD = 2;
 export type HealthResult = {
   child: "alive" | "dead" | "unverifiable";
   lock: RuntimeHomeLockState;
-  lease: "fresh" | "failed" | "timeout";
   query: "healthy" | "failed" | "timeout";
 };
 
@@ -25,16 +23,18 @@ const systemTimer: ProbeTimer = {
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-async function bounded<T>(work: () => Promise<T>, timer: ProbeTimer): Promise<T | "failed" | "timeout"> {
+async function bounded<T>(work: (signal: AbortSignal) => Promise<T>, timer: ProbeTimer): Promise<T | "failed" | "timeout"> {
   let handle: unknown;
+  const controller = new AbortController();
   try {
     return await Promise.race([
-      Promise.resolve().then(work).catch(() => "failed" as const),
+      Promise.resolve().then(() => work(controller.signal)).catch(() => "failed" as const),
       new Promise<"timeout">((resolve) => {
         handle = timer.set(() => resolve("timeout"), DATABASE_PROBE_TIMEOUT_MS);
       }),
     ]);
   } finally {
+    controller.abort();
     timer.clear(handle);
   }
 }
@@ -43,8 +43,7 @@ async function bounded<T>(work: () => Promise<T>, timer: ProbeTimer): Promise<T 
 export async function probeHealth(input: {
   childPid: number;
   lockFile: string;
-  leaseFresh(): Promise<boolean>;
-  query(): Promise<void>;
+  query(signal: AbortSignal): Promise<void>;
   identity?: ProcessIdentityProbe;
   timer?: ProbeTimer;
 }): Promise<HealthResult> {
@@ -52,29 +51,35 @@ export async function probeHealth(input: {
   const timer = input.timer ?? systemTimer;
   let alive: boolean | undefined;
   try { alive = identity.processAlive(input.childPid); } catch { alive = undefined; }
-  const [lock, lease, query] = await Promise.all([
+  const [lock, query] = await Promise.all([
     inspectRuntimeHomeLock(input.lockFile, input.childPid, identity).catch(() => "unverifiable" as const),
-    bounded(input.leaseFresh, timer),
     bounded(input.query, timer),
   ]);
   return {
     child: alive === undefined ? "unverifiable" : alive ? "alive" : "dead",
     lock,
-    lease: lease === true ? "fresh" : lease === "timeout" ? "timeout" : "failed",
     query: query === undefined ? "healthy" : query,
   };
 }
 
-/** Uses the same pool boundary as the operational store. Does not mutate ownership. */
-export function postgresHealthProbes(pool: Pick<Pool, "query">, agentInstanceId: string) {
+/** Run synchronous SQLite work off the supervisor thread so the deadline can cancel it. */
+export function sqliteHealthProbes(databaseFile: string) {
   return {
-    leaseFresh: () => agentInstanceLeaseFresh(pool, agentInstanceId),
-    query: async (): Promise<void> => {
-      const query: QueryConfig & { query_timeout: number } = {
-        text: "SELECT 1", query_timeout: DATABASE_PROBE_TIMEOUT_MS,
-      };
-      await pool.query(query);
-    },
+    query: (signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+      if (signal.aborted) { reject(new Error("SQLite probe cancelled")); return; }
+      const worker = new Worker(new URL("./sqlite-probe.js", import.meta.url), {
+        workerData: { databaseFile, timeout: DATABASE_PROBE_TIMEOUT_MS },
+        stdout: true, stderr: true,
+      });
+      const cancel = () => { void worker.terminate(); reject(new Error("SQLite probe cancelled")); };
+      signal.addEventListener("abort", cancel, { once: true });
+      worker.once("error", () => reject(new Error("SQLite probe failed")));
+      worker.once("exit", (code) => {
+        signal.removeEventListener("abort", cancel);
+        if (code === 0) resolve();
+        else reject(new Error("SQLite probe failed"));
+      });
+    }),
   };
 }
 
@@ -89,7 +94,7 @@ export class HealthPolicy {
   private failures = 0;
 
   evaluate(result: HealthResult): HealthDecision {
-    const databaseHealthy = result.lease === "fresh" && result.query === "healthy";
+    const databaseHealthy = result.query === "healthy";
     this.failures = databaseHealthy ? 0 : Math.min(this.failures + 1, DATABASE_FAILURE_THRESHOLD);
     const unsafeLock = result.lock !== "live" && result.lock !== "stale";
     const action = unsafeLock || result.child === "unverifiable" ? "blocked"

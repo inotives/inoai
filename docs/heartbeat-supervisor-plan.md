@@ -9,14 +9,14 @@ user-level macOS `launchd` LaunchAgent, starts one inoai child process, checks
 the child and its operational ownership state once per hour, and restarts the
 child when recovery is safe.
 
-The first deployment target is `.inoai-connect-planner`. The command remains
+The first deployment target is `.robin-xai-test`. The command remains
 usable with another runtime home through `--connect-dir`.
 
 ## Decisions
 
 - The supervisor is external to the normal inoai process.
 - The existing TypeScript executable provides a foreground command such as
-  `npm start -- heartbeat --connect-dir .inoai-connect-planner`.
+  `npm start -- heartbeat --connect-dir .robin-xai-test`.
 - A user-level `launchd` LaunchAgent is supported but is not enabled by
   default.
 - The installer renders the repository path, executable path, runtime-home
@@ -66,7 +66,7 @@ usable with another runtime home through `--connect-dir`.
 - Discord API calls from the supervisor.
 - Automatic deletion of malformed or unverifiable locks.
 - A configurable heartbeat interval or retry policy.
-- A second runtime deployment beyond `.inoai-connect-planner`.
+- A second runtime deployment beyond `.robin-xai-test`.
 - Changes to PostgreSQL schema, lease semantics, or normal inoai conversation
   behavior.
 
@@ -120,14 +120,14 @@ safe behavior when the target plist is absent.
 ### Slice 4 — Operational documentation and integrated review
 
 Document foreground testing, optional LaunchAgent installation, log locations,
-manual service controls, failure behavior, and the `.inoai-connect-planner`
+manual service controls, failure behavior, and the `.robin-xai-test`
 test target. Run the full focused acceptance checks and review the integrated
 diff for credential exposure, duplicate Agent Instance ownership, stale-lock
 recovery safety, and unrelated changes.
 
 ## Acceptance criteria
 
-- `npm start -- heartbeat --connect-dir .inoai-connect-planner` starts one
+- `npm start -- heartbeat --connect-dir .robin-xai-test` starts one
   supervisor and one inoai child.
 - The supervisor performs the fixed hourly check without requiring Discord
   API access of its own.

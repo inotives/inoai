@@ -112,7 +112,7 @@ All the task-0052 test bullets are covered: interim tool-step text excluded (tes
 
 - Nothing is staged (`git diff --cached --stat` is empty).
 - No `.inoai-connect*` path or `.env` is tracked (`git ls-files` grep is empty). `.inoai-connect-claude` is ignored by `/.inoai-connect*/`, and `/.env` is ignored.
-- No `inoai-*` dirs exist in `/tmp`, `/private/tmp`, or `$TMPDIR` (count 0). The smoke deployment `/tmp/inoai-phase5b-smoke.*` is gone.
+- No `inoai-*` dirs exist in `/tmp`, `<temporary-path>tmp`, or `$TMPDIR` (count 0). The smoke deployment `<temporary-path>*` is gone.
 - Processes: no `opencode run`, fake CLI, `dist/index.js`, or bot process is running. The only OpenCode process is the owner's `opencode serve --service`, started 2026-10-02 21:45, which I ignored.
 
 ## Check outputs

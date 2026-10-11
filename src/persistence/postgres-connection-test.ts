@@ -3,7 +3,7 @@ import { Client } from "pg";
 
 function runtimeDirectory(args: string[]): string {
   const index = args.indexOf("--connect-dir");
-  return index >= 0 && args[index + 1] ? args[index + 1] : ".inoai-connect-planner";
+  return index >= 0 && args[index + 1] ? args[index + 1] : ".robin-xai-test";
 }
 
 function parseDotEnv(text: string): string | undefined {

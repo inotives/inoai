@@ -70,6 +70,22 @@ Implement the bridge in TypeScript on Node.js. This keeps the Discord adapter, C
 
 Run Codex with the deployment folder as its configured project path. The core reads the selected runtime home's `agent.md` and supplies it as inoai's deployment-specific personality and operating rules on every session; any normal project `AGENTS.md` found by Codex remains an additional project instruction. The bridge controls message routing and persistence; `agent.md` controls inoai's voice and working rules.
 
+### Local persistence boundary
+
+SQLite is the local operational source of truth. The core reuses existing
+`inoai.sqlite` data and creates a missing database through its schema path.
+There is no automatic PostgreSQL-to-SQLite migration. One core process writes
+each runtime-home database; the UI and read-only tools may inspect it. Stop the
+core before using local write commands. Do not share a runtime home between
+machines.
+
+Normal validation and startup ignore `POSTGRES_*` settings and need no Docker
+or PostgreSQL service. Existing PostgreSQL commands remain explicit advanced
+tooling. A later phase will send a one-way, asynchronous, redacted copy from
+SQLite to PostgreSQL for reporting and backup. That sink will not own live work
+or block startup. This phase adds no sync implementation. See
+[ADR 0020](adr/0020-local-sqlite-source-of-truth.md).
+
 ### Dynamic CLI runtime
 
 The bridge depends on one small agent-runtime interface:

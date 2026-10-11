@@ -18,7 +18,7 @@ import {
 import { defaultAgentProfile } from "./agent-profile.js";
 import { start } from "../index.js";
 import { openDatabase } from "../database.js";
-import { sqliteStore } from "../test/sqlite-store.js";
+import { manageMemory, manageAllowlist } from "../app/application.js";
 
 async function temporaryDeployment(): Promise<string> {
   return mkdtemp(join(tmpdir(), "inoai-test-"));
@@ -31,7 +31,6 @@ const validEnv = [
   "DISCORD_STATUS_CHANNEL_ID=channel",
   "CHAT_PROVIDER=discord",
   "AGENT_PROVIDER=codex",
-  "POSTGRES_URL=postgresql://inoai_sync:secret@example.test:5432/app",
   "AGENT_INSTANCE_ID=agent-test",
   "MEMORY_REVIEW_TIME=06:00",
   "MEMORY_REVIEW_MAX_CHARS=20000",
@@ -62,6 +61,16 @@ test("rejects runtime homes outside the deployment folder", async () => {
   await assert.rejects(bootstrapRuntimeHome("/tmp", ".inoai-connect/child"), InvalidRuntimeHomeError);
   await assert.rejects(bootstrapRuntimeHome("/tmp", "../.inoai-connect"), InvalidRuntimeHomeError);
   await assert.rejects(bootstrapRuntimeHome("/tmp", "/tmp/.inoai-connect"), InvalidRuntimeHomeError);
+});
+
+test("accepts a Robin test runtime home", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment, ".robin-xai-test");
+    assert.equal(home.directory, join(deployment, ".robin-xai-test"));
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
 });
 
 test("rejects a runtime-home symlink", async () => {
@@ -183,14 +192,12 @@ test("startup bootstraps and locks the default runtime home", async () => {
   try {
     const home = await bootstrapRuntimeHome(deployment);
     await writeFile(home.envFile, validEnv);
-    const database = openDatabase(home);
-    const instance = await start(deployment, undefined, () => sqliteStore(database));
+    const instance = await start(deployment);
     try {
       assert.equal(instance.runtimeHome.directory, join(deployment, ".inoai-connect"));
       await assert.rejects(start(deployment), RuntimeHomeLockedError);
     } finally {
       await instance.release();
-      database.close();
     }
   } finally {
     await rm(deployment, { recursive: true, force: true });
@@ -258,6 +265,55 @@ test("the executable validates the runtime-home agent profile offline", async ()
   try {
     const [code] = await once(child, "exit");
     assert.equal(code, 0);
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("SQLite startup reuses sessions and Memory and closes its handle on shutdown", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    await writeFile(home.envFile, validEnv + "\nPOSTGRES_URL=invalid-unused-value\nPOSTGRES_POOL_MAX=invalid");
+    const first = await start(deployment);
+    const session = await first.store.createSession({
+      user_id: first.owner.id, transport: "discord", workspace_id: "guild",
+      parent_conversation_id: "channel", conversation_id: "thread",
+      initiating_external_message_id: "message", agent_provider: "codex",
+      agent_session_id: "persisted-session", project_path: deployment,
+    }, "test");
+    const message = await first.store.archiveMessage({
+      session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "queued",
+      external_author_id: "owner", user_id: first.owner.id, direction: "user", body: "Recover this turn",
+      reply_to_external_message_id: null, in_reply_to_message_id: null,
+    }, "test");
+    assert(message.message);
+    assert.equal((await first.store.claimNextMessage("global", "test"))?.id, message.message.id);
+    const memory = await first.store.createMemory({ body: "Persistent fact", origin: "manual",
+      created_by_user_id: first.owner.id, source_message_id: null, review_id: null }, "test");
+    assert.equal("pool" in first, false);
+    assert.equal("lease" in first, false);
+    const reader = openDatabase(home);
+    assert.equal(reader.prepare("PRAGMA journal_mode").get()?.journal_mode, "wal");
+    reader.close();
+    await first.release();
+    await first.release();
+    await assert.rejects(first.store.listSessions(), /closed|not open/i);
+    const second = await start(deployment);
+    try {
+      assert.equal((await second.store.getSession(session.id))?.agent_session_id, "persisted-session");
+      assert.equal((await second.store.listMemories())[0]?.id, memory.id);
+      assert.equal(second.owner.id, first.owner.id);
+      assert.equal((await second.store.listMessages(session.id))[0]?.state, "pending");
+    } finally {
+      await second.release();
+    }
+    const added = await manageMemory("add", "CLI fact", deployment);
+    assert.equal((await manageMemory("list", undefined, deployment)).length, 2);
+    await manageMemory("delete", String(added.id), deployment);
+    assert.equal((await manageMemory("list", undefined, deployment)).length, 1);
+    assert.equal((await manageAllowlist("add", "123", "Family", deployment)).state, "active");
+    assert.equal((await manageAllowlist("disable", "123", undefined, deployment)).state, "disabled");
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }

@@ -6,9 +6,9 @@ import { createProvisioningPlan, renderProvisioningSql, type AgentProvisioningIn
 
 const planner: AgentProvisioningInput = {
   agentInstanceId: "agent-inoai-planner",
-  agentName: ".inoai-connect-planner",
+  agentName: ".robin-xai-test",
   agentProvider: "codex",
-  runtimeHome: ".inoai-connect-planner",
+  runtimeHome: ".robin-xai-test",
   ownerUserId: "owner-123",
 };
 

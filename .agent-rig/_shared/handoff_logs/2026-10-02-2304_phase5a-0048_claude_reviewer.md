@@ -18,7 +18,7 @@ No acceptance-blocking findings. Every claim in the worker handoff (`2026-10-02-
 
 ## Method
 
-- Opened `/tmp/inoai-phase5a-smoke.1bnxe2/.inoai-connect-claude/inoai.sqlite` read-only. Plain `sqlite3 -readonly` refused to open it in the sandbox (error 14), so I used the `file:…?immutable=1` URI with `-readonly`. Journal mode is `delete` with no WAL/SHM files, so immutable reads see the full committed state.
+- Opened `<temporary-path>` read-only. Plain `sqlite3 -readonly` refused to open it in the sandbox (error 14), so I used the `file:…?immutable=1` URI with `-readonly`. Journal mode is `delete` with no WAL/SHM files, so immutable reads see the full committed state.
 - Queried sessions, messages, events, approvals, users, memories, and memory_reviews. Dumped the archive to the session scratchpad and grepped it for secret-like values.
 - Checked the disposable folder, running processes, and the notice and event constants in `src/approval-relay.ts`.
 
@@ -27,7 +27,7 @@ No acceptance-blocking findings. Every claim in the worker handoff (`2026-10-02-
 | Step | Archive evidence | Result |
 |---|---|---|
 | startup | Exactly one event `startup_online` (event 1, `transport:discord`) | Match |
-| a | Session 1: `claude`, 36-char UUID agent_session_id, project path `/private/tmp/inoai-phase5a-smoke.1bnxe2`, thread conversation differs from parent. Msg 1 user completed; msg 2 agent "2 + 2 equals 4." completed/`confirmed`, in reply to msg 1. Events `runtime_attempt` and `runtime_completed` attempt=1 | Match |
+| a | Session 1: `claude`, 36-char UUID agent_session_id, project path `/private<temporary-path>inoai-phase5a-smoke.1bnxe2`, thread conversation differs from parent. Msg 1 user completed; msg 2 agent "2 + 2 equals 4." completed/`confirmed`, in reply to msg 1. Events `runtime_attempt` and `runtime_completed` attempt=1 | Match |
 | b | Msg 3/4 in session 1 (no new session). Reply recalls "what's 2+2?", consistent with the owner-pasted text | Match (`--resume` continuity) |
 | c | Msg 5 completed. Exactly one `approval_unsupported` event, detail `declined: no safe action preview; denials=1` by `runtime:claude`, matching the constant at `src/approval-relay.ts:61`. It holds only a count, with no tool name, path, or input. Msg 7 is the fixed notice, byte-identical to `claudeNotice` at `src/approval-relay.ts:51`, `confirmed`. Msg 6 is Claude's own explanation, `confirmed`. `approvals` has 0 rows. No `probe.txt` exists anywhere under the disposable folder | Match (fails closed) |
 | d | Msg 8 user `failed`, failure_detail `Cancelled by owner`, updated_by `user:owner`. Event `runtime_failure` `attempt=1; reason=cancelled; replay_safe=false`. No agent reply references msg 8, so no partial answer was archived | Match |
@@ -53,7 +53,7 @@ The planner ran the worker role because each step needed live owner actions. Thi
 
 1. Msg 6, Claude's own reply in the archive and in Discord, suggests `--permission-mode acceptEdits` or an allow rule, and includes a shell command with the absolute disposable path. inoai does not act on it. The worker's suggestion stands: add `agent.md` guidance telling Claude not to recommend loosening permissions over Discord. This is a product or persona choice for the owner.
 2. The `approval_unsupported` event has a NULL message_id. This matches the code and the Codex path (`src/approval-relay.ts:40,61`), but it ties the event to its Turn only by session and time. This is an existing design point, not a regression.
-3. Cleanup is still pending after acceptance. Remove `/tmp/inoai-phase5a-smoke.1bnxe2/` (it still contains a copied `.env`) and `~/.claude/projects/-private-tmp-inoai-phase5a-smoke-1bnxe2`.
+3. Cleanup is still pending after acceptance. Remove `<temporary-path>` (it still contains a copied `.env`) and `~/.claude/projects/-private-tmp-inoai-phase5a-smoke-1bnxe2`.
 4. The live run did not cover expired login, usage limit, provider mismatch, or missing session. These are covered by offline tests, as the worker noted.
 
 ## Status

@@ -27,7 +27,7 @@ migrated_at: 2026-10-06T13:48:17.599Z
 
 - `git diff --check`: rc 0.
 - `git diff --no-index --check /dev/null docs/phase-5b-opencode-cli-spike.md`: no output (rc 1 only because a diff exists).
-- Redaction grep (full `ses_` IDs, `/Users/`, username, `/var/folders`, `/private/`): no hits.
+- Redaction grep (full `ses_` IDs, `<local-path>`, username, `<temporary-path>`, `<temporary-path>`): no hits.
 - No CLI runs, no `src/` changes, nothing committed.
 - The task was set to `review`, and a Notes line was appended.
 

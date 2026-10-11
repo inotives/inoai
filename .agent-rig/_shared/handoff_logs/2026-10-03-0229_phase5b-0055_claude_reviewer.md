@@ -18,7 +18,7 @@ I found nothing that blocks acceptance. Every persisted claim in the worker hand
 
 ## Method
 
-- I opened `/tmp/inoai-phase5b-smoke.97H2Wj/.inoai-connect-opencode/inoai.sqlite` read-only through `file:…?immutable=1`. The journal mode is `delete` and there are no WAL or SHM files, so the immutable read sees the full committed state.
+- I opened `<temporary-path>` read-only through `file:…?immutable=1`. The journal mode is `delete` and there are no WAL or SHM files, so the immutable read sees the full committed state.
 - I queried sessions, messages, events, approvals, memories, memory_reviews, and users, then dumped the archive to the session scratchpad and grepped it.
 - I compared the archived notice and Event detail with `src/approval-relay.ts:53-77`, and the spawn arguments and denial detection with `src/opencode-runtime.ts:27-28,172-174,228-230`.
 - I listed the disposable folder by name only and checked running processes.
@@ -28,7 +28,7 @@ I found nothing that blocks acceptance. Every persisted claim in the worker hand
 | Step | Archive evidence | Result |
 |---|---|---|
 | startup | Exactly one `startup_online` Event (event 1, `transport:discord`) | Match |
-| a | Session 1: `opencode`, a 30-char `ses_…` ID (redacted), project path `/private/tmp/inoai-phase5b-smoke.97H2Wj`, thread conversation differs from the parent. Msg 1 is the user message, `completed`. Msg 2 is the agent reply "2 + 2 equals 4.", `completed`/`confirmed`, in reply to msg 1. Events: `runtime_attempt` and `runtime_completed`, attempt=1 | Match |
+| a | Session 1: `opencode`, a 30-char `ses_…` ID (redacted), project path `/private<temporary-path>inoai-phase5b-smoke.97H2Wj`, thread conversation differs from the parent. Msg 1 is the user message, `completed`. Msg 2 is the agent reply "2 + 2 equals 4.", `completed`/`confirmed`, in reply to msg 1. Events: `runtime_attempt` and `runtime_completed`, attempt=1 | Match |
 | b | Msgs 3 and 4 are in session 1, so no new session was created. The reply quotes the first question exactly. Attempt=1 | Match (`--session` resume) |
 | c | Msg 5 `completed`. Msg 6 is OpenCode's answer "/etc/hosts has 9 lines.", `confirmed`. Exactly one `approval_unsupported` Event (event 7): `declined: no safe action preview; denials=1` by `runtime:opencode`, with `message_id` NULL. It carries a count only, with no tool name, path, or input. Msg 7 is the fixed notice, byte-identical to the template at `src/approval-relay.ts:54` with name `OpenCode`, `confirmed`. `approvals` has 0 rows | Match (one notice, no controls, nothing raw stored) |
 | d | Msg 8 user `failed`, `Cancelled by owner`, updated_by `user:owner`. Event 10: `attempt=1; reason=cancelled; replay_safe=false`. No agent row replies to msg 8, so no partial answer was archived | Match |
@@ -74,7 +74,7 @@ The cleanup criterion is still open. The folder still holds the copied `.env`, a
 2. `approval_unsupported` has a NULL `message_id`, matching the Claude and Codex paths. It is tied to its Turn only by session and time. This is an existing design point.
 3. Msg 10 shows the `agent.md` operating-instructions block is visible to the model as context. This is expected under the spike decision, and the model labeled it correctly as not a user message.
 4. The live run did not cover authentication or usage notices, provider mismatch, `session_missing`, or idle timeout. These are covered by offline tests only, as the worker noted.
-5. Cleanup is still pending. Remove `/tmp/inoai-phase5b-smoke.97H2Wj/`, which still contains the copied `.env`, and the two smoke OpenCode sessions whose IDs are in the planner scratchpad.
+5. Cleanup is still pending. Remove `<temporary-path>`, which still contains the copied `.env`, and the two smoke OpenCode sessions whose IDs are in the planner scratchpad.
 
 ## Status
 

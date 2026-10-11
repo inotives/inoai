@@ -47,7 +47,7 @@ Nothing in the doc is wrong about stdin prompts, SIGINT (exit 130, `unknown` tra
 
 ## Checks
 
-- Redaction: I grepped the spike doc, the worker handoff, and the task file for full `ses_`/`msg_`/`prt_` IDs, `/Users/`, the username, `/var/folders`, emails, `sk-`, `Bearer`, and api keys. There were no hits; the only matches were token counts and the `ZEBRA-42` marker text.
+- Redaction: I grepped the spike doc, the worker handoff, and the task file for full `ses_`/`msg_`/`prt_` IDs, `<local-path>`, the username, `<temporary-path>`, emails, `sk-`, `Bearer`, and api keys. There were no hits; the only matches were token counts and the `ZEBRA-42` marker text.
 - `git diff --check` is clean, and `git diff --no-index --check /dev/null docs/phase-5b-opencode-cli-spike.md` reports no whitespace errors. `git diff --stat -- src/` is empty: no `src/` changes.
 
 ## Spot checks (opencode v2.0.22, fresh `mktemp -d` cwd, absolute binary, `--format json --standalone`, prompt on stdin, default model)

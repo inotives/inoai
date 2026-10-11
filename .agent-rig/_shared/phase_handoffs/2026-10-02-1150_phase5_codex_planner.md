@@ -17,7 +17,7 @@ Phase 5 implementation and acceptance are complete on `feature/phase-5`. Tasks 0
 
 - Final independent review: `npm test` (86/86), typecheck, build, and `git diff --check` passed.
 - Task-level reviews recorded for Discord routing/config, durable turn/delivery state, FIFO worker, prompt context/Memory, concurrency fallback, response delivery, native controls, and live smoke.
-- The isolated Discord test bot was stopped with exit code 0 after the smoke checks. Its disposable runtime home and SQLite archive remain under `/private/tmp/inoai-phase5-smoke.HMmkyT`; no files were removed.
+- The isolated Discord test bot was stopped with exit code 0 after the smoke checks. Its disposable runtime home and SQLite archive remain under `/private<temporary-path>inoai-phase5-smoke.HMmkyT`; no files were removed.
 
 ## Live smoke evidence and limits
 

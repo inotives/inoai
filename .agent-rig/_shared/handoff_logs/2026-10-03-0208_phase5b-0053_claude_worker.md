@@ -61,7 +61,7 @@ The task status is now `review`. Nothing is staged or committed. I read no `.ino
 
 ## Real check (1 prompt)
 
-- Setup: absolute `/Users/toni.lim/.opencode/bin/opencode` (2.0.22), `run --format json --standalone`, a fresh `mktemp -d` cwd containing `secret.env` (`FAKE=not-a-secret`), and a stdin prompt asking it to read `secret.env` and list `/usr/share`.
+- Setup: absolute `<local-path>` (2.0.22), `run --format json --standalone`, a fresh `mktemp -d` cwd containing `secret.env` (`FAKE=not-a-secret`), and a stdin prompt asking it to read `secret.env` and list `/usr/share`.
 - Result: exit 0. stdout had 2 `tool_use` events, both `status:"error"` with the fixed prefix, and 0 other tool errors. stderr had 2 auto-rejecting lines (`read` and `external_directory`).
 - **The stdout count (2) equals the stderr count (2).** The `external_directory` rejection produces its own stdout event, which resolves spike open question 4.
 - Cleanup: the session was deleted (exit 0), and `GET /api/session/<id>` afterwards exited 1. The temp dir was removed. Only counts were printed.
