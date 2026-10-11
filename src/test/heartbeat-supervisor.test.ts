@@ -8,7 +8,7 @@ import { run } from "../app/application.js";
 import { HEARTBEAT_INTERVAL_MS, type HealthResult } from "../heartbeat/health.js";
 import { HeartbeatSupervisor, localHeartbeatLog, spawnInoai, type SupervisorChild, type SupervisorDependencies, type SupervisorEvent } from "../heartbeat/supervisor.js";
 
-const healthy: HealthResult = { child: "alive", lock: "live", lease: "fresh", query: "healthy" };
+const healthy: HealthResult = { child: "alive", lock: "live", query: "healthy" };
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 class Clock {
   time = 0;
@@ -77,12 +77,13 @@ test("healthy hourly operation owns one child and stop cancels future work", asy
   assert.equal(f.children.length, 1);
 });
 
-test("database restart tolerates one failure and resets policy for replacement", async () => {
+test("SQLite restart counts failure and timeout and resets policy for replacement", async () => {
   const f = fixture();
   await flush();
   f.setResult({ ...healthy, query: "failed" });
   await f.clock.advance(HEARTBEAT_INTERVAL_MS);
   assert.equal(f.children.length, 1);
+  f.setResult({ ...healthy, query: "timeout" });
   await f.clock.advance(HEARTBEAT_INTERVAL_MS);
   assert.equal(f.children.length, 2);
   assert.deepEqual(f.children[0].signals, ["SIGTERM"]);

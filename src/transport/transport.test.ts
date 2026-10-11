@@ -15,6 +15,7 @@ import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprova
 import { run, start, startTransport } from "../index.js";
 import { bootstrapRuntimeHome } from "../runtime-home.js";
 import type { SchedulerClock } from "../memory/memory-review-scheduler.js";
+import { createSqliteOperationalStore } from "../persistence/sqlite-operational-store.js";
 import { sqliteStore } from "../test/sqlite-store.js";
 
 class FakeClient extends EventEmitter {
@@ -185,7 +186,7 @@ const validEnv = [
 // start whatever the time of day.
 const beforeReviewTime = { schedulerClock: {
   now: () => new Date(2026, 9, 3, 5, 0), setInterval: () => undefined, clearInterval: () => {},
-} satisfies SchedulerClock, storeFactory: (_pool: unknown, home: Awaited<ReturnType<typeof start>>["runtimeHome"]) => sqliteStore(openDatabase(home)) };
+} satisfies SchedulerClock, storeFactory: (home: Awaited<ReturnType<typeof start>>["runtimeHome"]) => sqliteStore(openDatabase(home)) };
 
 const fakeRuntime: AgentRuntime = {
   displayName: "Codex", loginHint: "codex login",
@@ -445,12 +446,21 @@ test("startup announces once and archives one health Event across reconnects", a
   }
 });
 
-test("legacy approval recovery is deferred with the SQLite UI archive", { skip: "operational startup no longer reads SQLite approvals" }, async () => {
+async function startWithProductionStore(directory: string) {
+  let database!: DatabaseSync;
+  const instance = await start(directory, undefined, (home) => {
+    database = openDatabase(home);
+    return createSqliteOperationalStore(database);
+  });
+  return { ...instance, database };
+}
+
+test("production SQLite startup recovers legacy approval controls and sends one safe notice", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-legacy-approval-"));
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const first = await startWithTestStore(directory);
+    const first = await startWithProductionStore(directory);
     const session = createSession(first.database, {
       user_id: first.owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
       conversation_id: "thread", initiating_external_message_id: "initial", agent_provider: "codex",
@@ -472,7 +482,7 @@ test("legacy approval recovery is deferred with the SQLite UI archive", { skip: 
       VALUES (?, 'previously-failed', ?, 'another unsafe preview', unixepoch() + 3600, 'failed')`).run(session.id, userMessage.message!.id);
     await first.release();
 
-    const recovered = await startWithTestStore(directory);
+    const recovered = await startWithProductionStore(directory);
     try {
       const approval = recovered.database.prepare("SELECT state, summary, resolution_message_id FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get();
       assert.equal(approval?.state, "failed");
@@ -482,7 +492,13 @@ test("legacy approval recovery is deferred with the SQLite UI archive", { skip: 
       assert.equal(listMessages(recovered.database, session.id).find((message) => message.external_message_id === "ordinary-user")?.body, "ordinary user request");
       assert.equal(listEvents(recovered.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
       const fake = new FakeClient();
-      const transport = await startTransport(recovered, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(recovered.database));
+      const discord = new DiscordTransport("token", fake as unknown as Client);
+      const send = discord.sendMessage.bind(discord);
+      discord.sendMessage = async (...args) => {
+        assert.equal(recovered.database.prepare("SELECT updated_by FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.updated_by, "startup-notice-claimed");
+        return send(...args);
+      };
+      const transport = await startTransport(recovered, undefined, discord, undefined, undefined, recovered.store);
       assert.deepEqual(fake.editedApprovals, ["old-control"]);
       assert.deepEqual(fake.sent[0], { content: "A saved Codex approval could not be resumed after restart. No action was approved.", components: [] });
       assert(fake.sent.some((message) => JSON.stringify(message).includes("Please make a fresh request")));
@@ -497,10 +513,10 @@ test("legacy approval recovery is deferred with the SQLite UI archive", { skip: 
       await recovered.release();
     }
 
-    const again = await startWithTestStore(directory);
+    const again = await startWithProductionStore(directory);
     try {
       const fake = new FakeClient();
-      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(again.database));
+      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, again.store);
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(listEvents(again.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
       assert.equal(again.database.prepare("SELECT state FROM sessions WHERE id = ?").get(session.id)?.state, "active");
@@ -524,7 +540,7 @@ test("a claimed legacy notice is not resent after a crash before Discord deliver
   try {
     const home = await bootstrapRuntimeHome(directory);
     await writeFile(home.envFile, validEnv);
-    const first = await startWithTestStore(directory);
+    const first = await startWithProductionStore(directory);
     const session = createSession(first.database, {
       user_id: first.owner.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
       conversation_id: "thread", initiating_external_message_id: "initial", agent_provider: "codex",
@@ -534,17 +550,17 @@ test("a claimed legacy notice is not resent after a crash before Discord deliver
       VALUES (?, 'lost-request', 'unsafe preview', unixepoch() + 3600)`).run(session.id);
     await first.release();
 
-    const recovered = await startWithTestStore(directory);
+    const recovered = await startWithProductionStore(directory);
     assert.equal(legacyApprovalNotices(recovered.database).length, 1);
     assert.equal(claimLegacyApprovalNotice(recovered.database, legacyApprovalNotices(recovered.database)[0]!.id), true);
     await recovered.release(); // Crash boundary: the claim committed, but Discord send never happened.
 
-    const again = await startWithTestStore(directory);
+    const again = await startWithProductionStore(directory);
     try {
       assert.equal(legacyApprovalNotices(again.database).length, 0);
       assert.equal(listEvents(again.database, session.id).filter((event) => event.event_type === "legacy_approval_failed").length, 1);
       const fake = new FakeClient();
-      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(again.database));
+      const transport = await startTransport(again, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, again.store);
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(again.database.prepare("SELECT resolution_message_id FROM approvals").get()?.resolution_message_id, null);
       await transport.stop();
@@ -951,7 +967,11 @@ test("invalid configuration or database prevents Discord startup", async () => {
     const home = await bootstrapRuntimeHome(directory);
     await assert.rejects(start(directory), /Invalid configuration/);
     await writeFile(home.envFile, validEnv);
-    await assert.rejects(start(directory), /PostgreSQL operation failed|Agent Instance is already active or not provisioned/);
+    await writeFile(home.databaseFile, "invalid SQLite database");
+    await assert.rejects(start(directory), /not a database/);
+    await rm(home.databaseFile);
+    const instance = await start(directory);
+    await instance.release();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

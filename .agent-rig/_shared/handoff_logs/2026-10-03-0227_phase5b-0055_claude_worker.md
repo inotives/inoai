@@ -17,7 +17,7 @@ Run by the planner session in the worker role because each step needed the owner
 ## Setup
 
 - OpenCode v2.0.22 (`~/.opencode/bin` prepended to PATH for the bot process), free Zen default model; `npm run build` from `feature/phase-5b` (144 offline tests at task-0057 close).
-- Disposable deployment `/tmp/inoai-phase5b-smoke.97H2Wj/` with `.inoai-connect-opencode/.env` (mode 600). OpenCode's project path was this empty folder.
+- Disposable deployment `<temporary-path>` with `.inoai-connect-opencode/.env` (mode 600). OpenCode's project path was this empty folder.
 - No other inoai process was running; Codex and Claude bots (same token) stayed stopped.
 - `validate --connect-dir .inoai-connect-opencode`: valid. Startup log: `OpenCode cross-session concurrency: unavailable; using global FIFO`, `inoai started …`. SQLite: one `startup_online` Event.
 

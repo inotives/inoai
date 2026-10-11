@@ -233,12 +233,17 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
   }
 
   const database = new DatabaseSync(databaseFile);
-  database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
-  database.exec(initialSchema);
-  migrateMessages(database);
-  recoverStaleWork(database);
-  recoverLegacyApprovals(database);
-  return database;
+  try {
+    database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
+    database.exec(initialSchema);
+    migrateMessages(database);
+    recoverStaleWork(database);
+    recoverLegacyApprovals(database);
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
 }
 
 type AuditColumns = {

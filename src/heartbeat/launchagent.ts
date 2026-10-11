@@ -39,7 +39,7 @@ function xml(value: string): string {
 
 export function renderLaunchAgent(repository: string, command: LaunchAgentCommand, userHome = homedir(), nodeExecutable = process.execPath) {
   const checkout = resolve(repository);
-  const runtimeHome = resolveRuntimeHome(checkout, command.connectDirectory ?? ".inoai-connect-planner").directory;
+  const runtimeHome = resolveRuntimeHome(checkout, command.connectDirectory ?? ".robin-xai-test").directory;
   const executable = join(checkout, "dist", "index.js");
   const label = `com.inoai.heartbeat.${createHash("sha256").update(runtimeHome).digest("hex").slice(0, 16)}`;
   const logs = join(resolve(userHome), "Library", "Logs", "inoai");

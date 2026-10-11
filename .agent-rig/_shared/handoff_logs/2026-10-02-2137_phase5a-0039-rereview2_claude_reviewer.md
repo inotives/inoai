@@ -44,7 +44,7 @@ Verdict: **clean.** Both findings are resolved, and I found no new contradiction
 ## Checks
 
 - **Contradictions.** None with Phase 5a docs, ADRs 0007/0008, or tasks 0042, 0044, 0046, and 0048.
-- **Redaction.** I grepped the spike, the fix handoff, and tasks 0039, 0042, and 0044 for `@`, UUID patterns, `sk-` tokens (excluding `task-` IDs), and `/Users/`. Nothing matched.
+- **Redaction.** I grepped the spike, the fix handoff, and tasks 0039, 0042, and 0044 for `@`, UUID patterns, `sk-` tokens (excluding `task-` IDs), and `<local-path>`. Nothing matched.
 - **Git.**
   - `git diff --check` is clean.
   - The untracked files have no trailing whitespace.

@@ -21,7 +21,7 @@ The local CLI-backed system that performs agent turns for inoai.
 _Avoid_: Model, bot
 
 **Agent Instance**:
-One independently configured inoai identity represented by a `.inoai-connect*` runtime home. It selects one Agent Runtime provider, one Discord bot configuration, one role-specific `agent.md`, and one agent-wide Memory/archive database.
+One independently configured inoai identity represented by a hidden runtime home such as `.inoai-connect*` or `.robin-*`. It selects one Agent Runtime provider, one Discord bot configuration, one role-specific `agent.md`, and one agent-wide Memory/archive database.
 _Avoid_: User, session, profile
 
 **Agent Account**:
@@ -81,7 +81,7 @@ The durable coordination store that owns live Agent Instance state, Conversation
 _Avoid_: Analytics sink, archive copy
 
 **Agent Schema**:
-A database namespace containing one Agent Instance's operational records, identified by the shared coordination model.
+A PostgreSQL namespace used by retained advanced tools. The current runtime stores one Agent Instance's operational records in its local SQLite file.
 _Avoid_: Runtime home, database
 
 **Runtime Home Lock**:
@@ -89,13 +89,13 @@ A local, same-machine ownership marker for one Agent Instance runtime home. It
 is a `0600` JSON record with the owning PID, macOS process start time, and a
 release token. Startup may reclaim it only when process identity proves it is
 stale; legacy or malformed records fail closed. It is a fast startup guard and
-is not the cross-machine authority.
+does not provide cross-machine ownership. Do not share a runtime home between machines.
 _Avoid_: PostgreSQL lease, heartbeat
 
 **PostgreSQL Lease**:
 A database-backed ownership record for an Agent Instance that prevents duplicate
 ownership across machines and is refreshed while the process is healthy. It
-remains authoritative even when the local runtime-home lock is reclaimed.
+is retained for advanced PostgreSQL tooling only. It is not acquired by the current SQLite runtime.
 _Avoid_: Runtime Home Lock, file lock
 
 **Heartbeat Supervisor**:
@@ -124,6 +124,18 @@ The canonical role and behavior description for one Agent Instance, stored as
 operating rules, safety boundaries, and references to the instance's available
 capabilities.
 _Avoid_: Agent Account, runtime configuration, skill
+
+**Agent Deployment**:
+The provisioning operation that creates or validates one Agent Instance's
+runtime home, selects its Chat Transport and Agent Runtime, and prepares its
+local operational database and profile.
+_Avoid_: Agent Runtime, process start
+
+**Deployment Wizard**:
+The interactive user interface for Agent Deployment. It collects configuration,
+verifies local capabilities, and reports the commands or artifacts needed to
+start an Agent Instance.
+_Avoid_: Agent Profile, setup script
 
 **Skill Package**:
 A provider-neutral, owner-installed capability package for one Agent Instance.

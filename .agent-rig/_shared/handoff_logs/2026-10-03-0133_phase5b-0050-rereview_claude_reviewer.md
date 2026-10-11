@@ -58,7 +58,7 @@ N6. **Info: the existence-check scope is worded differently in two places.** `do
 
 ## Checks
 
-- Redaction: I grepped the spike doc, the fix handoff, and the task file for full `ses_`/`msg_`/`prt_` IDs, `/Users/`, the username, `/var/folders`, `/private/`, emails, `sk-`, `Bearer`, api keys, and `token=`. The only hits were false positives: `task-0053` matched `sk-`, and token counts. Clean.
+- Redaction: I grepped the spike doc, the fix handoff, and the task file for full `ses_`/`msg_`/`prt_` IDs, `<local-path>`, the username, `<temporary-path>`, `<temporary-path>`, emails, `sk-`, `Bearer`, api keys, and `token=`. The only hits were false positives: `task-0053` matched `sk-`, and token counts. Clean.
 - `git diff --check` is clean (rc 0).
 - `git diff --no-index --check /dev/null docs/phase-5b-opencode-cli-spike.md` printed no output. rc 1 only reflects that a diff exists.
 - `git status --short src/` is empty, so there are no `src/` changes.

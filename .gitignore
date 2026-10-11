@@ -1,5 +1,13 @@
 .agent-rig/.creds/
 /.env
 /.inoai-connect*/
+/.robin-*/
+/.agent-rig.backup-*/
+/.agent-rig/_shared/notes/
+/.agent-rig/_shared/profile-backups/
+/.agent-rig/_shared/workflow.sqlite-*
+/.agent-rig/_shared/workflow.sqlite.backup
+/.agent-rig/worker/runs/
+/.agent-rig/reviewer/runs/
 /dist/
 /node_modules/

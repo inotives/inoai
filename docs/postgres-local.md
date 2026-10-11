@@ -1,6 +1,18 @@
-# Local PostgreSQL
+# Advanced PostgreSQL tooling
 
-Local development and opt-in integration tests use the PostgreSQL service in
+Normal runtime startup uses the selected runtime home's `inoai.sqlite`. SQLite
+is the local source of truth. Fresh setup requires neither PostgreSQL nor Docker.
+Normal validation and startup ignore `POSTGRES_*` settings, including leftover keys.
+Existing SQLite data is reused; a missing database is created through the existing
+schema path. There is no automatic PostgreSQL-to-SQLite migration.
+
+A later phase will send an asynchronous, one-way, redacted SQLite-to-PostgreSQL
+copy for central reporting and backup. PostgreSQL will not own live work or
+block local startup. No sync queue, exporter, or dual writes are implemented in
+this phase. See [ADR 0020](adr/0020-local-sqlite-source-of-truth.md).
+
+The existing `postgres:*` commands are explicit advanced/future tools.
+Opt-in PostgreSQL development and integration tests use the service in
 `docker-compose.yml`:
 
 ```sh
@@ -41,7 +53,7 @@ error. Test schemas are removed on completion. Do not put either URL in a
 committed file or paste it into logs.
 
 Migrations are an explicit administrator action. They do not load a runtime
-`.env`, and the normal application never runs DDL:
+`.env`, and normal startup never runs PostgreSQL DDL:
 
 ```sh
 npm run postgres:migrate -- --url 'postgresql://<migration-user>:<password>@127.0.0.1:5432/inoai'
@@ -52,62 +64,60 @@ runtime-home `.env`, or paste it into logs. The migration runner tracks applied
 files in `public.schema_migrations`, runs files in numeric order, and rejects a
 changed checksum. Later migrations add the control and Agent schemas.
 
-At runtime, each Agent Instance also acquires a PostgreSQL lease in
-`inoai_control.agent_instance_leases`. `POSTGRES_LEASE_TTL_MS` is the outage
-grace period before another process may recover the lease, and
-`POSTGRES_LEASE_REFRESH_MS` controls the heartbeat interval. The refresh value
-must be lower than the TTL. The local runtime-home `inoai.lock` remains the
-fast same-machine guard; the PostgreSQL lease prevents duplicate ownership
-across machines. The local lock is a `0600` JSON record containing the owning
-PID, macOS process start time, and release token. Startup reclaims it only when
-the PID is gone or its start time differs, and otherwise fails closed. Recovery
-is startup-only; the lock is not refreshed by a watcher. Legacy UUID-only and
-malformed lock files are deliberately not reclaimed because their ownership
-cannot be verified safely. See [ADR 0015](adr/0015-runtime-home-lock-stale-recovery.md)
-for the recovery decision and [CONTEXT.md](../CONTEXT.md) for the lock/lease
-terminology.
+## Explicit provisioning and connection test
 
-The optional external [Heartbeat Supervisor](heartbeat-operations.md) checks
-this lease and a lightweight query every 60 minutes. This is separate from
-`POSTGRES_LEASE_REFRESH_MS`, which controls the core's lease refresh. The
-supervisor reads ownership state without acquiring or extending the lease.
-It tolerates one failed database check and restarts after two consecutive
-failures. Normal core startup and lease behavior remain unchanged.
+Generate provisioning SQL for an advanced PostgreSQL test instance, then apply
+it with an administrator SQL client:
 
-Normal startup requires the runtime role to reach PostgreSQL, the numbered
-migrations to have been applied by an administrator, and the configured
-`AGENT_INSTANCE_ID` to have been provisioned. Startup does not create an
-SQLite archive or run DDL. If the Agent Schema is missing, or the lease is
-already owned, inoai exits before connecting Discord. Manual Memory commands
-use the same PostgreSQL Agent Schema and require the normal runtime `.env`.
+```sh
+npm run postgres:provision -- \
+  --agent-instance-id agent-inoai-planner \
+  --agent-name "inoai planner" \
+  --agent-provider codex \
+  --runtime-home .robin-xai-test \
+  --owner-user-id <discord-user-id> > provision.sql
+```
 
-SQLite is disposable development data during this cutover; there is no
-SQLite-to-PostgreSQL migration or dual-write path. If PostgreSQL is unavailable
-at startup or during a store operation, inoai pauses/fails closed and must not
-fabricate a Discord reply or replay an uncertain turn.
+`postgres:test` explicitly reads `POSTGRES_URL` from the selected home's `.env`.
+Add that key only when using this advanced tool. Do not use administrator
+credentials there. The key does not select PostgreSQL for normal startup:
+
+```sh
+npm run postgres:test -- --connect-dir .robin-xai-test
+```
+
+The retained PostgreSQL store and integration tests exercise leases in
+`inoai_control.agent_instance_leases`. Those leases do not control the current
+SQLite runtime or its [Heartbeat Supervisor](heartbeat-operations.md).
+
+One core process writes each runtime-home SQLite database. UI and read-only
+tools may inspect it. Stop the core before running local write commands. The
+local `inoai.lock` guards same-machine ownership; do not share a runtime home
+between machines. Startup reclaims only locks proven stale by process identity.
+WAL/SHM files are normal SQLite artifacts, not stale locks.
 
 ## Discord allowlist CLI
 
 Add or reactivate a family user for the guild configured in the selected runtime home:
 
 ```sh
-npm run allowlist:add -- --connect-dir .inoai-connect-planner --user-id <discord-user-id> --display-name "Ada"
+npm run allowlist:add -- --connect-dir .robin-xai-test --user-id <discord-user-id> --display-name "Ada"
 ```
 
 Disable a family user without deleting its audit history:
 
 ```sh
-npm run allowlist:disable -- --connect-dir .inoai-connect-planner --user-id <discord-user-id>
+npm run allowlist:disable -- --connect-dir .robin-xai-test --user-id <discord-user-id>
 ```
 
 The commands are idempotent, default to the `family` role, and never print
-credentials or PostgreSQL driver errors. The configured owner cannot be changed
-by these commands. In DBeaver, inspect the result in the provisioned Agent
-Schema's `users` table, for example:
+credentials or raw database errors. The configured owner cannot be changed
+by these commands. Stop the core before running these write commands. They
+use the selected runtime home's SQLite database. Inspect its `users` table, for example:
 
 ```sql
 SELECT external_user_id, display_name, role, state
-FROM agent_inoai_planner.users
+FROM users
 WHERE transport = 'discord'
 ORDER BY id;
 ```

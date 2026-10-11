@@ -56,7 +56,7 @@ Clean. Every prior finding (N1 to N6) is resolved, and no blocking or medium iss
 
 - `git diff --check` returned 0.
 - `git diff --no-index --check /dev/null docs/phase-5b-opencode-cli-spike.md` printed nothing. Its return code of 1 only means a diff exists.
-- Redaction grep over the spike doc, the fix2 handoff, and tasks 0050 to 0056 looked for full `ses_`/`msg_`/`prt_` IDs, `/Users/`, the username, `/var/folders`, `/private/`, email addresses, `sk-` keys, `Bearer`, API keys, and `token=`. The only hit was the fix2 handoff's own description of the grep, which is a false positive. The result is clean.
+- Redaction grep over the spike doc, the fix2 handoff, and tasks 0050 to 0056 looked for full `ses_`/`msg_`/`prt_` IDs, `<local-path>`, the username, `<temporary-path>`, `<temporary-path>`, email addresses, `sk-` keys, `Bearer`, API keys, and `token=`. The only hit was the fix2 handoff's own description of the grep, which is a false positive. The result is clean.
 - `git status --short src/` is empty.
 - No CLI runs, no edits beyond this handoff, no task status change, and no commit.
 

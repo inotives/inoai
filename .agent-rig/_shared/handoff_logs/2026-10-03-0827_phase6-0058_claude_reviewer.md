@@ -26,7 +26,7 @@ Inputs: task-0058, worker handoff `2026-10-03-0824_phase6-0058_claude_worker.md`
 Checks that passed:
 - Every scope bullet is answered with evidence.
 - CLI version `2.1.288` is recorded and matches `claude --version`.
-- Redaction is clean: a grep for usernames, `/Users/`, `var/folders`, emails, the org domain, `sk-` keys and session UUIDs found nothing sensitive.
+- Redaction is clean: a grep for usernames, `<local-path>`, `var/folders`, emails, the org domain, `sk-` keys and session UUIDs found nothing sensitive.
 - `git diff --check` is clean, and `--no-index --check` on the new doc reports no whitespace errors.
 - There are no `src/` changes.
 

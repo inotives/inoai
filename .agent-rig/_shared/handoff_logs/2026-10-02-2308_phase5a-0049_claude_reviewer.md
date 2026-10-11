@@ -77,7 +77,7 @@ The phase doc, proposal Claude section, plan-review 28, ADRs 0007/0008, spike do
 - `git diff --no-index --check /dev/null <file>` for every untracked file: no whitespace errors.
 - `git diff --cached`: empty (nothing staged).
 - `git status --ignored --short`: ignored entries are `.inoai-connect-claude/`, `dist/`, `node_modules/`. `git ls-files` shows no `.env` or `.inoai-connect*` tracked. `.gitignore` covers `/.env`, `/.inoai-connect*/`.
-- Temp folders: no `/tmp/inoai-*` (the smoke folder was removed). `$TMPDIR/inoai-*`: only H1. `~/.claude/projects/` has no smoke or probe folders left.
+- Temp folders: no `<temporary-path>*` (the smoke folder was removed). `$TMPDIR/inoai-*`: only H1. `~/.claude/projects/` has no smoke or probe folders left.
 - Processes: no `claude -p`, `node dist/index.js`, fake-claude, or `codex app-server` running.
 - `claude --version`: 2.1.287 (Claude Code).
 

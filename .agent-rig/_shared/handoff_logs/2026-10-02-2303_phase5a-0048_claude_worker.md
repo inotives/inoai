@@ -17,7 +17,7 @@ Run by the planner session in the worker role because each step required the own
 ## Setup
 
 - Claude Code 2.1.287; `npm run build` from `feature/phase-5a` (122 offline tests passing at task-0047 close).
-- Disposable deployment folder `/tmp/inoai-phase5a-smoke.1bnxe2/` with `.inoai-connect-claude/.env` copied from the repo's ignored `.inoai-connect-claude/.env` (mode 600). Claude's project path was this empty folder.
+- Disposable deployment folder `<temporary-path>` with `.inoai-connect-claude/.env` copied from the repo's ignored `.inoai-connect-claude/.env` (mode 600). Claude's project path was this empty folder.
 - Verified no other inoai process was running (the token is shared with the owner's Codex bot; the owner confirmed Codex stayed stopped).
 - `validate --connect-dir .inoai-connect-claude`: valid.
 - `node dist/index.js --connect-dir .inoai-connect-claude` started in the background. Log: `Claude cross-session concurrency: enabled`, `inoai started with …/.inoai-connect-claude`. The startup credential guard accepted the subscription login (startup proceeded past `connect()`). SQLite: exactly one `startup_online` Event.
@@ -37,12 +37,12 @@ Discord Messages observed by the owner match the archived SQLite rows for every 
 
 ## Shutdown
 
-SIGINT to the bot process; it exited 0. No `claude -p` children remained. The disposable SQLite is retained at `/tmp/inoai-phase5a-smoke.1bnxe2/.inoai-connect-claude/inoai.sqlite` for review.
+SIGINT to the bot process; it exited 0. No `claude -p` children remained. The disposable SQLite is retained at `<temporary-path>` for review.
 
 ## Observations
 
 - UX: in step c, Claude's own reply suggested `--permission-mode acceptEdits` or an allow rule. inoai never acts on this, but the owner may want `agent.md` guidance telling Claude not to suggest loosening permissions from Discord.
-- Claude persisted the smoke sessions under one `~/.claude/projects/<encoded /private/tmp/inoai-phase5a-smoke…>` folder. Remove it and the disposable folder after review.
+- Claude persisted the smoke sessions under one `~/.claude/projects/<encoded /private<temporary-path>inoai-phase5a-smoke…>` folder. Remove it and the disposable folder after review.
 - Not exercised live (covered by offline tests): expired login and usage-limit notices, provider-mismatch notice, missing-session notice.
 
 ## Status

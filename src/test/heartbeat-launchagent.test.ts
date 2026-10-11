@@ -15,11 +15,11 @@ test("dynamic rendering escapes paths, selects planner, and disables automatic s
   const f = await fixture();
   try {
     const rendered = renderLaunchAgent(f.repository, { operation: "render" }, f.userHome, f.nodeExecutable);
-    assert.equal(rendered.runtimeHome, join(f.repository, ".inoai-connect-planner"));
+    assert.equal(rendered.runtimeHome, join(f.repository, ".robin-xai-test"));
     assert.equal(rendered.executable, join(f.repository, "dist", "index.js"));
     assert.ok(rendered.plist.includes(f.nodeExecutable));
     assert.match(rendered.plist, /checkout &amp; &lt;test&gt;/);
-    assert.match(rendered.plist, /<string>heartbeat<\/string><string>--connect-dir<\/string><string>\.inoai-connect-planner<\/string>/);
+    assert.match(rendered.plist, /<string>heartbeat<\/string><string>--connect-dir<\/string><string>\.robin-xai-test<\/string>/);
     assert.ok(rendered.plist.includes(join(f.userHome, "Library", "Logs", "inoai", "heartbeat.log")));
     assert.ok(rendered.plist.includes(join(f.userHome, "Library", "Logs", "inoai", "heartbeat-error.log")));
     assert.match(rendered.plist, /<key>RunAtLoad<\/key><false\/>/);

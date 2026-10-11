@@ -20,7 +20,7 @@
   ·
   <a href="docs/implementation-phases.md">Implementation Phases</a>
   ·
-  <a href="docs/postgres-local.md">PostgreSQL Setup</a>
+  <a href="docs/postgres-local.md">Advanced PostgreSQL Tools</a>
   ·
   <a href="docs/adr/">ADRs</a>
   ·
@@ -31,21 +31,21 @@
 
 ## What It Is
 
-inoai is a local personal-agent bridge. It connects a Discord bot to a coding-agent CLI that is already installed and signed in on your machine, and it keeps operational conversation history and durable agent Memory in PostgreSQL.
+inoai is a local personal-agent bridge. It connects a Discord bot to a coding-agent CLI that is already installed and signed in on your machine, and it keeps operational conversation history and durable agent Memory in local SQLite.
 
 It drives the CLI you already use instead of calling a model API. Codex runs on your ChatGPT sign-in, Claude Code on your Claude subscription, and OpenCode on whatever provider it is configured with. inoai itself never calls the OpenAI or Anthropic API, and it never loosens the CLI's own permission policy.
 
 - An `@inoai` mention starts a dedicated Discord thread, and follow-ups in that thread continue the same Agent Session.
-- PostgreSQL records users, sessions, messages, events, approvals, daily Recaps, and shared Memory, with audit fields, soft deletion, and one derived Agent Schema per Agent Instance.
+- SQLite records users, sessions, messages, events, approvals, daily Recaps, and shared Memory, with audit fields and soft deletion in each runtime home.
 - Permission requests fail closed with a fixed notice. Discord **Approve** / **Reject** buttons are deferred.
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
-- A separate macOS Electron app (Phase 7) remains isolated from the operational store; PostgreSQL is the core runtime's source of truth.
+- A separate macOS Electron app (Phase 7) reads the selected local SQLite database; SQLite is the core runtime's source of truth.
 
-Status: Phases 1–6c (including 5a and 5b) are implemented: scaffolding, the PostgreSQL operational store and queue, the Discord transport, the Codex runtime, the end-to-end conversation worker, Claude CLI and OpenCode as further runtimes, Daily Memory Review (Claude homes only in V1), and PostgreSQL Docker/integration acceptance. The Electron app and V1 hardening remain.
+Status: Conversation workers, Codex, Claude CLI, OpenCode, and Daily Memory Review (Claude homes only in V1) are implemented. The runtime now uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink, Electron app, and V1 hardening remain.
 
 ## Core Model
 
-Deploy inoai into the folder it should assist. Each `.inoai-connect*` directory is one independent Agent Instance with its own configuration, Discord identity, and PostgreSQL Agent Schema:
+Deploy inoai into the folder it should assist. Each hidden runtime directory is one independent Agent Instance with its own configuration, Discord identity, and SQLite database:
 
 ```text
 my-project/
@@ -54,13 +54,14 @@ my-project/
 ├── .inoai-connect/            # general Codex agent (default runtime home)
 │   ├── .env
 │   ├── agent.md
+│   ├── inoai.sqlite
 │   └── backups/
-├── .inoai-connect-planner/    # a role-specific instance
+├── .robin-xai-test/           # the Robin-XAI test instance
 ├── .inoai-connect-claude/     # Claude CLI adapter (Phase 5a)
 └── .inoai-connect-opencode/   # OpenCode CLI adapter (Phase 5b)
 ```
 
-On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. The runtime home contains configuration and the local same-machine lock; operational data lives in the configured PostgreSQL Agent Schema. Only one core process may use a runtime home at a time; the PostgreSQL lease also prevents duplicate ownership across machines. Runtime homes are git-ignored and must never be committed.
+On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process writes each runtime-home database; the UI and read-only tools may inspect it. Stop the core before using local commands that write Memory or the allowlist. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
 
 The local `inoai.lock` is a `0600` JSON record containing the owning process
 PID, its macOS process start time, and a release token. If startup finds an
@@ -68,8 +69,7 @@ existing lock, it reclaims it only when that exact process is gone or its
 start time no longer matches (protecting against PID reuse). Recovery runs
 only during startup; there is no lock refresher. Legacy UUID-only and malformed
 locks cannot be verified safely and remain locked until removed deliberately.
-The PostgreSQL lease is still the cross-machine authority and is refreshed by
-the healthy process.
+Normal startup does not acquire a PostgreSQL lease.
 
 `agent.md` defines that instance's role and personality. Project guidance comes from each CLI's own loading: `AGENTS.md` for Codex and OpenCode, `CLAUDE.md` for Claude.
 
@@ -88,7 +88,6 @@ Node.js 22 or newer
 macOS (V1 release target)
 A Discord bot per concurrently running Agent Instance
 One signed-in agent CLI per runtime home: codex, claude, or opencode
-A reachable PostgreSQL database (Docker Compose is provided for local development)
 ```
 
 ## Installation
@@ -98,33 +97,20 @@ npm install
 npm run build
 ```
 
-### PostgreSQL
+### Local database
 
-The core runtime requires PostgreSQL. For local development, start the bundled
-service and apply the administrator migrations:
+Normal setup needs no PostgreSQL service or Docker. SQLite is the local source
+of truth for startup, queue state, conversations, Memory, and recovery.
+Normal validation and startup ignore `POSTGRES_*` settings; leftover keys are tolerated.
 
-```bash
-docker compose up -d postgres
-npm run postgres:migrate -- --url 'postgresql://<migration-user>:<password>@127.0.0.1:5432/inoai'
-```
+A later phase will send an asynchronous, one-way, redacted SQLite-to-PostgreSQL
+copy for central reporting and backup. PostgreSQL will not own live work or
+block local startup. This phase adds no sync queue, exporter, or dual writes.
+See [ADR 0020](docs/adr/0020-local-sqlite-source-of-truth.md).
 
-Generate the per-Agent provisioning SQL and run the output in DBeaver (or
-another administrator SQL client):
-
-```bash
-npm run postgres:provision -- \
-  --agent-instance-id agent-inoai-planner \
-  --agent-name "inoai planner" \
-  --agent-provider codex \
-  --runtime-home .inoai-connect-planner \
-  --owner-user-id <discord-user-id> > provision.sql
-```
-
-Set the resulting Agent Instance's restricted `POSTGRES_URL`, plus its
-`AGENT_INSTANCE_ID`, in the runtime home's `.env`. The normal application never
-runs DDL and does not need the migration credentials. See
-[`docs/postgres-local.md`](docs/postgres-local.md) for Docker, integration-test,
-lease, role, and allowlist details.
+Existing `postgres:migrate`, `postgres:provision`, `postgres:test`, and
+`postgres:integration` commands are explicit advanced/future tooling.
+See [the PostgreSQL tooling guide](docs/postgres-local.md) for opt-in setup.
 
 ## Setup
 
@@ -149,7 +135,7 @@ rules, safety and authority, and enabled skills sections. Validate it without
 starting the app or contacting a provider:
 
 ```bash
-npm start -- profile validate --connect-dir .inoai-connect-planner
+npm start -- profile validate --connect-dir .robin-xai-test
 ```
 
 inoai reads and validates `agent.md` at the start of each new Turn. A valid
@@ -165,11 +151,11 @@ approval; updates revoke the old approval and require approval again.
 ```bash
 # Prepare a package with skills.sh, then stage that local package.
 npx skills add <owner/repo> --copy
-npm start -- skills install --package-dir ./<skill-directory> --connect-dir .inoai-connect-planner
-npm start -- skills enable --skill-id <skill-id> --approved-by owner --connect-dir .inoai-connect-planner
-npm start -- skills list --connect-dir .inoai-connect-planner
-npm start -- skills disable --skill-id <skill-id> --connect-dir .inoai-connect-planner
-npm start -- skills update --package-dir ./<skill-directory> --connect-dir .inoai-connect-planner
+npm start -- skills install --package-dir ./<skill-directory> --connect-dir .robin-xai-test
+npm start -- skills enable --skill-id <skill-id> --approved-by owner --connect-dir .robin-xai-test
+npm start -- skills list --connect-dir .robin-xai-test
+npm start -- skills disable --skill-id <skill-id> --connect-dir .robin-xai-test
+npm start -- skills update --package-dir ./<skill-directory> --connect-dir .robin-xai-test
 ```
 
 The package must contain `SKILL.md` and a valid `skill.yaml`. The package is
@@ -186,10 +172,10 @@ allow a Turn to install, enable, update, or approve a skill.
 Any named runtime home works the same way with `--connect-dir` (a packaged deployment runs `inoai --connect-dir <home>` and `inoai ui --connect-dir <home>`):
 
 ```bash
-npm run validate -- --connect-dir .inoai-connect-planner
-cp .env.sample .inoai-connect-planner/.env
-npm run validate -- --connect-dir .inoai-connect-planner
-npm start -- --connect-dir .inoai-connect-planner
+npm run validate -- --connect-dir .robin-xai-test
+cp .env.sample .robin-xai-test/.env
+npm run validate -- --connect-dir .robin-xai-test
+npm start -- --connect-dir .robin-xai-test
 ```
 
 Give each concurrently running Agent Instance its own Discord bot and token. Reusing one token across runtime homes is only safe when just one of them runs at a time.
@@ -254,16 +240,18 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- profile validate --connect-dir <home>` | Validate a runtime-home `agent.md` without starting Discord. |
 | `npm start` | Start the core for the default runtime home. |
 | `npm start -- --connect-dir <home>` | Start a named runtime home. `npm run validate`, `ui`, and `memory` accept the same option. |
-| `npm start -- heartbeat --connect-dir .inoai-connect-planner` | Run the optional supervisor in the foreground with one inoai child. |
-| `npm start -- heartbeat launchagent render --connect-dir .inoai-connect-planner` | Print the optional macOS LaunchAgent plist without installing it. |
-| `npm start -- memory add "<text>"` | Add a Manual Memory Entry to PostgreSQL without starting an Agent Runtime. |
+| `npm start -- heartbeat --connect-dir .robin-xai-test` | Run the optional supervisor in the foreground with one inoai child. |
+| `npm start -- heartbeat launchagent render --connect-dir .robin-xai-test` | Print the optional macOS LaunchAgent plist without installing it. |
+| `npm start -- memory add "<text>"` | Add a Manual Memory Entry to local SQLite without starting an Agent Runtime. |
 | `npm start -- memory list` | List active Memory with `origin` (`manual` or `review`); review-made entries also show `review_id` and `source_message_id`. |
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
-| `npm run allowlist:add -- --connect-dir .inoai-connect-planner --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
-| `npm run allowlist:disable -- --connect-dir .inoai-connect-planner --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
-| `npm start -- ui` | Launch the sibling Electron UI for the selected runtime home (Phase 7 remains isolated from the operational store). |
-| `npm run postgres:test -- --connect-dir <home>` | Check the selected runtime home's PostgreSQL connection without starting Discord. |
-| `npm run postgres:integration` | Run the opt-in Docker PostgreSQL acceptance suite. |
+| `npm run allowlist:add -- --connect-dir .robin-xai-test --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
+| `npm run allowlist:disable -- --connect-dir .robin-xai-test --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
+| `npm start -- ui` | Launch the sibling Electron UI for the selected runtime home (Phase 7 reads local SQLite). |
+| `npm run postgres:migrate -- --url <url>` | Advanced: apply PostgreSQL administrator migrations. |
+| `npm run postgres:provision -- <options>` | Advanced: generate PostgreSQL provisioning SQL. |
+| `npm run postgres:test -- --connect-dir <home>` | Advanced: check an explicitly configured PostgreSQL connection without starting Discord. |
+| `npm run postgres:integration` | Advanced: run the opt-in Docker PostgreSQL acceptance suite. |
 | `npm test` | Build and run the test suite. |
 | `npm run typecheck` | Type-check without emitting. |
 | `/inoai status` | Show the thread's session, queue, and failure counts. |
@@ -272,13 +260,13 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 
 The `/inoai` slash commands are owner-only, work in a thread the bot owns, and reply privately.
 
-Allowlist commands use the selected runtime home's PostgreSQL configuration and
-never print credentials. The configured owner cannot be changed by these
-commands. Inspect changes in DBeaver with:
+Allowlist commands use the selected runtime home's SQLite database and
+never print credentials. Stop the core before running these write commands.
+The configured owner cannot be changed by these commands. Inspect changes in the local SQLite `users` table with:
 
 ```sql
 SELECT external_user_id, display_name, role, state
-FROM agent_inoai_planner.users
+FROM users
 WHERE transport = 'discord'
 ORDER BY id;
 ```
@@ -286,15 +274,15 @@ ORDER BY id;
 ## Heartbeat Supervisor
 
 The optional external supervisor starts one inoai child and checks its process,
-local lock, PostgreSQL lease, and database query every 60 minutes. Normal
-`npm start` behavior is unchanged. `.inoai-connect-planner` is the primary test
+local lock, and a bounded read-only SQLite query every 60 minutes. Normal
+`npm start` behavior is unchanged. `.robin-xai-test` is the primary test
 runtime. Stop its existing core or supervisor before starting another owner.
 
 Build first, then run the supervisor in the foreground:
 
 ```sh
 npm run build
-npm start -- heartbeat --connect-dir .inoai-connect-planner
+npm start -- heartbeat --connect-dir .robin-xai-test
 ```
 
 Use Ctrl-C to stop the supervisor and its child. Supervisor events are recorded
@@ -340,7 +328,7 @@ When it runs:
 - A failed review is retried after 1, 2, and 4 hours, then waits for the next day's run.
 - `MEMORY_REVIEW_MAX_CHARS` sets how much text the model reads at a time; long ranges are split into chronological parts.
 
-Reviews are silent: they never post to Discord. Until the Phase 7 UI, inspect Memory with `npm start -- memory list`; Recaps (`memory_reviews`) and the non-secret `memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, and `memory_review_skipped` Events are in the PostgreSQL Agent Schema.
+Reviews are silent: they never post to Discord. Until the Phase 7 UI, inspect Memory with `npm start -- memory list`; Recaps (`memory_reviews`) and the non-secret `memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, and `memory_review_skipped` Events are in the runtime home's SQLite database.
 
 Runtime support:
 
@@ -356,7 +344,7 @@ A review sends archived Message text, current Memory, and recent Recaps to the r
 
 ```text
 1.  Scaffolding
-2.  SQLite archive and queue (legacy/UI compatibility)
+2.  SQLite operational archive and queue
 3.  Discord transport
 4.  Codex runtime
 5.  End-to-end conversation worker
@@ -364,7 +352,7 @@ A review sends archived Message text, current Memory, and recent Recaps to the r
 5b. OpenCode runtime
 6.  Daily Memory Review
 6b. Codex Memory Review verification
-6c. PostgreSQL operational database
+6c. Future PostgreSQL central reporting/backup sink
 7.  Separate Electron analytics UI        (next)
 8.  V1 acceptance and operational hardening
 ```
@@ -400,7 +388,7 @@ inoai/
 │   ├── discord-codex-cli-harness-proposal.md
 │   ├── implementation-phases.md
 │   ├── postgres-local.md
-│   ├── sqlite-schema.md                     # legacy/UI schema reference
+│   ├── sqlite-schema.md                     # runtime SQLite schema reference
 │   ├── plan-review.md
 │   ├── repository-structure.md               # initial planned layout
 │   └── phase-*-spike.md                      # verified CLI contracts
@@ -426,10 +414,11 @@ inoai/
 │   │   ├── memory-review.ts                  # Daily Memory Review engine
 │   │   ├── memory-review-scheduler.ts        # daily cycle and chat-first scheduling
 │   │   └── memory-operations.ts              # memory persistence and query operations
-│   ├── persistence/                          # operational PostgreSQL and legacy/UI SQLite boundaries
-│   │   ├── operational-store.ts, postgres.ts  # operational state and PostgreSQL pool
+│   ├── persistence/                          # SQLite operational store and advanced PostgreSQL tooling
+│   │   ├── operational-store.ts, postgres.ts  # store contract and advanced PostgreSQL pool
 │   │   ├── postgres-*.ts                      # lease, migration, provisioning, and connection tools
-│   │   └── legacy-database.ts                 # legacy/UI SQLite implementation
+│   │   ├── sqlite-operational-store.ts        # runtime OperationalStore adapter
+│   │   └── legacy-database.ts                 # SQLite schema, queries, and recovery
 │   ├── memory-review.ts                      # compatibility entry point for memory-review.ts
 │   ├── memory-review-scheduler.ts            # compatibility entry point for memory-review-scheduler.ts
 │   ├── conversation-worker.ts, agent-session.ts,
@@ -438,7 +427,7 @@ inoai/
 │   ├── transport.ts, inbound-policy.ts,
 │   │   approval-relay.ts                      # compatibility entry points for transport modules
 │   ├── postgres*.ts, operational-store.ts    # persistence compatibility entry points
-│   ├── database.ts                           # legacy/UI SQLite compatibility entry point
+│   ├── database.ts                           # SQLite compatibility entry point
 │   ├── ui.ts                                 # Electron UI launcher
 │   └── test/
 ├── .agent-rig/                               # AgentRig tasks and handoffs

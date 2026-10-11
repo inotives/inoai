@@ -3,7 +3,7 @@ import { manageLaunchAgent, parseLaunchAgentCommand } from "../heartbeat/launcha
 import { runHeartbeat } from "../heartbeat/foreground.js";
 
 import type { AgentRuntime } from "../application/conversation/runtime-port.js";
-import { ApprovalRelay, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "../transport/approval-relay.js";
+import { ApprovalRelay, legacyApprovalNotice, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "../transport/approval-relay.js";
 import { ClaudeRuntime } from "../runtime/claude-runtime.js";
 import { CodexAppServer } from "../runtime/codex-app-server.js";
 import { CodexRuntime } from "../runtime/codex-runtime.js";
@@ -21,9 +21,8 @@ import { createChatTransport } from "../transport/discord.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "../transport/discord.js";
 import { launchUi } from "../platform/ui.js";
 import type { OperationalStore } from "../persistence/operational-store.js";
-import { createPostgresPool } from "../persistence/postgres.js";
-import { PostgresOperationalStore } from "../persistence/operational-store.js";
-import { acquireAgentInstanceLease } from "../persistence/postgres-lease.js";
+import { openDatabase } from "../persistence/legacy-database.js";
+import { createSqliteOperationalStore } from "../persistence/sqlite-operational-store.js";
 import { manageMemoryWithStore } from "../application/memory/memory-operations.js";
 import { loadAgentProfile } from "../platform/agent-profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, updateSkillPackage } from "../platform/skill-lifecycle.js";
@@ -71,46 +70,40 @@ export async function validateProfile(launchDirectory = process.cwd(), connectDi
   return { runtimeHome, profile };
 }
 
-export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore) {
+export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore) {
   const { runtimeHome, configuration } = await validate(launchDirectory, connectDirectory);
   const release = await acquireRuntimeHomeLock(runtimeHome);
-  const pool = createPostgresPool(configuration);
+  let store: OperationalStore | undefined;
   try {
-    const store = storeFactory?.(pool, runtimeHome) ?? new PostgresOperationalStore(pool, configuration.agentInstanceId);
+    store = storeFactory?.(runtimeHome) ?? createSqliteOperationalStore(openDatabase(runtimeHome));
     const owner = await store.bootstrapOwner(configuration);
-    // Explicit store injection is the unit-test seam; it supplies its own
-    // isolated persistence fixture and does not need a live PostgreSQL lease.
-    const lease = storeFactory ? {
-      refresh: async () => {},
-      release: async () => {},
-    } : await acquireAgentInstanceLease(pool, {
-      agentInstanceId: configuration.agentInstanceId,
-      ttlMs: configuration.postgresLeaseTtlMs,
-      refreshMs: configuration.postgresLeaseRefreshMs,
-    });
     const pendingIngestion = new Set<Promise<void>>();
+    const activeStore = store;
+    let cleanup: Promise<void> | undefined;
     const instance = {
       runtimeHome,
       configuration,
-      pool,
-      store,
+      store: activeStore,
       owner,
-      lease,
       pendingIngestion,
       closing: false,
-      release: async () => {
+      release: () => cleanup ??= (async () => {
         instance.closing = true;
         await Promise.allSettled([...pendingIngestion]);
-        await lease.release();
-        await store.close();
-        await pool.end();
-        await release();
-      },
+        try {
+          await activeStore.close();
+        } finally {
+          await release();
+        }
+      })(),
     };
     return instance;
   } catch (error) {
-    await pool.end().catch(() => undefined);
-    await release();
+    try {
+      await store?.close();
+    } finally {
+      await release();
+    }
     throw error;
   }
 }
@@ -266,6 +259,21 @@ export async function startTransport(
     await transport.start(receive, async () => {
       if (transport.health().state !== "ready") throw new Error("Discord disconnected before startup announcement");
       await transport.registerThreadControls?.(instance.configuration.discordGuildId);
+      for (const approval of await store.legacyApprovalNotices?.() ?? []) {
+        if (approval.workspace_id !== instance.configuration.discordGuildId) continue;
+        if (!await store.claimLegacyApprovalNotice?.(approval.id)) continue;
+        if (approval.external_message_id) {
+          await transport.disableLegacyApprovalControls?.(approval.conversation_id, approval.external_message_id);
+        }
+        const externalMessageId = await transport.sendMessage(approval.conversation_id, legacyApprovalNotice);
+        const archived = await store.archiveMessage({
+          session_id: approval.session_id, transport: approval.transport, workspace_id: approval.workspace_id,
+          external_message_id: externalMessageId, external_author_id: null, user_id: null,
+          direction: "agent", body: legacyApprovalNotice, reply_to_external_message_id: null,
+          in_reply_to_message_id: null, state: "completed",
+        }, "transport:discord");
+        if (archived.message) await store.resolveLegacyApprovalNotice?.(approval.id, archived.message.id);
+      }
       const messageId = await transport.publishHealth(instance.configuration.discordStatusChannelId, "inoai is online", instance.configuration.discordGuildId);
       if (transport.health().state !== "ready") throw new Error("Discord disconnected during startup announcement");
       await store.createEvent({
@@ -293,14 +301,12 @@ export async function manageMemory(
   launchDirectory = process.cwd(),
   connectDirectory?: string,
 ): Promise<MemoryRecord | MemoryRecord[] | void> {
-  const { configuration } = await validate(launchDirectory, connectDirectory);
-  const pool = createPostgresPool(configuration);
-  const store = new PostgresOperationalStore(pool, configuration.agentInstanceId);
+  const instance = await start(launchDirectory, connectDirectory);
+  const { store, owner } = instance;
   try {
-    const owner = await store.bootstrapOwner(configuration);
     return await manageMemoryWithStore(store, operation, argument, owner.id);
   } finally {
-    await store.close();
+    await instance.release();
   }
 }
 
@@ -389,19 +395,17 @@ function parseSkillsCommand(args: string[]): SkillCommand {
 }
 
 export async function manageAllowlist(operation: AllowlistOperation, userId: string, displayName: string | undefined, launchDirectory = process.cwd(), connectDirectory?: string): Promise<UserRecord> {
-  const { configuration } = await validate(launchDirectory, connectDirectory);
-  const pool = createPostgresPool(configuration);
-  const store = new PostgresOperationalStore(pool, configuration.agentInstanceId);
+  const instance = await start(launchDirectory, connectDirectory);
+  const { store, configuration } = instance;
   try {
-    await store.bootstrapOwner(configuration);
     return await manageAllowlistWithStore(store, operation, configuration.discordGuildId, userId, displayName);
   } finally {
-    await store.close();
+    await instance.release();
   }
 }
 
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.
-export type RunDependencies = { heartbeat?: typeof runHeartbeat; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
+export type RunDependencies = { heartbeat?: typeof runHeartbeat; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {

@@ -62,7 +62,7 @@ The downstream controls stay in place regardless: 0060's Recap and secret valida
 ## Checks
 
 - **Whitespace:** `git diff --check` is clean. `git diff --no-index --check /dev/null docs/phase-6-claude-review-spike.md` reports no whitespace errors (exit 1 only because the file differs from /dev/null).
-- **Redaction grep:** I searched the spike doc, ADR 0010 and the fix handoff for `/Users/`, the username, `var/folders`, the org domain, `sk-` keys, emails, session UUIDs, and the CLAUDE.md marker words. The only hits were `task-00xx` false positives on the `sk-` pattern.
+- **Redaction grep:** I searched the spike doc, ADR 0010 and the fix handoff for `<local-path>`, the username, `var/folders`, the org domain, `sk-` keys, emails, session UUIDs, and the CLAUDE.md marker words. The only hits were `task-00xx` false positives on the `sk-` pattern.
 - **Source:** there are no `src/` changes.
 
 ## Next

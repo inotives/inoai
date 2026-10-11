@@ -28,7 +28,7 @@ Applied reviewer findings 1-3 from `2026-10-03-0827_phase6-0058_claude_reviewer.
 ## Checks
 
 - `git diff --check`: clean. `git diff --no-index --check /dev/null docs/phase-6-claude-review-spike.md`: no whitespace errors.
-- Redaction grep (`/Users/`, username, `var/folders`, org domain, `sk-`, the CLAUDE.md marker phrase): only false positive `task-0059`.
+- Redaction grep (`<local-path>`, username, `var/folders`, org domain, `sk-`, the CLAUDE.md marker phrase): only false positive `task-0059`.
 - Task Notes appended; status set to `review`.
 
 ## Next

@@ -54,7 +54,7 @@ B. **Low: the effect of `--system-prompt-snapshot off` was not exercised.** `doc
   - auth and usage failures (§7): expired auth and usage limit are explicit unknowns;
   - persistence and storage location (§8);
   - the CLI version is at `:4`.
-- **Redaction.** I grepped the spike doc and the fix handoff for `@`, UUID patterns, `sk-` tokens, and `/Users/`. Nothing matched. The only hits from a 32+ character token pattern are hyphenated filenames and prose, which are false positives. Identity fields are `<redacted>`, and tool IDs are `toolu_<redacted>`.
+- **Redaction.** I grepped the spike doc and the fix handoff for `@`, UUID patterns, `sk-` tokens, and `<local-path>`. Nothing matched. The only hits from a 32+ character token pattern are hyphenated filenames and prose, which are false positives. Identity fields are `<redacted>`, and tool IDs are `toolu_<redacted>`.
 - **Git.**
   - `git diff --check` is clean, and the untracked spike doc has no trailing whitespace or tabs.
   - `git diff --stat -- src/` is empty, so there are no `src/` changes.
