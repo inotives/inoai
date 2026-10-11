@@ -1,41 +1,80 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { bootstrapRuntimeHome } from "../platform/runtime-home.js";
+import { loadUiData } from "../platform/ui-data.js";
+import { openDatabase } from "../persistence/legacy-database.js";
+import { launchUi, parseUiOptions, UI_DEFAULT_PORT } from "../ui.js";
 
-import { launchUi } from "../ui.js";
+test("UI options default to port 8989 and accept a selected runtime", () => {
+  assert.deepEqual(parseUiOptions(["--connect-dir", ".robin-xai-test"]), { connectDirectory: ".robin-xai-test", port: UI_DEFAULT_PORT });
+  assert.deepEqual(parseUiOptions(["--connect-dir", ".inoai-connect-test", "--port", "9001"]), { connectDirectory: ".inoai-connect-test", port: 9001 });
+  assert.throws(() => parseUiOptions(["--port", "0"]), /Usage/);
+});
 
-test("launches a distinct sibling UI process for each selected SQLite path", async () => {
-  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+test("local UI binds to loopback and serves the dark tab shell", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-test-"));
+  await bootstrapRuntimeHome(deploymentDirectory, ".robin-xai-test");
+  const ui = await launchUi(deploymentDirectory, ".robin-xai-test", 0);
   try {
-    const home = join(deployment, ".inoai-connect-2");
-    const database = join(home, "inoai.sqlite");
-    const otherHome = join(deployment, ".inoai-connect-3");
-    const otherDatabase = join(otherHome, "inoai.sqlite");
-    await mkdir(join(deployment, "inoai-ui.app"));
-    await mkdir(home);
-    await mkdir(otherHome);
-    await writeFile(database, "unchanged");
-    await writeFile(otherDatabase, "also unchanged");
-
-    const calls: Array<{ command: string; args: string[]; detached: boolean }> = [];
-    await launchUi(deployment, ".inoai-connect-2", (nextCommand, nextArgs, options) => {
-      calls.push({ command: nextCommand, args: nextArgs, detached: options.detached === true });
-      return { unref() {} };
+    const address = ui.server.address();
+    assert.ok(address && typeof address === "object");
+    assert.equal(address.address, "127.0.0.1");
+    const html = await new Promise<string>((resolve, reject) => {
+      const response = request({ host: "127.0.0.1", port: address.port, path: "/" }, (reply) => {
+        let body = "";
+        reply.setEncoding("utf8");
+        reply.on("data", (chunk) => { body += chunk; });
+        reply.on("end", () => resolve(body));
+      });
+      response.on("error", reject);
+      response.end();
     });
-    await launchUi(deployment, ".inoai-connect-3", (nextCommand, nextArgs, options) => {
-      calls.push({ command: nextCommand, args: nextArgs, detached: options.detached === true });
-      return { unref() {} };
-    });
-
-    assert.deepEqual(calls, [
-      { command: "open", args: ["-n", join(deployment, "inoai-ui.app"), "--args", "--database", database], detached: true },
-      { command: "open", args: ["-n", join(deployment, "inoai-ui.app"), "--args", "--database", otherDatabase], detached: true },
-    ]);
-    assert.equal(await readFile(database, "utf8"), "unchanged");
-    assert.equal(await readFile(otherDatabase, "utf8"), "also unchanged");
+    for (const tab of ["Overview", "Conversations", "Memory"]) assert.match(html, new RegExp(`>${tab}<`));
+    assert.equal(html.includes(">Sessions<"), false);
+    assert.equal(html.includes(">Events<"), false);
+    assert.equal(html.includes(">Health<"), false);
+    for (const field of ["ID", "Workspace", "Transport / direction", "State", "Created at", "Updated at"]) assert.match(html, new RegExp(`>${field}<`));
+    assert.match(html, /Created at from/);
+    assert.match(html, /Created at to/);
+    assert.match(html, /agent\.md/);
+    assert.match(html, /Skills &amp; tools/);
+    for (const field of ["Origin", "Memory review", "Memory created at from", "Memory created at to"]) assert.match(html, new RegExp(field));
+    assert.ok(html.indexOf('id="overview-panel"') < html.indexOf('id="conversations-panel"'));
+    assert.ok(html.indexOf('id="conversations-panel"') < html.indexOf('<table class="activity message-table"'));
+    assert.match(html, /data-theme="dark"/);
+    assert.match(html, /Fixture-driven preview/);
+    assert.equal(html.includes(".env"), false);
   } finally {
-    await rm(deployment, { recursive: true, force: true });
+    await new Promise<void>((resolve) => ui.server.close(() => resolve()));
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
+test("UI data reads the selected SQLite home and redacts secret-like content", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-data-test-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".robin-xai-test");
+  await writeFile(home.agentFile, "# Agent\nTOKEN=do-not-return\n", "utf8");
+  const database = openDatabase(home);
+  database.prepare("INSERT INTO users (transport, workspace_id, external_user_id) VALUES (?, ?, ?)").run("discord", "workspace-test", "owner");
+  database.prepare("INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id, agent_provider, agent_session_id, project_path) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)").run("discord", "workspace-test", "parent", "conversation", "external", "codex", "session", deploymentDirectory);
+  database.prepare("INSERT INTO messages (session_id, transport, workspace_id, external_message_id, direction, body) VALUES (1, ?, ?, ?, ?, ?)").run("discord", "workspace-test", "external", "user", "TOKEN=do-not-return");
+  database.prepare("INSERT INTO memories (body, origin) VALUES (?, ?)").run("Use the local database", "manual");
+  database.close();
+  try {
+    const data = await loadUiData(home);
+    assert.equal(data.profile.provider, "codex");
+    assert.equal(data.profile.status, "stopped");
+    assert.deepEqual(data.profile.workspaceIds, ["workspace-test"]);
+    assert.equal(data.messages[0]?.body, "TOKEN=[redacted]");
+    assert.equal(data.memories[0]?.body, "Use the local database");
+    assert.equal(data.agentMarkdown.includes("do-not-return"), false);
+    assert.equal(JSON.stringify(data).includes("discord"), true);
+    assert.equal(JSON.stringify(data).includes("do-not-return"), false);
+  } finally {
+    await rm(deploymentDirectory, { recursive: true, force: true });
   }
 });

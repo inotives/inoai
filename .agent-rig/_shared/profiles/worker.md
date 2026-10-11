@@ -65,16 +65,39 @@ If a similar global skill exists, assume the AgentRig-local version is the proje
 
 Read `.agent-rig/_shared/context.md` for the coordination contract. The
 planner-manager owns task-state and dependency changes. Write a `review`
-handoff when implementation is ready. Set `blocked` only for a real blocker.
-Do not set `done`, unblock dependencies, or start a nested AgentRig loop.
+handoff when implementation is ready. For a real blocker, write a `blocked`
+handoff to `planner`; the planner-manager sets the task to `blocked`. Do not
+set `done`, unblock dependencies, or start a nested AgentRig loop.
 
 Read `.agent-rig/_shared/context.md`, the task, and affected code. Implement the smallest viable change and run the smallest relevant checks before handoff. If a check cannot run, state why.
 
-Use the project-local `agent-rig tasks ...` CLI for every task status and handoff mutation. Find ready tasks with `agent-rig tasks --status ready` and inspect them with `agent-rig tasks show <task-id>`. Prefer tasks assigned to `<agent>`. When work starts, manually set the task status to `in_progress`; when implementation is ready for review, set it to `review` and write a worker handoff. If the active provider is SQLite, never edit migrated task or handoff Markdown; those files are historical reference only. Do not commit or push.
+Use the project-local `agent-rig tasks ...` CLI for every task status and handoff mutation. Find ready tasks with `agent-rig tasks --status ready` and inspect them with `agent-rig tasks show <task-id>`. Prefer tasks assigned to `<agent>`. When work starts and the task is not already `in_progress`, set it to `in_progress`; when implementation is ready for review, set it to `review` and write a worker handoff. If the active provider is SQLite, never edit migrated task or handoff Markdown; those files are historical reference only. Do not commit or push.
 
 When fixing reviewer findings, read both the worker and reviewer handoffs first, make only the focused fix, verify it, and write a new handoff before returning the task to review.
 
 If you discover a reusable implementation pattern, repo quirk, or out-of-norm event that future worker or reviewer sessions should know, write a short note under `.agent-rig/_shared/notes/`. Skip routine progress notes.
+
+## Safe Operations
+
+These rules are mandatory. A test run once deleted files outside the repository.
+
+- Do not run a command, script, or test that deletes, moves, or overwrites files outside the repository and a temporary directory that you created.
+- A test or script that deletes files takes its root directory as a parameter. Tests pass a new temporary directory as the root. Tests never use the home directory, `/`, or the current directory as the root.
+- Before you delete a path that comes from a variable, check that the variable is not empty and that its real path is inside the directory that you created.
+- Run mutation tests, fault-injection tests, generated scripts, and real agent processes through `.agent-rig/_shared/tools/sandbox-run.sh`, with `HOME` set to a temporary directory.
+- A reviewer records `changes_requested` for a test or script that deletes outside a temporary root that it receives as a parameter.
+- A planner names the sandbox runner in the brief of every task that deletes files, runs generated code, or starts a real agent.
+
+Call the sandbox runner like this:
+
+```sh
+.agent-rig/_shared/tools/sandbox-run.sh --allow-write <directory> -- <command> [arguments]
+```
+
+- Give each directory that the command must write to its own `--allow-write <directory>`.
+- The runner refuses the home directory and a directory that contains it. Do not set `HOME` to a folder inside `$TMPDIR` or `/private/tmp` and also use `--allow-tmp`, because `$TMPDIR` then contains `HOME`. Use `--allow-write <directory>` for a temporary directory that does not contain `HOME`. To allow writes inside `HOME`, allow a subfolder of it, for example `--allow-write "$HOME/.cache"`.
+- A write to a `mktemp` folder or to `$TMPDIR` is denied unless you use `--allow-tmp` or an `--allow-write` covers it. The only error is "Operation not permitted".
+- The runner cannot start inside another sandbox that uses a different profile. In that case it exits with status 71 and does not run the command.
 
 ## Human Escalation
 

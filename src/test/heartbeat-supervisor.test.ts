@@ -92,6 +92,32 @@ test("SQLite restart counts failure and timeout and resets policy for replacemen
   await f.supervisor.stop();
 });
 
+test("health checks record recovery without changing restart policy", async () => {
+  const records: Array<{ event_type: string; detail: string }> = [];
+  const f = fixture({ record: async (event) => { records.push(event); } });
+  await flush();
+  f.setResult({ ...healthy, query: "failed" });
+  await f.clock.advance(HEARTBEAT_INTERVAL_MS);
+  f.setResult(healthy);
+  await f.clock.advance(HEARTBEAT_INTERVAL_MS);
+  assert.deepEqual(records.map((event) => event.event_type), ["heartbeat_check", "heartbeat_check", "heartbeat_recovery"]);
+  assert.equal(records.some((event) => event.detail.includes("postgres")), false);
+  await f.supervisor.stop();
+});
+
+test("health event write failures are local and do not restart the child", async () => {
+  const logs: SupervisorEvent[] = [];
+  const f = fixture({
+    record: async () => { throw new Error("database secret"); },
+    log: async (event) => { logs.push(event); },
+  });
+  await flush();
+  await f.clock.advance(HEARTBEAT_INTERVAL_MS);
+  assert.equal(f.children.length, 1);
+  assert.ok(logs.includes("health-event-failed"));
+  await f.supervisor.stop();
+});
+
 test("restart waits ten seconds then kills and waits for confirmed exit", async () => {
   const f = fixture();
   await flush();
