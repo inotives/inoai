@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { start, validate } from "../app/application.js";
-import { HealthPolicy, probeHealth, sqliteHealthProbes } from "../heartbeat/health.js";
-import { bootstrapRuntimeHome } from "../platform/runtime-home.js";
+import { start, validate } from "../inoai/app.js";
+import { HealthPolicy, probeHealth, sqliteHealthProbes } from "../inoai/heartbeat/health.js";
+import { bootstrapRuntimeHome } from "../inoai/agent-instance/runtime-home.js";
 
 const environment = `DISCORD_BOT_TOKEN=acceptance-placeholder
 DISCORD_GUILD_ID=guild

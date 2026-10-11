@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { ClaudeProbeEvent } from "../concurrency-probe.js";
-import { claudeProbeArgs, claudeProbeLeftoverWarning, killProbe, probeClaudeConcurrency, probeShowsConcurrentExecution, probeShowsConcurrentStreaming } from "../concurrency-probe.js";
+import type { ClaudeProbeEvent } from "../inoai/connectors/agent-runtime/concurrency-probe.js";
+import { claudeProbeArgs, claudeProbeLeftoverWarning, killProbe, probeClaudeConcurrency, probeShowsConcurrentExecution, probeShowsConcurrentStreaming } from "../inoai/connectors/agent-runtime/concurrency-probe.js";
 
 const threads = ["A", "B"];
 const notice = (method: string, threadId: string, atMs: number, item?: Record<string, unknown>) => ({
@@ -213,7 +213,7 @@ test("Claude probe returns false when the CLI cannot be spawned", async () => {
   const fake = await fakeClaudeHome("pass");
   try {
     const script = join(fake.dir, "spawn-failure.mjs");
-    const probeModule = new URL("../concurrency-probe.js", import.meta.url).href;
+    const probeModule = new URL("../inoai/connectors/agent-runtime/concurrency-probe.js", import.meta.url).href;
     await writeFile(script, `import { probeClaudeConcurrency } from ${JSON.stringify(probeModule)};
 process.stdout.write(JSON.stringify(await probeClaudeConcurrency({ executable: ${JSON.stringify(join(fake.dir, "missing-claude"))}, homeDir: ${JSON.stringify(fake.home)} })));`);
     const child = spawn(process.execPath, [script], { detached: true, stdio: ["ignore", "pipe", "ignore"] });

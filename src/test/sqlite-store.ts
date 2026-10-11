@@ -6,10 +6,10 @@ import {
   failRemainingResponseChunks, failResponseChunk, getSession, listEvents, listMemories, listMessages,
   listPendingResponseChunks, markRuntimeStarted, messagesForMemoryReview, recoverStaleWork, rebindAgentSession,
   resetSession, softDeleteMemory, upsertUser,
-} from "../database.js";
-import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../operational-store.js";
-import type { Configuration } from "../config.js";
-import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MessageRecord, MemoryReviewRecord } from "../database.js";
+} from "../inoai/connectors/persistence/sqlite/legacy-database.js";
+import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../inoai/persistence/operational-store.js";
+import type { Configuration } from "../inoai/agent-instance/config.js";
+import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MessageRecord, MemoryReviewRecord } from "../inoai/connectors/persistence/sqlite/legacy-database.js";
 
 export function sqliteStore(database: DatabaseSync): OperationalStore {
   const store: OperationalStore = {

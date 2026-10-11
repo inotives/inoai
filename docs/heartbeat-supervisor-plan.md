@@ -76,7 +76,7 @@ usable with another runtime home through `--connect-dir`.
    health results, timing, and child lifecycle. Reuse platform runtime-home
    lock inspection and persistence PostgreSQL helpers instead of duplicating
    lock or lease rules.
-2. Extend the existing CLI parser in `src/app/application.ts` with the
+2. Extend the existing CLI parser in `src/inoai/app.ts` with the
    foreground heartbeat command and its `--connect-dir` handling. The
    supervisor starts the compiled inoai executable directly with Node rather
    than invoking a shell or `npm`.
