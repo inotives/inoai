@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { startAgentSession } from "../application/conversation/agent-session.js";
-import { classifyIncomingMessage } from "../application/conversation/inbound-policy.js";
-import { manageMemoryWithStore } from "../application/memory/memory-operations.js";
-import { defaultAgentProfile } from "../platform/agent-profile.js";
+import { startAgentSession } from "../inoai/conversation/agent-session.js";
+import { classifyIncomingMessage } from "../inoai/conversation/inbound-policy.js";
+import { manageMemoryWithStore } from "../inoai/memory/memory-operations.js";
+import { defaultAgentProfile } from "../inoai/agent-instance/profile.js";
 
 test("conversation application policy uses its owned store port", async () => {
   const user = { id: 7 };

@@ -4,11 +4,11 @@ import test from "node:test";
 
 import type { Pool } from "pg";
 
-import { createProvisioningPlan, renderProvisioningSql, type AgentProvisioningInput } from "../postgres-provision.js";
-import { runMigrations } from "../postgres-migrations.js";
-import { createPostgresPool } from "../postgres.js";
-import { acquireAgentInstanceLease } from "../postgres-lease.js";
-import { PostgresOperationalStore } from "../operational-store.js";
+import { createProvisioningPlan, renderProvisioningSql, type AgentProvisioningInput } from "../inoai/connectors/persistence/postgres/provision.js";
+import { runMigrations } from "../inoai/migrations/postgres.js";
+import { createPostgresPool } from "../inoai/connectors/persistence/postgres/postgres.js";
+import { acquireAgentInstanceLease } from "../inoai/connectors/persistence/postgres/lease.js";
+import { PostgresOperationalStore } from "../inoai/persistence/operational-store.js";
 
 const adminUrl = process.env.POSTGRES_INTEGRATION_URL?.trim();
 const runtimeUrl = process.env.POSTGRES_INTEGRATION_RUNTIME_URL?.trim();
