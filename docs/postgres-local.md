@@ -67,6 +67,13 @@ cannot be verified safely. See [ADR 0015](adr/0015-runtime-home-lock-stale-recov
 for the recovery decision and [CONTEXT.md](../CONTEXT.md) for the lock/lease
 terminology.
 
+The optional external [Heartbeat Supervisor](heartbeat-operations.md) checks
+this lease and a lightweight query every 60 minutes. This is separate from
+`POSTGRES_LEASE_REFRESH_MS`, which controls the core's lease refresh. The
+supervisor reads ownership state without acquiring or extending the lease.
+It tolerates one failed database check and restarts after two consecutive
+failures. Normal core startup and lease behavior remain unchanged.
+
 Normal startup requires the runtime role to reach PostgreSQL, the numbered
 migrations to have been applied by an administrator, and the configured
 `AGENT_INSTANCE_ID` to have been provisioned. Startup does not create an

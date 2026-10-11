@@ -254,6 +254,8 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- profile validate --connect-dir <home>` | Validate a runtime-home `agent.md` without starting Discord. |
 | `npm start` | Start the core for the default runtime home. |
 | `npm start -- --connect-dir <home>` | Start a named runtime home. `npm run validate`, `ui`, and `memory` accept the same option. |
+| `npm start -- heartbeat --connect-dir .inoai-connect-planner` | Run the optional supervisor in the foreground with one inoai child. |
+| `npm start -- heartbeat launchagent render --connect-dir .inoai-connect-planner` | Print the optional macOS LaunchAgent plist without installing it. |
 | `npm start -- memory add "<text>"` | Add a Manual Memory Entry to PostgreSQL without starting an Agent Runtime. |
 | `npm start -- memory list` | List active Memory with `origin` (`manual` or `review`); review-made entries also show `review_id` and `source_message_id`. |
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
@@ -280,6 +282,32 @@ FROM agent_inoai_planner.users
 WHERE transport = 'discord'
 ORDER BY id;
 ```
+
+## Heartbeat Supervisor
+
+The optional external supervisor starts one inoai child and checks its process,
+local lock, PostgreSQL lease, and database query every 60 minutes. Normal
+`npm start` behavior is unchanged. `.inoai-connect-planner` is the primary test
+runtime. Stop its existing core or supervisor before starting another owner.
+
+Build first, then run the supervisor in the foreground:
+
+```sh
+npm run build
+npm start -- heartbeat --connect-dir .inoai-connect-planner
+```
+
+Use Ctrl-C to stop the supervisor and its child. Supervisor events are recorded
+in `~/Library/Logs/inoai/heartbeat.log`; failures are recorded in
+`~/Library/Logs/inoai/heartbeat-error.log`. Child stdout and stderr are discarded.
+The child emits the normal Discord startup notice after a successful restart.
+
+An optional user-level macOS LaunchAgent supports explicit installation and
+service controls. Installation does not load the service. Login start and
+KeepAlive are disabled by default. See the
+[Heartbeat operations guide](docs/heartbeat-operations.md) for prerequisites,
+installation, manual activation, stop/unload/uninstall, failure behavior, and
+isolated acceptance checks.
 
 ## Runtime Behavior
 

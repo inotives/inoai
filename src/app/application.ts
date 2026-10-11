@@ -1,4 +1,6 @@
 import { dirname } from "node:path";
+import { manageLaunchAgent, parseLaunchAgentCommand } from "../heartbeat/launchagent.js";
+import { runHeartbeat } from "../heartbeat/foreground.js";
 
 import type { AgentRuntime } from "../application/conversation/runtime-port.js";
 import { ApprovalRelay, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "../transport/approval-relay.js";
@@ -399,10 +401,18 @@ export async function manageAllowlist(operation: AllowlistOperation, userId: str
 }
 
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.
-export type RunDependencies = { schedulerClock?: SchedulerClock; storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
+export type RunDependencies = { heartbeat?: typeof runHeartbeat; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (pool: unknown, runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {
+  if (args[0] === "heartbeat" && args[1] === "launchagent") {
+    console.log(await (supplied.launchagent ?? manageLaunchAgent)(process.cwd(), parseLaunchAgentCommand(args.slice(2))));
+    return;
+  }
+  if (args[0] === "heartbeat") {
+    await (supplied.heartbeat ?? runHeartbeat)(process.cwd(), parseConnectDirectory(args.slice(1)));
+    return;
+  }
   if (args[0] === "allowlist:add" || args[0] === "allowlist:disable") {
     const command = parseAllowlistCommand(args);
     const result = await manageAllowlist(command.operation, command.userId, command.displayName, process.cwd(), command.connectDirectory);

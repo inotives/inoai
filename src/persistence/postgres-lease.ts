@@ -19,6 +19,18 @@ type Queryable = Pick<Pool, "query">;
 
 const leaseLockPrefix = "inoai.agent_instance_lease:";
 
+/** Read ownership freshness without acquiring or extending the child's lease. */
+export async function agentInstanceLeaseFresh(pool: Queryable, agentInstanceId: string): Promise<boolean> {
+  const rows = await queryRows<{ fresh: boolean }>(pool, `
+    SELECT EXISTS (
+      SELECT 1 FROM inoai_control.agent_instance_leases lease
+      JOIN inoai_control.agent_instances instance USING (agent_instance_id)
+      WHERE lease.agent_instance_id = $1 AND lease.owner_token IS NOT NULL
+        AND lease.expires_at > now() AND instance.disabled_at IS NULL
+    ) AS fresh`, [normalizeAgentInstanceId(agentInstanceId)]);
+  return rows[0]?.fresh === true;
+}
+
 function safeError(): Error {
   return new Error("PostgreSQL Agent Instance lease operation failed");
 }
