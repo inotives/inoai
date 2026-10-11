@@ -19,7 +19,7 @@ import { OpenCodeRuntime } from "../runtime/opencode-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "../platform/runtime-home.js";
 import { createChatTransport } from "../transport/discord.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "../transport/discord.js";
-import { launchUi } from "../platform/ui.js";
+import { launchUi, parseUiOptions } from "../platform/ui.js";
 import type { OperationalStore } from "../persistence/operational-store.js";
 import { openDatabase } from "../persistence/legacy-database.js";
 import { createSqliteOperationalStore } from "../persistence/sqlite-operational-store.js";
@@ -430,7 +430,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     return;
   }
   if (args[0] === "ui") {
-    await launchUi(process.cwd(), parseConnectDirectory(args.slice(1)));
+    const options = parseUiOptions(args.slice(1));
+    await launchUi(process.cwd(), options.connectDirectory, options.port);
     return;
   }
   if (args[0] === "validate") {

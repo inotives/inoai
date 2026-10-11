@@ -27,7 +27,7 @@ Project-local AgentRig instructions, skills, and tools take precedence over simi
 
 ### AgentRig workflow storage
 
-- This repository uses AgentRig `0.1.8` with SQLite as the canonical workflow provider.
+- This repository uses AgentRig `0.1.9` with SQLite as the canonical workflow provider.
 - The active provider is recorded in `.agent-rig/_shared/agent-rig.json`; use `agent-rig status --json` to verify it before workflow work.
 - The live task and handoff store is `.agent-rig/_shared/workflow.sqlite`. Use AgentRig commands for task/status/handoff mutations; do not edit SQLite directly.
 - The original Markdown task and task-linked handoff files remain historical reference material after migration. Do not switch the provider back to Markdown without an explicit migration decision.
@@ -40,36 +40,51 @@ Project-local AgentRig instructions, skills, and tools take precedence over simi
 - Read `docs/implementation-phases.md` before implementation work.
 - Read `docs/sqlite-schema.md` before changing persistence.
 - Read `CONTEXT.md` for domain terms and `docs/plan-review.md` for accepted decisions.
-- If an AgentRig task exists, its task file is the source of truth for its assigned scope.
+- If an AgentRig task exists, its SQLite task record is the source of truth for its assigned scope. Any migrated Markdown task file is historical reference only.
+- For the current SPA phase, also read `docs/spa-agent-ui-phase-plan.md` and `docs/adr/0021-health-timeline-history.md`.
+- Do not start live SPA data-bound tasks until the fixture-driven prototype has
+  an explicit human approval recorded in its AgentRig handoff.
 
 ## Task workflow
 
-Shared AgentRig tasks live in `.agent-rig/_shared/tasks/`.
+AgentRig task briefs are read through the project-local AgentRig commands.
+Migrated Markdown files in `.agent-rig/_shared/tasks/` are historical reference
+only when SQLite is active.
 
 Before starting a task:
 
-1. Read the assigned task file and its YAML frontmatter.
+1. Read the assigned task with `agent-rig tasks show <task-id>`.
 2. Check `depends_on` and `status`.
 3. Work only on tasks ready for the current role.
-4. Update task state through AgentRig commands when available.
+4. Update task and handoff state through the project-local AgentRig commands.
 
 ```text
 agent-rig tasks
 agent-rig tasks next --agent <agent-name>
 agent-rig tasks next --agent <agent-name> --claim
 agent-rig tasks show <task-id>
+agent-rig tasks create <title> --body-file <path>
+agent-rig tasks update-body <task-id> --body-file <path>
 agent-rig tasks set-status <task-id> <status>
 agent-rig tasks done <task-id> --message "<summary>"
 agent-rig tasks block <task-id> --reason "<reason>"
+agent-rig tasks handoff <task-id> --sender <role> --recipient <role> --status <status> --message "<summary>"
 ```
 
 ## Architecture
 
-- The portable core and Electron analytics UI are separate applications.
-- A deployment folder contains the core executable, sibling Electron bundle, and one or more ignored `.inoai-connect*` runtime homes.
+- The portable core and local read-only SPA UI are separate applications.
+- A deployment folder contains the core executable, sibling SPA UI bundle, and one or more ignored `.inoai-connect*` runtime homes.
 - Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, SQLite archive, Memory, approvals, and lock file.
 - Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), and OpenCode (Phase 5b) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
-- The Electron UI reads a selected runtime home's SQLite file directly. It must never read `.env` or expose credentials.
+- The SPA UI reads only the selected runtime home's SQLite file through its local read-only data boundary. It must never read `.env` or expose credentials.
+
+## Technical English
+
+Use short, direct sentences in planning documents, tasks, handoffs, ADRs, and
+agent instructions. Use one term for one concept. Prefer active voice and
+common words. Keep paths, identifiers, and command names exact. State
+conditions, actions, and expected results clearly.
 
 ## Working rules
 
@@ -85,13 +100,10 @@ agent-rig tasks block <task-id> --reason "<reason>"
 
 ## Handoff
 
-When AgentRig is active, write task handoffs to `.agent-rig/_shared/handoff_logs/` using:
-
-```text
-<date-YYYY-MM-DD-hhmm>_<session_id>_<tool>_<role>.md
-```
-
-Include YAML frontmatter with `agent`, `role`, `tool`, `task`, `task_title`, and `status` (`done`, `blocked`, or `handoff`). If blocked, record the blocker in the AgentRig task and write a handoff.
+When AgentRig is active, record task handoffs with `agent-rig tasks handoff`.
+The SQLite handoff record is canonical. Do not edit migrated Markdown task or
+handoff files directly. If blocked, record the blocker in the AgentRig task
+and send a `blocked` handoff to the planner.
 
 Planner phase summaries without a task ID belong in `.agent-rig/_shared/phase_handoffs/` and must not be presented as task-level worker or reviewer handoffs.
 
@@ -99,16 +111,16 @@ Planner phase summaries without a task ID belong in `.agent-rig/_shared/phase_ha
 
 1. Start a new phase with `grill-with-docs`: read the phase and existing docs, ask one decision at a time with a recommendation, and record material tradeoffs in an ADR.
 2. Finalize the phase documentation before implementation. Check the current branch; when starting from `main`, create and switch to a phase feature branch before creating tasks or changing project files.
-3. Split the phase into AgentRig tasks with explicit `depends_on` edges and one final reviewer task.
+3. Split the approved phase into AgentRig tasks with explicit `depends_on` edges and one final integrated-review task. Every task must include Context, Goal, Scope, Planner Notes, Implementation Plan, and Acceptance Criteria.
 4. Set only dependency-free work to `ready`. Keep every downstream task `blocked`; satisfying a dependency does not automatically authorize starting all newly eligible work.
 5. Drive implementation one task at a time through this manager loop:
    1. Unblock and claim the next eligible worker task.
-   2. Spawn a worker agent. It reads the worker role, task, source docs, and relevant prior handoff; changes only its assigned scope; runs focused tests, typecheck, build, and diff checks; then sets the task to `review` and writes a worker handoff. It does not commit or push.
-   3. Spawn an independent reviewer agent. It reads the reviewer role, task, worker handoff, source docs, and current diff; runs focused checks; makes no implementation edits; and writes a reviewer handoff.
-   4. If review has no findings, mark the task `done` and unblock only the next selected dependent task.
-   5. If review finds an issue, set the same task back to `in_progress` and spawn a worker to read both handoffs, implement the focused fix, add regression coverage, verify it, and write a new handoff. Re-run independent review until clean; do not unlock downstream work meanwhile.
+   2. Spawn a worker agent. It reads the worker role, task, source docs, and relevant prior handoff; changes only its assigned scope; runs focused tests, typecheck, build, and diff checks; then sets the task to `review` and sends a worker handoff. It does not commit or push.
+   3. Spawn an independent reviewer agent. It reads the reviewer role, task, worker handoff, source docs, and current diff; runs focused checks; makes no implementation edits; and sends a reviewer handoff with `approved`, `changes_requested`, or `blocked` status.
+   4. If review is clean, record the `approved` handoff decision, mark the task `done`, and unblock only the next selected dependent task.
+   5. If review requests changes, keep the task in `review` and spawn the same worker to read both handoffs, implement the focused fix, add regression coverage, verify it, and send a new `review` handoff. Re-run independent review until clean; do not unlock downstream work meanwhile. If the reviewer reports `blocked`, set the task to `blocked` and resolve the blocker with the human.
 6. After all worker tasks pass task-level review, unblock and claim the final reviewer task. Run the phase-wide acceptance checks against the integrated diff and mark it `done` only when clean.
-7. Write the planner phase handoff with verification evidence and any resolved review findings.
+7. Write the planner phase handoff with verification evidence and any resolved review findings. After merge, archive the completed phase document under `docs/_archived/` before beginning the next phase.
 8. Commit, push, or open a pull request only when the user explicitly requests it.
 
 ## Coding guidelines
@@ -148,4 +160,4 @@ This file is repository guidance, not an agent persona. The core copies a defaul
 
 ## V1 boundaries
 
-V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. Defer scheduled Tasks, remote UI, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
+V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. The SPA UI is local-only and read-only in its initial phase. Defer scheduled Tasks, remote UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.

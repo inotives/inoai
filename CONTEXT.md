@@ -143,3 +143,15 @@ It contains human-readable instructions, a machine-readable manifest, and
 optional local scripts or references. A Skill Package is trusted only after its
 declared capabilities and content hash are approved in the runtime home.
 _Avoid_: Agent Profile, provider plugin, arbitrary tool
+
+**Heartbeat Check**:
+One scheduled observation of an Agent Instance's child process, runtime-home
+lock, and SQLite availability. A heartbeat check is operational telemetry and
+does not itself imply a restart.
+_Avoid_: Turn, health event, liveness decision
+
+**Health Timeline**:
+A rolling 24-hour view of scheduled Heartbeat Checks. It shows observed status
+without interpolating missing observations; detailed sanitized status belongs
+to the Health view rather than the timeline label.
+_Avoid_: Sparkline, uptime guarantee, conversation timeline

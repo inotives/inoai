@@ -15,13 +15,15 @@ export type SupervisorChild = {
   once(event: "exit" | "error", listener: () => void): unknown;
   kill(signal: "SIGTERM" | "SIGKILL"): boolean;
 };
-export type SupervisorEvent = "started" | "healthy" | "degraded" | "restart" | "child-exit" | "spawn-failed" | "retry-limit" | "health-blocked" | "supervisor-failed" | "stopped";
+export type SupervisorEvent = "started" | "healthy" | "degraded" | "restart" | "child-exit" | "spawn-failed" | "retry-limit" | "health-blocked" | "health-event-failed" | "supervisor-failed" | "stopped";
 export type SupervisorLog = (event: SupervisorEvent, error?: boolean) => Promise<void>;
+export type HeartbeatEvent = { event_type: "heartbeat_check" | "heartbeat_recovery"; detail: string };
 export type SupervisorDependencies = {
   spawn(): SupervisorChild;
   probe(pid: number): Promise<HealthResult>;
   clock: ProbeTimer & { now(): number };
   log: SupervisorLog;
+  record?: (event: HeartbeatEvent) => Promise<void>;
 };
 
 /** Only fixed event names are written. Never pass child output or raw errors here. */
@@ -55,6 +57,7 @@ export class HeartbeatSupervisor {
   private started = false;
   private attempts: number[] = [];
   private work: Promise<void> = Promise.resolve();
+  private databaseUnavailable = false;
   private resolveFinished!: (code: number) => void;
   readonly finished = new Promise<number>((resolve) => { this.resolveFinished = resolve; });
 
@@ -150,7 +153,15 @@ export class HeartbeatSupervisor {
     if (this.stopping || this.child !== owned || owned.exited) return;
     const result = await this.dependencies.probe(owned.process.pid!);
     if (this.stopping || owned.exited) return;
+    const recovering = this.databaseUnavailable && result.query === "healthy";
+    this.databaseUnavailable = result.query !== "healthy";
     const decision = this.policy.evaluate(result);
+    await this.record({ event_type: "heartbeat_check", detail: JSON.stringify({
+      status: decision.healthy ? "healthy" : decision.action === "blocked" ? "blocked" : "degraded",
+      child: result.child, lock: result.lock, query: result.query,
+      action: decision.action, consecutive_database_failures: decision.consecutiveDatabaseFailures,
+    }) });
+    if (recovering) await this.record({ event_type: "heartbeat_recovery", detail: JSON.stringify({ status: "recovered", query: result.query }) });
     if (decision.action === "blocked") {
       await this.dependencies.log("health-blocked", true);
       this.stopping = true;
@@ -165,6 +176,12 @@ export class HeartbeatSupervisor {
       await this.dependencies.log(decision.healthy ? "healthy" : "degraded");
       this.schedule(HEARTBEAT_INTERVAL_MS, () => this.check(owned));
     }
+  }
+
+  private async record(event: HeartbeatEvent): Promise<void> {
+    if (!this.dependencies.record) return;
+    try { await this.dependencies.record(event); }
+    catch { await this.dependencies.log("health-event-failed", true).catch(() => undefined); }
   }
 
   private async terminate(owned: OwnedChild): Promise<void> {
