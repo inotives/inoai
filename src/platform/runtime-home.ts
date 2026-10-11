@@ -120,7 +120,19 @@ export class RuntimeHomeLockedError extends Error {
   }
 }
 
-type ExistingLockState = "live" | "stale" | "unverifiable";
+export type RuntimeHomeLockState = "live" | "stale" | "unverifiable" | "malformed" | "missing" | "foreign";
+
+export type ProcessIdentityProbe = {
+  platform: string;
+  processAlive(pid: number): boolean | undefined;
+  processStartTime(pid: number): Promise<string | undefined>;
+};
+
+export const systemProcessIdentity: ProcessIdentityProbe = {
+  platform: process.platform,
+  processAlive,
+  processStartTime: getMacProcessStartTime,
+};
 
 function isLockRecord(value: unknown): value is RuntimeHomeLockRecord {
   return typeof value === "object" && value !== null
@@ -144,24 +156,31 @@ function processAlive(pid: number): boolean | undefined {
   }
 }
 
-async function inspectExistingLock(lockFile: string): Promise<ExistingLockState> {
-  if (process.platform !== "darwin") return "unverifiable";
+export async function inspectRuntimeHomeLock(
+  lockFile: string,
+  expectedPid?: number,
+  identity: ProcessIdentityProbe = systemProcessIdentity,
+): Promise<RuntimeHomeLockState> {
+  if (identity.platform !== "darwin") return "unverifiable";
 
   let record: unknown;
   try {
     record = JSON.parse(await readFile(lockFile, "utf8"));
-  } catch {
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    if (error instanceof SyntaxError) return "malformed";
     return "unverifiable";
   }
-  if (!isLockRecord(record)) return "unverifiable";
+  if (!isLockRecord(record)) return "malformed";
 
-  const alive = processAlive(record.pid);
+  const alive = identity.processAlive(record.pid);
   if (alive === undefined) return "unverifiable";
   if (!alive) return "stale";
 
-  const currentStart = await getMacProcessStartTime(record.pid);
+  const currentStart = await identity.processStartTime(record.pid);
   if (!currentStart) return "unverifiable";
-  return currentStart === record.started_at ? "live" : "stale";
+  if (currentStart !== record.started_at) return "stale";
+  return expectedPid === undefined || expectedPid === record.pid ? "live" : "foreign";
 }
 
 export async function acquireRuntimeHomeLock(home: RuntimeHome): Promise<() => Promise<void>> {
@@ -193,7 +212,7 @@ export async function acquireRuntimeHomeLock(home: RuntimeHome): Promise<() => P
       })());
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (await inspectExistingLock(home.lockFile) !== "stale") {
+      if (await inspectRuntimeHomeLock(home.lockFile) !== "stale") {
         throw new RuntimeHomeLockedError(home.directory);
       }
       try {
