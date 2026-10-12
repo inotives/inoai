@@ -32,6 +32,27 @@ The first health check runs 60 minutes after child launch. Checks do not send
 Discord requests; the child sends its normal startup notice. Use Ctrl-C or
 SIGTERM to stop the supervisor and child. Stop waits for confirmed child exit.
 
+## Operator follow-up: one-command service setup
+
+The foreground workflow is useful for diagnostics but is not a suitable normal
+deployment flow. An operator should not need to keep a terminal open, identify
+stale locks, or manually coordinate a core process and a supervisor. A stale
+lock is safe to reclaim only after the recorded owner is proven dead; database
+files and WAL/SHM files must never be removed as part of this recovery.
+
+Follow-up work should add one explicit setup command, for example:
+
+```sh
+npm start -- heartbeat setup --connect-dir .robin-xai-test
+```
+
+The command should install or replace the runtime's LaunchAgent, enable
+`RunAtLoad` and `KeepAlive`, load and kickstart the service, and verify the
+resolved service status. It should remain owner-local, preserve the existing
+lock safety rules, and report a clear recovery instruction when ownership is
+unverifiable. The existing `render`, `install`, `bootstrap`, and `kickstart`
+commands remain available for advanced diagnostics and migration.
+
 ## Logs and failure behavior
 
 ```sh

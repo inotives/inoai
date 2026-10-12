@@ -61,6 +61,28 @@ test("update replaces the package and revokes approval until reapproval", async 
   }
 });
 
+test("update restores the old package and approval when revocation fails", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-skill-rollback-"));
+  const sourceRoot = await mkdtemp(join(tmpdir(), "inoai-skill-source-"));
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    await installSkillPackage(home, await packageDirectory(sourceRoot));
+    await enableSkill(home, "local-helper", "owner", "2026-01-01T00:00:00.000Z");
+    const previousApproval = await readFile(home.skillsEnabledFile, "utf8");
+    const updatedSource = await packageDirectory(sourceRoot, "2.0.0");
+
+    await assert.rejects(
+      updateSkillPackage(home, updatedSource, async () => { throw new Error("injected revocation failure"); }),
+      /Cannot revoke skill approval after update: injected revocation failure/,
+    );
+    assert.equal(await readFile(join(home.skillsDirectory, "local-helper", "SKILL.md"), "utf8"), "# Local helper 1.0.0\n");
+    assert.equal(await readFile(home.skillsEnabledFile, "utf8"), previousApproval);
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+    await rm(sourceRoot, { recursive: true, force: true });
+  }
+});
+
 test("rejects malformed packages and package symlinks", async () => {
   const root = await mkdtemp(join(tmpdir(), "inoai-skill-invalid-"));
   try {

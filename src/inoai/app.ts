@@ -25,7 +25,8 @@ import { openDatabase } from "./connectors/persistence/sqlite/legacy-database.js
 import { createSqliteOperationalStore } from "./connectors/persistence/sqlite/operational-store.js";
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { loadAgentProfile } from "./agent-instance/profile.js";
-import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, updateSkillPackage } from "./skills/skill-lifecycle.js";
+import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
+import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
 
 export const appName = "inoai";
 export * from "./agent-instance/config.js";
@@ -369,27 +370,63 @@ function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation;
   return { operation, userId, ...(displayName === undefined ? {} : { displayName }), ...(connectDirectory === undefined ? {} : { connectDirectory }) };
 }
 
-type SkillOperation = "install" | "update" | "enable" | "disable" | "list";
-type SkillCommand = { operation: SkillOperation; connectDirectory?: string; packageDirectory?: string; skillId?: string; approvedBy?: string };
+export type SkillOperation = "add" | "install" | "update" | "enable" | "disable" | "list" | "remove";
+export type SkillCommand = { operation: SkillOperation; connectDirectory?: string; agent?: string; source?: string; packageDirectory?: string; skillId?: string; approvedBy?: string; yes?: boolean };
 
-function parseSkillsCommand(args: string[]): SkillCommand {
+export function resolveSkillConnectDirectory(agent?: string, connectDirectory?: string): string | undefined {
+  if (agent !== undefined && connectDirectory !== undefined) throw new Error("Use only one of --agent or --connect-dir");
+  if (agent !== undefined) {
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(agent)) throw new Error("--agent must be a safe Agent Instance name");
+    return `.inoai-connect-${agent}`;
+  }
+  return connectDirectory;
+}
+
+export function parseSkillsCommand(args: string[]): SkillCommand {
   const operation = args[0] as SkillOperation | undefined;
-  const usage = "Usage: inoai skills <install|update> --package-dir <path> | <enable|disable> --skill-id <id> [--approved-by <owner>] | list [--connect-dir .inoai-connect*]";
-  if (!operation || !["install", "update", "enable", "disable", "list"].includes(operation)) throw new Error(usage);
+  const usage = "Usage: inoai skills <add <source> --skill <id>|list|enable <id>|disable <id>|update <id>|remove <id> --yes> [--agent <name>|--connect-dir .inoai-connect*]";
+  if (!operation || !["add", "install", "update", "enable", "disable", "list", "remove"].includes(operation)) throw new Error(usage);
   const result: SkillCommand = { operation };
   const values = args.slice(1);
-  for (let index = 0; index < values.length; index += 2) {
+  const positional: string[] = [];
+  const flags = new Set<string>();
+  for (let index = 0; index < values.length; index += 1) {
     const flag = values[index];
-    if (flag === "--connect-dir" && values[index + 1]) { result.connectDirectory = values[++index]; continue; }
-    if (flag === "--package-dir" && values[index + 1]) { result.packageDirectory = values[++index]; continue; }
-    if (flag === "--skill-id" && values[index + 1]) { result.skillId = values[++index]; continue; }
-    if (flag === "--approved-by" && values[index + 1]) { result.approvedBy = values[++index]; continue; }
-    throw new Error(usage);
+    if (!flag.startsWith("--")) { positional.push(flag); continue; }
+    flags.add(flag);
+    if (flag === "--yes") { result.yes = true; continue; }
+    const value = values[++index];
+    if (!value || value.startsWith("--")) throw new Error(usage);
+    if (flag === "--connect-dir") result.connectDirectory = value;
+    else if (flag === "--agent") result.agent = value;
+    else if (flag === "--source") result.source = value;
+    else if (flag === "--package-dir") result.packageDirectory = value;
+    else if (flag === "--skill" || flag === "--skill-id") result.skillId = value;
+    else if (flag === "--approved-by") result.approvedBy = value;
+    else throw new Error(usage);
   }
-  if ((operation === "install" || operation === "update") && !result.packageDirectory) throw new Error(usage);
-  if ((operation === "enable" || operation === "disable") && !result.skillId) throw new Error(usage);
-  if (operation === "enable" && !result.approvedBy) throw new Error("Skill enable requires explicit --approved-by");
-  if ((operation === "list") && (result.packageDirectory || result.skillId || result.approvedBy)) throw new Error(usage);
+  const allowedFlags: Record<SkillOperation, string[]> = {
+    add: ["--connect-dir", "--agent", "--source", "--skill", "--skill-id"],
+    install: ["--connect-dir", "--agent", "--package-dir"],
+    update: ["--connect-dir", "--agent", "--package-dir", "--skill", "--skill-id"],
+    enable: ["--connect-dir", "--agent", "--skill", "--skill-id", "--approved-by"],
+    disable: ["--connect-dir", "--agent", "--skill", "--skill-id"],
+    list: ["--connect-dir", "--agent"],
+    remove: ["--connect-dir", "--agent", "--skill", "--skill-id", "--yes"],
+  };
+  if ([...flags].some((flag) => !allowedFlags[operation].includes(flag))) throw new Error(usage);
+  if (operation === "add") result.source ??= positional.shift();
+  if (["enable", "disable", "update", "remove"].includes(operation)) result.skillId ??= positional.shift();
+  if (operation === "install" || (operation === "update" && result.packageDirectory)) result.packageDirectory ??= positional.shift();
+  result.connectDirectory = resolveSkillConnectDirectory(result.agent, result.connectDirectory);
+  if (positional.length) throw new Error(usage);
+  if (operation === "add" && (!result.source || !result.skillId)) throw new Error(usage);
+  if (operation === "install" && !result.packageDirectory) throw new Error(usage);
+  if (operation === "update" && !result.skillId && !result.packageDirectory) throw new Error(usage);
+  if (["enable", "disable", "update", "remove"].includes(operation) && !result.skillId && !result.packageDirectory) throw new Error(usage);
+  if (operation === "enable") result.approvedBy ??= "owner";
+  if (operation === "remove" && !result.yes) throw new Error("Skill removal requires --yes confirmation");
+  if (operation === "list" && (result.source || result.packageDirectory || result.skillId || result.approvedBy || result.yes)) throw new Error(usage);
   return result;
 }
 
@@ -441,13 +478,20 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   if (args[0] === "skills") {
     const command = parseSkillsCommand(args.slice(1));
     const runtimeHome = await bootstrapRuntimeHome(process.cwd(), command.connectDirectory);
+    if (command.operation === "add") {
+      const installed = await acquireSkillPackage(runtimeHome, { source: command.source!, skill: command.skillId! });
+      console.log(JSON.stringify({ action: "add", id: installed.manifest.id, version: installed.manifest.version, hash: installed.hash, enabled: false }));
+      return;
+    }
     if (command.operation === "install") {
       const installed = await installSkillPackage(runtimeHome, command.packageDirectory!);
       console.log(JSON.stringify({ action: "install", id: installed.manifest.id, version: installed.manifest.version, hash: installed.hash, enabled: false }));
       return;
     }
     if (command.operation === "update") {
-      const installed = await updateSkillPackage(runtimeHome, command.packageDirectory!);
+      const installed = command.packageDirectory
+        ? await updateSkillPackage(runtimeHome, command.packageDirectory)
+        : await updateAcquiredSkillPackage(runtimeHome, command.skillId!);
       console.log(JSON.stringify({ action: "update", id: installed.manifest.id, version: installed.manifest.version, hash: installed.hash, enabled: false, approval_required: true }));
       return;
     }
@@ -458,6 +502,10 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     }
     if (command.operation === "disable") {
       console.log(JSON.stringify({ action: "disable", id: command.skillId, disabled: await disableSkill(runtimeHome, command.skillId!) }));
+      return;
+    }
+    if (command.operation === "remove") {
+      console.log(JSON.stringify({ action: "remove", id: command.skillId, removed: await removeSkill(runtimeHome, command.skillId!) }));
       return;
     }
     console.log(JSON.stringify((await listInstalledSkills(runtimeHome)).map((skill) => ({
