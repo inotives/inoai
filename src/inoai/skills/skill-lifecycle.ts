@@ -88,20 +88,38 @@ export async function installSkillPackage(home: RuntimeHome, sourceDirectory: st
   if (destinationExists && !update) {
     throw new SkillLifecycleError(`Skill is already installed: ${inspected.manifest.id}; use update to replace it`);
   }
+  const replacement = await replaceSkillPackage(home, source, inspected, destination, destinationExists);
+  if (replacement.backup) await rm(replacement.backup, { recursive: true, force: true });
+  return { ...inspected, directory: destination };
+}
+
+async function replaceSkillPackage(
+  home: RuntimeHome,
+  source: string,
+  inspected: InstalledSkill,
+  destination: string,
+  destinationExists: boolean,
+): Promise<{ backup?: string }> {
   await mkdir(home.skillsDirectory, { recursive: true, mode: 0o700 });
   const staging = join(home.skillsDirectory, `.staging-${inspected.manifest.id}-${randomUUID()}`);
+  const backup = destinationExists ? `${destination}.backup-${randomUUID()}` : undefined;
   try {
     await cp(source, staging, { recursive: true, errorOnExist: true, force: false });
     const staged = await inspectInstalledSkill(staging);
     if (staged.hash !== inspected.hash) throw new SkillLifecycleError("Staged skill hash changed during installation");
-    if (destinationExists) await rm(destination, { recursive: true, force: true });
-    await rename(staging, destination);
+    if (backup) await rename(destination, backup);
+    try {
+      await rename(staging, destination);
+    } catch (error) {
+      if (backup) await rename(backup, destination).catch(() => undefined);
+      throw error;
+    }
   } catch (error: unknown) {
     await rm(staging, { recursive: true, force: true }).catch(() => undefined);
     if (error instanceof SkillLifecycleError) throw error;
     throw new SkillLifecycleError(`Cannot install skill: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { ...inspected, directory: destination };
+  return { backup };
 }
 
 /** Enable only after an explicit owner approval. A revision must be approved again. */
@@ -123,11 +141,58 @@ export async function disableSkill(home: RuntimeHome, skillId: string): Promise<
   return true;
 }
 
+/** Remove a package only after its owner approval has been revoked. */
+export async function removeSkill(home: RuntimeHome, skillId: string): Promise<boolean> {
+  const destination = installedDirectory(home, skillId);
+  const document = await readTrust(home);
+  if (document.skills.some((record) => record.id === skillId)) {
+    throw new SkillLifecycleError(`Skill is enabled; disable it before removal: ${skillId}`);
+  }
+  try {
+    await lstat(destination);
+  } catch {
+    return false;
+  }
+  await rm(destination, { recursive: true, force: true });
+  return true;
+}
+
 /** Replace a staged package and revoke its prior approval. */
-export async function updateSkillPackage(home: RuntimeHome, sourceDirectory: string): Promise<InstalledSkill> {
-  const installed = await installSkillPackage(home, sourceDirectory, true);
-  await disableSkill(home, installed.manifest.id);
-  return installed;
+export async function updateSkillPackage(
+  home: RuntimeHome,
+  sourceDirectory: string,
+  beforeApprovalRevocation?: () => Promise<void>,
+): Promise<InstalledSkill> {
+  const previousTrust = await readTrust(home);
+  const source = resolve(sourceDirectory);
+  const inspected = await inspectInstalledSkill(source);
+  const destination = installedDirectory(home, inspected.manifest.id);
+  let destinationExists = true;
+  try { await lstat(destination); } catch { destinationExists = false; }
+  if (!destinationExists) throw new SkillLifecycleError(`Skill is not installed: ${inspected.manifest.id}`);
+  const replacement = await replaceSkillPackage(home, source, inspected, destination, true);
+  try {
+    await beforeApprovalRevocation?.();
+    await disableSkill(home, inspected.manifest.id);
+  } catch (error) {
+    const rollbackErrors: string[] = [];
+    try {
+      await rm(destination, { recursive: true, force: true });
+      if (replacement.backup) await rename(replacement.backup, destination);
+    } catch (rollbackError) {
+      rollbackErrors.push(`package restoration failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+    }
+    try {
+      await saveEnabledSkills(home.skillsEnabledFile, previousTrust);
+    } catch (rollbackError) {
+      rollbackErrors.push(`approval restoration failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    const rollback = rollbackErrors.length ? `; ${rollbackErrors.join("; ")}` : "";
+    throw new SkillLifecycleError(`Cannot revoke skill approval after update: ${reason}${rollback}`);
+  }
+  if (replacement.backup) await rm(replacement.backup, { recursive: true, force: true });
+  return { ...inspected, directory: destination };
 }
 
 export async function listInstalledSkills(home: RuntimeHome): Promise<Array<InstalledSkill & { enabled: boolean }>> {

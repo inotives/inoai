@@ -144,6 +144,24 @@ optional local scripts or references. A Skill Package is trusted only after its
 declared capabilities and content hash are approved in the runtime home.
 _Avoid_: Agent Profile, provider plugin, arbitrary tool
 
+**Skill Acquisition**:
+The owner-controlled operation that downloads or stages a Skill Package into
+one Agent Instance's runtime home. Acquisition makes a package available for
+inspection but does not grant the Agent Runtime permission to use it.
+_Avoid_: Skill Approval, installation by an agent
+
+**Skill Approval**:
+The owner-controlled decision that makes one acquired Skill Package eligible
+for use by an Agent Runtime in one Agent Instance. Approval is tied to the
+package identity, version, content, and declared capabilities.
+_Avoid_: Skill Acquisition, automatic trust
+
+**Skill Source**:
+The non-secret locator and selected upstream identity used to acquire and
+refresh one Skill Package. It is acquisition metadata, not an approval or a
+runtime credential.
+_Avoid_: Skill Approval, provider credential
+
 **Heartbeat Check**:
 One scheduled observation of an Agent Instance's child process, runtime-home
 lock, and SQLite availability. A heartbeat check is operational telemetry and

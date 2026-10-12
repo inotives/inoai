@@ -11,6 +11,8 @@ import {
   InvalidSkillManifestError,
   isSkillApprovalCurrent,
   parseSkillManifest,
+  createGeneratedSkillManifest,
+  serializeSkillManifest,
   validateEnabledSkills,
 } from "../../skills/skill-manifest.js";
 
@@ -34,6 +36,25 @@ test("parses the strict provider-neutral skill manifest", () => {
       external_mutation: false,
     },
   });
+});
+
+test("round-trips non-secret source provenance", () => {
+  const parsed = parseSkillManifest(`${manifestText}source:\n  locator: https://github.com/example/skills\n  skill: web-search\n  revision: abc123\n`);
+  assert.deepEqual(parseSkillManifest(serializeSkillManifest(parsed)), parsed);
+  assert.deepEqual(parsed.source, { locator: "https://github.com/example/skills", skill: "web-search", revision: "abc123" });
+});
+
+test("rejects malformed source fields and credential-bearing locators", () => {
+  assert.throws(() => parseSkillManifest(`${manifestText}source:\n  locator: https://example.com\n  skill: web-search\n  revision: abc\n  extra: no\n`), InvalidSkillManifestError);
+  assert.throws(() => parseSkillManifest(`${manifestText}source:\n  locator: https://user:password@example.com\n  skill: web-search\n  revision: abc\n`), InvalidSkillManifestError);
+  assert.throws(() => parseSkillManifest(`${manifestText}source: {}\n`), InvalidSkillManifestError);
+});
+
+test("generates conservative manifests with provenance", () => {
+  const generated = createGeneratedSkillManifest("custom-skill", { locator: "/tmp/source", skill: "custom-skill", revision: "working-tree" });
+  assert.equal(generated.version, "0.0.0");
+  assert.deepEqual(generated.capabilities, { filesystem: "none", network: "none", "process/command": "none", external_mutation: "none" });
+  assert.deepEqual(parseSkillManifest(serializeSkillManifest(generated)), generated);
 });
 
 test("rejects unknown, missing, duplicate, and malformed capabilities", () => {

@@ -143,35 +143,59 @@ edit applies to the next Turn without a restart. An active Turn keeps the
 profile snapshot that it started with. Invalid profiles fail closed before
 runtime work starts.
 
-Skills are installed per runtime home by the owner. Prepare a provider-neutral
-package with the skills.sh CLI, then stage it with inoai. Staging does not
-enable the package. A separate explicit enable command records the owner
-approval; updates revoke the old approval and require approval again.
+Skills are managed per Agent Instance by the owner. The public CLI uses
+`--agent <name>` and resolves it to `.inoai-connect-<name>` in the deployment
+folder. Acquisition does not enable a package. The owner must review the
+manifest and run a separate approval command.
+See the [skill-management phase plan](docs/skill-management-phase-plan.md) and
+[ADR 0023](docs/adr/0023-skill-acquisition-and-approval.md) for the workflow
+boundary and approval rules.
 
 ```bash
-# Prepare a package with skills.sh, then stage that local package.
-npx skills add <owner/repo> --copy
-npm start -- skills install --package-dir ./<skill-directory> --connect-dir .robin-xai-test
-npm start -- skills enable --skill-id <skill-id> --approved-by owner --connect-dir .robin-xai-test
-npm start -- skills list --connect-dir .robin-xai-test
-npm start -- skills disable --skill-id <skill-id> --connect-dir .robin-xai-test
-npm start -- skills update --package-dir ./<skill-directory> --connect-dir .robin-xai-test
+# Add one skill from a skills.sh page. --skill is required for selection.
+npm start -- skills add https://skills.sh/<owner>/<repo>/<skill-id> --skill <skill-id> --agent robin
+# Add one skill from an upstream repository.
+npm start -- skills add https://github.com/<owner>/<repo> --skill <skill-id> --agent robin
+# Add one skill from a local custom repository or package tree.
+npm start -- skills add ../anyhow-skills --skill <skill-id> --agent robin
+npm start -- skills list --agent robin
+npm start -- skills enable <skill-id> --agent robin
+npm start -- skills update <skill-id> --agent robin
+npm start -- skills disable <skill-id> --agent robin
+npm start -- skills remove <skill-id> --agent robin --yes
 ```
 
-The package must contain `SKILL.md` and a valid `skill.yaml`. The package is
-hashed before staging. The enabled record stores the package ID, version, hash,
-capability snapshot, approver, and approval time. Discord turns cannot install,
-enable, disable, or update skills, and inoai does not change global provider
-configuration. When a selected skill uses a package script, the provider runs
-that script with the Agent Runtime project workspace as its current directory.
-The package remains in the runtime home's `skills/` directory. The provider's
-sandbox, network, and approval policy remain authoritative. inoai does not
-spawn skill scripts itself, pass runtime-home credentials as script input, or
-allow a Turn to install, enable, update, or approve a skill.
+The source must contain `SKILL.md`. A source with multiple skills must include
+the required `--skill <skill-id>` selection. A package without `skill.yaml`
+gets a generated manifest with version `0.0.0`, all capabilities set to
+`none`, and non-secret source provenance (`locator`, `skill`, and `revision`).
+An existing valid manifest keeps its identity, version, and capabilities; inoai
+updates only its provenance block. Invalid manifests, symlinks, and unsupported
+package entries fail before the selected runtime home changes.
 
-Any named runtime home works the same way with `--connect-dir` (a packaged deployment runs `inoai --connect-dir <home>` and `inoai ui --connect-dir <home>`):
+The package is copied into the runtime home's `skills/` directory and hashed.
+`skills-enabled.json` records the package ID, version, full hash, capability
+snapshot, approver, and approval time. `enable` creates that approval; a
+changed source, manifest, or package hash is not enabled until it is approved
+again. `update` repeats the remembered source, swaps the replacement only
+after staging and validation, and revokes the old approval. A failed update
+keeps the old package and approval. `disable` removes approval but keeps the
+package. `remove` requires the package to be disabled and `--yes`, then removes
+the package.
+
+These are local owner operations for one runtime home. Discord turns and the
+Agent Runtime cannot install, enable, update, disable, or remove skills.
+Credentials never enter manifests or provenance. Provider
+sandbox, network, and approval policy remain authoritative; inoai does not
+spawn skill scripts or pass runtime-home credentials as script input.
+
+For a legacy or test home, use `--connect-dir` instead of `--agent`; do not
+pass both. The explicit package command remains available for a pre-staged
+legacy/test package:
 
 ```bash
+npm start -- skills install --package-dir ./<skill-directory> --connect-dir .robin-xai-test
+npm start -- skills list --connect-dir .robin-xai-test
 npm run validate -- --connect-dir .robin-xai-test
 cp .env.sample .robin-xai-test/.env
 npm run validate -- --connect-dir .robin-xai-test

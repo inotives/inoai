@@ -34,6 +34,51 @@ Project-local AgentRig instructions, skills, and tools take precedence over simi
 - A safety backup can be created with `agent-rig workflow backup --output .agent-rig/_shared/workflow.sqlite.backup`.
 - Phase-level planner handoffs that do not reference a task are preserved in `.agent-rig/_shared/phase_handoffs/`; they are reference documents, not live task handoffs.
 
+## Planner-mediated headless subagent workflow
+
+Do not use `agent-rig loop` for implementation or review. The planner is the
+middleman and launches one headless worker subagent and one independent
+headless reviewer subagent for the selected task. Use the AgentRig SQLite store
+for durable task state and handoffs.
+
+Before launching a subagent, the planner reads the task, dependencies, current
+handoffs, role instructions, relevant docs, and working tree. The planner
+unblocks only the selected dependency-free task. Keep all other downstream
+tasks blocked.
+
+Launch the worker with the complete contents of
+`.agent-rig/worker/instructions.md` in its prompt, together with the task brief
+and required evidence. The worker claims the task, changes only its assigned
+scope, runs focused checks, typecheck, build, architecture, and diff checks as
+applicable, then sets the task to `review` and records a `review` handoff to
+the reviewer. The worker does not commit, push, mark the task done, or unlock
+dependencies.
+
+After the worker handoff, launch the reviewer with the complete contents of
+`.agent-rig/reviewer/instructions.md`, the task brief, the newest worker
+handoff, and the current diff. The reviewer independently checks the work and
+records exactly one `approved`, `changes_requested`, or `blocked` handoff. The
+reviewer does not edit implementation files, commit, push, change task state,
+or unlock dependencies. Its workspace write access is only for the canonical
+AgentRig handoff and an explicitly requested findings note.
+
+Headless prompts are not permission boundaries. Do not use `--yolo` or a
+dangerous sandbox bypass. Use the narrowest runner permissions that allow the
+worker to implement and the reviewer to record its handoff. If the sandbox
+blocks a required host check with `EPERM`, retry from a normal host terminal;
+do not weaken the safety rule or treat an unrecorded terminal message as task
+evidence.
+
+If review requests changes, the planner sends the same worker the worker and
+reviewer handoffs, keeps the task in `review`, and asks for only the focused
+fix plus regression coverage. The worker returns a new `review` handoff, then
+the planner launches the reviewer again. If review is blocked, the planner
+sets the task to `blocked` and resolves the blocker with the human.
+
+After an approved reviewer handoff, the planner marks the task `done` and
+unblocks only the next selected dependent task. Do not start that next task in
+the same loop unless the planner explicitly selects it.
+
 ## Source of truth
 
 - Read `docs/discord-codex-cli-harness-proposal.md` for V1 behavior and boundaries.
@@ -114,11 +159,11 @@ Planner phase summaries without a task ID belong in `.agent-rig/_shared/phase_ha
 3. Split the approved phase into AgentRig tasks with explicit `depends_on` edges and one final integrated-review task. Every task must include Context, Goal, Scope, Planner Notes, Implementation Plan, and Acceptance Criteria.
 4. Set only dependency-free work to `ready`. Keep every downstream task `blocked`; satisfying a dependency does not automatically authorize starting all newly eligible work.
 5. Drive implementation one task at a time through this manager loop:
-   1. Unblock and claim the next eligible worker task.
-   2. Spawn a worker agent. It reads the worker role, task, source docs, and relevant prior handoff; changes only its assigned scope; runs focused tests, typecheck, build, and diff checks; then sets the task to `review` and sends a worker handoff. It does not commit or push.
-   3. Spawn an independent reviewer agent. It reads the reviewer role, task, worker handoff, source docs, and current diff; runs focused checks; makes no implementation edits; and sends a reviewer handoff with `approved`, `changes_requested`, or `blocked` status.
-   4. If review is clean, record the `approved` handoff decision, mark the task `done`, and unblock only the next selected dependent task.
-   5. If review requests changes, keep the task in `review` and spawn the same worker to read both handoffs, implement the focused fix, add regression coverage, verify it, and send a new `review` handoff. Re-run independent review until clean; do not unlock downstream work meanwhile. If the reviewer reports `blocked`, set the task to `blocked` and resolve the blocker with the human.
+   1. Unblock and select the next eligible worker task.
+   2. Launch a headless worker subagent with the worker instructions and task context. It changes only its assigned scope, verifies the work, sets the task to `review`, and records a worker handoff. It does not commit or push.
+   3. Launch an independent headless reviewer subagent with the reviewer instructions, task context, worker handoff, and current diff. It runs focused checks and records exactly one reviewer handoff.
+   4. If review is clean, record the `approved` decision, mark the task `done`, and unblock only the next selected dependent task.
+   5. If review requests changes, keep the task in `review`, relaunch the same worker with both handoffs, and require a focused fix, regression coverage, verification, and a new worker handoff. Re-run independent review until clean. If the reviewer reports `blocked`, set the task to `blocked` and resolve the blocker with the human.
 6. After all worker tasks pass task-level review, unblock and claim the final reviewer task. Run the phase-wide acceptance checks against the integrated diff and mark it `done` only when clean.
 7. Write the planner phase handoff with verification evidence and any resolved review findings. After merge, archive the completed phase document under `docs/_archived/` before beginning the next phase.
 8. Commit, push, or open a pull request only when the user explicitly requests it.
