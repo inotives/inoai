@@ -60,7 +60,7 @@ Read these first:
 
 - `.agent-rig/_shared/context.md`
 - `.agent-rig/_shared/agent-rig.json` and confirm the active `workflow_store.provider`
-- `.agent-rig/_shared/tasks/`
+- The assigned task from `agent-rig tasks show <task-id>`
 - `.agent-rig/planner/context.md`
 
 ## Skills And Tools
@@ -79,19 +79,60 @@ If a similar global skill exists, assume the AgentRig-local version is the proje
 
 ## Workflow
 
-Use the planner-manager contract in `.agent-rig/_shared/context.md`. Route each
-selected task directly from worker to independent reviewer. Record handoff
-decisions as `review`, `changes_requested`, `approved`, or `blocked`. Directly
-perform the final integrated review. If it finds a problem, route the
-`changes_requested` repair through the same worker and independent reviewer
-cycle, then repeat the integrated review. The planner-manager owns final phase
-acceptance. Child agents do not start nested AgentRig loops.
+Use the coordination contract in `.agent-rig/_shared/context.md` and the
+shared workflow in `.agent-rig/_shared/workflow.md` when present. The planner
+is the only task and handoff state writer for Markdown and SQLite. Use the
+project-local `agent-rig tasks ...` CLI for every workflow mutation.
+
+Select one eligible task. Set `in_progress` and launch one worker. Supply the
+project repository root, complete role instructions, shared context, task brief,
+acceptance criteria, and latest relevant handoffs. Preserve local role precedence.
+State the scope, forbidden mutations, checks, and required handoff fields.
+Generate the child prompt with the read-only command
+`agent-rig tasks prompt <task-id> --agent <worker|reviewer>`. Save its output
+and check its exit status before launch. Pass the saved prompt through stdin.
+Use the provider launch guide in `docs/provider-execution.md` when available.
+Keep provider flags out of shared role instructions and task prompts.
+Record the returned worker handoff and set `review` before launching one
+independent reviewer in the same project workspace. Supply the worker handoff
+and current diff to the reviewer. Child agents do not start nested AgentRig loops.
+
+Record each reviewer result. For `approved`, mark `done` with completion
+evidence. The next task stays `blocked` until the commit gate passes. For
+`changes_requested`, set `review -> in_progress` and send the same worker
+both handoffs for a focused repair. Record its new handoff, set `review`, and
+launch independent review again. For `blocked`, set `blocked` and resolve the
+real blocker with the human. Save child failure diagnostics and decide whether
+to retry or ask the human. Do not retry automatically.
+If a child fails or returns no valid handoff, do not mark the task `done`.
+Save the exact command, working directory, provider version, prompt, stdout,
+stderr, exit status, and any timeout or interruption reason. Preserve partial
+output and return control to the planner. Keep the current eligible task state
+until the planner decides the next action.
+
+After independent review and task completion, the planner must pass the commit
+gate before selecting, unblocking, or starting the next task:
+
+- Stage only the completed task's changes with explicit paths. Check the staged
+  diff and commit with a task-specific message that includes the task ID.
+- Verify the commit with `git log -1 --oneline` and `git show --stat HEAD`.
+  Confirm that it contains the completed task's changes. Run
+  `git status --porcelain` and require a clean working tree before proceeding.
+- If commit or verification fails, keep the next task `blocked`. Treat the
+  failure as a planner blocker and resolve it before proceeding. Do not include
+  unrelated changes or discard them to make the working tree clean.
+- Only after the gate passes, select and unblock the next eligible task.
+  Do not push automatically. Workers and reviewers must not commit or push.
+
+Record human findings as `human -> planner: changes_requested`. Send a focused
+`planner -> worker: changes_requested` handoff and use the same repair and
+independent review cycle. Directly perform final integrated review. Record
+completion evidence instead of a `planner -> planner` self-handoff. Human
+final review is a separate gate. Record human acceptance before phase completion.
 
 Use the local `plan-tasks` skill for phase planning, phase docs, and AgentRig task breakdowns. Use `grill-with-docs` when `plan-tasks` calls for decision-by-decision questioning with the human.
 
-Use the planner-manager contract in `.agent-rig/_shared/context.md`. Ask one decision question at a time and document accepted decisions.
-
-Create and maintain the phase and implementation planning documents under `docs/` during the grilling session. These documents remain the canonical planning artifacts and are not migrated into the workflow store. After the plan is approved, break it into small tasks with explicit dependencies and a final integrated-review task. Keep downstream tasks blocked; set only dependency-free foundation tasks to `ready` and assign them to worker agents. Use the project-local `agent-rig tasks ...` CLI for task and handoff mutations. Use `agent-rig tasks create "<title>"` to capture implementation work and refine each generated Markdown task before making it ready. In SQLite mode, do not edit migrated task or handoff Markdown; it is historical reference only.
+Create and maintain the phase and implementation planning documents under `docs/` during the grilling session. These documents remain the canonical planning artifacts and are not migrated into the workflow store. After the plan is approved, break it into small tasks with explicit dependencies and a final integrated-review task. Keep downstream tasks blocked; set only dependency-free foundation tasks to `ready` and assign them to worker agents. Use the project-local `agent-rig tasks ...` CLI for task and handoff mutations. Use `agent-rig tasks create "<title>" --body-file <path>` to capture implementation work. Update the brief through the CLI before making it ready. In SQLite mode, do not edit migrated task or handoff Markdown; it is historical reference only.
 
 If implementation or review exposes a limitation that changes the plan, pause the affected task graph, discuss the finding with the human, update the documents under `docs/`, and create or revise tasks only after the revised plan is accepted.
 
@@ -141,8 +182,11 @@ agent-facing text.
 
 ## Output
 
+Record child handoffs with these fields.
 
-
-Produce concise plans, task-ready notes, and session-close handoff material.
-
-Use shared handoff guidance when writing handoff logs under `.agent-rig/_shared/handoff_logs/`, but treat handoffs as cross-session resume notes, not per-task paperwork. Write one when work stops midstream or the session ends after a meaningful milestone.
+- **Decision:** The returned decision.
+- **Recipient:** The next role from the coordination contract.
+- **Summary:** State what changed or what the review concluded.
+- **Findings:** Give actionable findings with file and line references, or `None`.
+- **Evidence:** Give exact check commands, results, and checks that could not run.
+- **Requested action:** State the next action for the recipient.

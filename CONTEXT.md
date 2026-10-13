@@ -104,6 +104,31 @@ health on a fixed interval, and restarts it when the process or its ownership
 state is unhealthy.
 _Avoid_: Agent Runtime, Runtime Home Lock
 
+**Heartbeat Setup**:
+The owner-controlled deployment operation that installs, enables, starts, and
+verifies one Heartbeat Supervisor for one Agent Instance. It is safe to repeat
+for the same runtime home and does not create a second owner. It may stop its
+own known service, but it fails closed for a live or unverifiable Runtime Home
+Lock. Low-level LaunchAgent commands remain available for diagnostics and
+manual control. Successful setup means the service, supervisor, child, and
+lock ownership are confirmed within a bounded startup window; it does not mean
+Discord or the hourly Heartbeat Check has completed.
+If setup verification fails, the attempted service change is rolled back and
+diagnostics are retained.
+Because setup changes persistent service state, it requires an explicit target
+runtime rather than choosing a default Agent Instance. It does not build source
+code or install dependencies; the compiled deployment must already exist.
+It validates the compiled entrypoint, target runtime, and lock ownership before
+changing persistent service state.
+Repeating setup for an already healthy service reconciles configuration without
+an unnecessary restart or duplicate LaunchAgent. Configuration drift is
+determined by comparing the exact target service's rendered plist.
+Setup always enables automatic load and recovery; non-running or manually
+controlled services use the lower-level LaunchAgent commands.
+Its initial output is sanitized human-readable status; structured output is
+deferred to the existing status extension point.
+_Avoid_: Heartbeat Check, Agent Deployment
+
 **Capability Boundary**:
 A stable area of responsibility in the inoai system, such as Conversation,
 Memory, Persistence, Runtime, Transport, or Platform. A Capability Boundary

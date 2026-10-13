@@ -84,9 +84,9 @@ the same loop unless the planner explicitly selects it.
 - Read `docs/discord-codex-cli-harness-proposal.md` for V1 behavior and boundaries.
 - Read `docs/implementation-phases.md` before implementation work.
 - Read `docs/sqlite-schema.md` before changing persistence.
-- Read `CONTEXT.md` for domain terms and `docs/plan-review.md` for accepted decisions.
+- Read `CONTEXT.md` for domain terms and `docs/archived/plan-review.md` for accepted historical decisions; check the current ADRs for authoritative decisions.
 - If an AgentRig task exists, its SQLite task record is the source of truth for its assigned scope. Any migrated Markdown task file is historical reference only.
-- For the current SPA phase, also read `docs/spa-agent-ui-phase-plan.md` and `docs/adr/0021-health-timeline-history.md`.
+- For SPA UI decisions, also read `docs/archived/spa-agent-ui-phase-plan.md` and `docs/adr/0021-health-timeline-history.md`.
 - Do not start live SPA data-bound tasks until the fixture-driven prototype has
   an explicit human approval recorded in its AgentRig handoff.
 
@@ -155,7 +155,7 @@ Planner phase summaries without a task ID belong in `.agent-rig/_shared/phase_ha
 ## Project phase workflow
 
 1. Start a new phase with `grill-with-docs`: read the phase and existing docs, ask one decision at a time with a recommendation, and record material tradeoffs in an ADR.
-2. Finalize the phase documentation before implementation. Check the current branch; when starting from `main`, create and switch to a phase feature branch before creating tasks or changing project files.
+2. After the grill sessions and plan approval, the AgentRig planner creates the phase plan in `docs/` using `IP-XXXX-<title>.md` (`IP` means Implementation Plan). Use the next unused, zero-padded four-digit `XXXX` sequence and a short kebab-case title. Finalize the phase documentation before implementation. Check the current branch; when starting from `main`, create and switch to a phase feature branch before creating tasks or changing project files.
 3. Split the approved phase into AgentRig tasks with explicit `depends_on` edges and one final integrated-review task. Every task must include Context, Goal, Scope, Planner Notes, Implementation Plan, and Acceptance Criteria.
 4. Set only dependency-free work to `ready`. Keep every downstream task `blocked`; satisfying a dependency does not automatically authorize starting all newly eligible work.
 5. Drive implementation one task at a time through this manager loop:
@@ -165,7 +165,7 @@ Planner phase summaries without a task ID belong in `.agent-rig/_shared/phase_ha
    4. If review is clean, record the `approved` decision, mark the task `done`, and unblock only the next selected dependent task.
    5. If review requests changes, keep the task in `review`, relaunch the same worker with both handoffs, and require a focused fix, regression coverage, verification, and a new worker handoff. Re-run independent review until clean. If the reviewer reports `blocked`, set the task to `blocked` and resolve the blocker with the human.
 6. After all worker tasks pass task-level review, unblock and claim the final reviewer task. Run the phase-wide acceptance checks against the integrated diff and mark it `done` only when clean.
-7. Write the planner phase handoff with verification evidence and any resolved review findings. After merge, archive the completed phase document under `docs/_archived/` before beginning the next phase.
+7. After the final reviewer task passes, move the completed phase plan into `docs/archived/` before the phase's final commit, push, or pull request. Update references to the plan and check that its relative links still work. Then write the planner phase handoff with verification evidence and any resolved review findings.
 8. Commit, push, or open a pull request only when the user explicitly requests it.
 
 ## Coding guidelines

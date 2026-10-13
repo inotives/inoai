@@ -147,7 +147,7 @@ Skills are managed per Agent Instance by the owner. The public CLI uses
 `--agent <name>` and resolves it to `.inoai-connect-<name>` in the deployment
 folder. Acquisition does not enable a package. The owner must review the
 manifest and run a separate approval command.
-See the [skill-management phase plan](docs/skill-management-phase-plan.md) and
+See the [skill-management phase plan](docs/archived/skill-management-phase-plan.md) and
 [ADR 0023](docs/adr/0023-skill-acquisition-and-approval.md) for the workflow
 boundary and approval rules.
 
@@ -317,7 +317,7 @@ The child emits the normal Discord startup notice after a successful restart.
 An optional user-level macOS LaunchAgent supports explicit installation and
 service controls. Installation does not load the service. Login start and
 KeepAlive are disabled by default. See the
-[Heartbeat operations guide](docs/heartbeat-operations.md) for prerequisites,
+[Heartbeat operations guide](INSTRUCTIONS.md) for prerequisites,
 installation, manual activation, stop/unload/uninstall, failure behavior, and
 isolated acceptance checks.
 
@@ -413,7 +413,8 @@ inoai/
 │   ├── implementation-phases.md
 │   ├── postgres-local.md
 │   ├── sqlite-schema.md                     # runtime SQLite schema reference
-│   ├── plan-review.md
+│   ├── archived/
+│   │   └── plan-review.md
 │   ├── repository-structure.md               # initial planned layout
 │   └── phase-*-spike.md                      # verified CLI contracts
 ├── src/

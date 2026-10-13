@@ -51,7 +51,7 @@ const requestForm = new RegExp([
   /(?:,|\s[-–—]|[–—])\s*remember\s+(?:that|this)[.!]*$/.source,
 ].join("|").replaceAll("QW", questionWord), "i");
 const politeRequest = new RegExp(opener + /(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:remember|note|keep\s+(?:(?:this|that|it)\s+)?in\s+mind|take\s+(?:a\s+)?note)\b(?!\s*[,:]?\s+QW)/.source.replace("QW", questionWord), "i");
-// The spike's extraction rule (docs/phase-6-claude-review-spike.md): one bare object or one ```json fence, nothing
+// The spike's extraction rule (docs/archived/phase-6-claude-review-spike.md): one bare object or one ```json fence, nothing
 // else. The greedy body plus JSON.parse together enforce "exactly one object"; keep both.
 const resultPattern = /^\s*(?:```(?:json)?[ \t]*\n(?<fenced>\{[\s\S]*\})\s*\n```|(?<bare>\{[\s\S]*\}))\s*$/;
 
