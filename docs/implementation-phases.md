@@ -2,6 +2,17 @@
 
 V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
 
+## Delivery status
+
+| Phase | Status |
+| --- | --- |
+| 1–6b | Complete. Codex Memory Review remains intentionally disabled because the safety probe did not prove MCP/tool isolation. |
+| 6c | Future. One-way, redacted SQLite-to-PostgreSQL reporting and backup are not implemented. |
+| 7 | Complete. The initially proposed Electron UI was replaced by a local, read-only SPA. |
+| 8 | Incomplete against its original acceptance criteria. Local rotating SQLite backups and standalone macOS packaging are not implemented. |
+
+Completed follow-on work includes SQLite as the runtime source of truth, source-structure refactoring, Agent Profile and Skill Management, the SPA UI, and the Heartbeat Supervisor and setup flow. Their detailed plans are in [the archive](archived/).
+
 ## Phase 1 — Scaffolding
 
 **Purpose:** establish a runnable TypeScript project with safe local configuration and repeatable checks.
@@ -13,7 +24,7 @@ V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCod
 3. Create the portable-core bootstrap: resolve `.inoai-connect/` under the launch folder and initialize it from bundled `.env`, `agent.md`, and SQLite templates when absent.
 4. Create `.env.sample` with the required Discord owner, runtime, and 06:00 review configuration.
 5. Add a configuration loader that validates values without connecting to Discord or Codex.
-6. Add `inoai ui` to launch the sibling Electron bundle without placing it in `.inoai-connect/`.
+6. Add `inoai ui` to launch the local operations SPA without placing UI state in `.inoai-connect/`.
 7. Write the README setup and local-run instructions.
 
 **Testable outcome:** a clean checkout can install dependencies and validate a complete local configuration without contacting an external service.
@@ -24,7 +35,7 @@ V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCod
 - Each missing required setting reports its exact variable name.
 - Starting in an empty deployment folder creates `.inoai-connect/` without overwriting an existing runtime home.
 - A second core refuses to start for an already locked runtime home, while an explicit `.inoai-connect-2` runtime home can initialize and start independently.
-- `inoai ui` launches the sibling Electron bundle and leaves `.inoai-connect/` data unchanged.
+- `inoai ui` serves the local SPA against the selected runtime home and leaves its data unchanged.
 - Automated tests use isolated temporary runtime homes and never access the repository-root development `.inoai-connect/` directory.
 - An unsupported `CHAT_PROVIDER` or `AGENT_PROVIDER` fails before startup.
 - `.inoai-connect/` does not appear in Git status after a local run.
@@ -269,6 +280,15 @@ Phase 6b uses synthetic, secret-free archived Messages and no Discord run. The p
 
 ## Phase 6c — Future PostgreSQL central reporting and backup sink
 
+**Status: Future.** The SQLite-default runtime is implemented; the PostgreSQL
+exporter described here is not.
+
+### Delivered SQLite baseline
+
+The SQLite-first runtime behavior below is already delivered. It is retained
+here as the baseline for future PostgreSQL reporting work, not as unstarted
+Phase 6c scope. See the [archived SQLite-default runtime plan](archived/sqlite-default-runtime-plan.md).
+
 **Purpose:** retain SQLite as the local source of truth and later send a one-way,
 redacted copy to PostgreSQL for central reporting and backup.
 
@@ -285,13 +305,13 @@ sync implementation, exporter, or dual-write path.
 3. Keep PostgreSQL outages separate from local startup and live work.
 4. Define redaction and backup acceptance before implementing the exporter.
 
-**Current testable outcome:** a fresh runtime home starts without PostgreSQL or
+**Baseline outcome:** a fresh runtime home starts without PostgreSQL or
 Docker. Existing SQLite data is reused. There is no automatic
 PostgreSQL-to-SQLite migration. One core process writes each runtime-home
 SQLite database; UI and read-only tools may inspect it. Stop the core before
 using local write commands. Do not share a runtime home between machines.
 
-**Current test scenarios:**
+**Baseline checks:**
 
 - Missing or unavailable PostgreSQL settings do not block local validation or startup.
 - A missing SQLite database is created through the existing schema path.
@@ -300,33 +320,42 @@ using local write commands. Do not share a runtime home between machines.
 - Heartbeat health checks child liveness, local lock ownership, and a bounded SQLite query.
 - Explicit PostgreSQL tooling remains opt-in and does not select the runtime store.
 
-## Phase 7 — Separate Electron analytics UI
+## Phase 7 — Local SPA operations UI
 
-**Purpose:** provide a separately started Electron UI to inspect archived conversations, Memory, queue health, and review results, and to manage Manual Memory Entries.
+**Status: Complete.** The delivered implementation is a local, read-only SPA,
+not the Electron design in the original plan. See the [archived SPA phase
+plan](archived/spa-agent-ui-phase-plan.md) for its reviewed scope.
 
-### Tasks
+**Purpose:** provide an operational view of one deployed Agent Instance without
+exposing credentials or requiring a central database.
 
-1. Build the Tailwind renderer inside a separate Electron application pointed at a selected `.inoai-connect/` runtime home.
-2. Keep SQLite access in the Electron main process and expose only narrow typed operations through a preload bridge.
-3. Add a native **Load SQLite** action that validates a selected `inoai.sqlite` and switches the active Agent Instance view without reading its `.env`.
-4. Show connection health, queue state, recent Conversations, Message timelines, active Memory, and Memory Review outcomes.
-5. Add local Manual Memory Entry create/soft-delete controls that write SQLite only and never invoke the Agent Runtime.
-6. Exclude credentials, environment values, and raw runtime tool output from all UI data.
+### Delivered behavior
 
-**Testable outcome:** the owner can inspect inoai state locally without exposing data to the network or adding Discord noise.
+The implementation serves the SPA through `inoai ui` and a local read-only API.
+It does not include the original Electron process, file picker, or memory-editing
+controls.
 
-**Test scenarios:**
+- `inoai ui --connect-dir <runtime-home> [--port 8989]` serves the UI on
+  `127.0.0.1`; port `8989` is the default.
+- The UI reads only the selected runtime home's SQLite database. It does not
+  read `.env` or write to SQLite.
+- Overview shows the agent profile, runtime status, heartbeat history, skills,
+  and tools. Conversations and Memory provide searchable, filterable tables
+  with expandable details.
+- UI responses exclude credentials, tokens, raw environment values, and
+  sensitive Discord metadata; the UI does not invoke the Agent Runtime.
 
-- The UI can inspect only the explicitly selected local runtime home and never exposes SQLite remotely.
-- The UI reads the selected SQLite file directly; the core exposes no dashboard API.
-- The renderer has Node integration disabled and cannot access the filesystem except through the preload bridge.
-- Loading a valid SQLite file switches all analytics to that Agent Instance; an invalid schema or non-runtime file is rejected without exposing its contents.
-- A Conversation timeline matches archived SQLite Messages.
-- Active Memory and review outcomes appear with source and timestamp.
-- UI data access never returns bot tokens, runtime credentials, or raw tool output.
-- A Manual Memory Entry created from the Electron UI persists with `origin = manual` and does not invoke an Agent Runtime.
+**Testable outcome:** the owner can inspect one deployed Agent Instance locally
+without exposing data to the network or adding Discord noise.
+
+**Verification:** focused UI tests cover the read-only API, selected runtime
+home, rendered pages, filtering, and sanitization.
 
 ## Phase 8 — V1 acceptance and operational hardening
+
+**Status: Incomplete.** Runtime recovery and heartbeat work has been delivered,
+but local rotating backups and standalone macOS packaging from this phase's
+original acceptance scope remain unimplemented.
 
 **Purpose:** verify that the assembled system behaves predictably under expected failures.
 
@@ -335,8 +364,8 @@ using local write commands. Do not share a runtime home between machines.
 1. Run the end-to-end acceptance scenarios from a fresh local setup.
 2. Verify restart behavior for Discord reconnect, SQLite recovery, and unfinished worker state.
 3. Verify that a tool action requiring approval follows the configured Codex, Claude, or OpenCode policy without inoai bypassing it.
-4. Create a local, SQLite-consistent daily backup after the recap pass and keep three rotating snapshots outside Git.
-5. Package the core as a macOS single executable with the sibling Electron bundle and verify a fresh deployment-folder bootstrap.
+4. Create a local, SQLite-consistent daily backup after the recap pass and keep three rotating snapshots outside Git. **Not implemented.**
+5. Package the core for macOS and verify a fresh deployment-folder bootstrap; verify `inoai ui` serves the selected runtime home's SPA. **Packaging not implemented.**
 
 **Testable outcome:** inoai can run continuously as a locally deployable personal Discord assistant with durable archive and daily silent Memory Review.
 
@@ -345,12 +374,12 @@ using local write commands. Do not share a runtime home between machines.
 - Disconnect/reconnect Discord without duplicate online messages or duplicate Message processing.
 - Stop the process during a runtime turn and recover safely on restart.
 - Confirm a tool action requiring approval is declined through the selected runtime's protocol, produces only a fixed safe Discord notice, and is never silently elevated or exposed as an actionable Discord control.
-- Restore each rotated local backup and confirm archived Conversations, Recaps, and Memory remain available.
-- Run the packaged macOS core in an empty deployment folder; it initializes only `.inoai-connect/` and launches the sibling Electron UI with `inoai ui`.
+- Restore each rotated local backup and confirm archived Conversations, Recaps, and Memory remain available. **Not currently testable; backup creation is not implemented.**
+- Run the packaged macOS core in an empty deployment folder; it initializes only the selected runtime home and serves the SPA with `inoai ui`. **Not currently testable; packaging is not implemented.**
 
 ## Deferred backup direction
 
-V1 stores three rotating, SQLite-consistent snapshots on the same machine. A later local-network backup phase will copy those snapshots or a fresh SQLite backup to a Linux machine on the same network. It must not expose the archive outside the local network.
+Automatic local rotating backups are not implemented. A future local-network backup phase may copy SQLite-consistent snapshots or a fresh SQLite backup to a Linux machine on the same network. It must not expose the archive outside the local network.
 
 ## Deferred task direction
 

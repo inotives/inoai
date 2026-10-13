@@ -10,7 +10,8 @@ ino-ai/
 ├── docs/
 │   ├── discord-codex-cli-harness-proposal.md
 │   ├── implementation-phases.md
-│   ├── plan-review.md
+│   ├── archived/
+│   │   └── plan-review.md
 │   ├── sqlite-schema.md
 │   └── repository-structure.md
 ├── apps/

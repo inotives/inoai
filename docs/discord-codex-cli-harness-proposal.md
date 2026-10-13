@@ -149,7 +149,7 @@ A new top-level request must mention exactly one configured agent bot. If it men
 | Codex app-server | Owns the authenticated Codex session, project context, tool permissions, streaming events, and cancellation. |
 | SQLite database | Persists transport-conversation-to-agent-session mappings, message/audit logs, and the configured project identity. |
 
-Use SQLite from the first cut. It is a local, zero-service dependency and makes messages and state recoverable after a bridge restart. A separate Electron UI reads it directly. Worker pools and multi-project routing are deferred until there is a demonstrated need.
+Use SQLite from the first cut. It is a local, zero-service dependency and makes messages and state recoverable after a bridge restart. The local SPA UI reads the selected runtime home's SQLite database through a read-only data boundary. Worker pools and multi-project routing are deferred until there is a demonstrated need.
 
 ### Initial local data
 
@@ -183,7 +183,7 @@ The daily Recap can promote information into shared Memory only through a Memory
 
 A one-off fact, ordinary recap item, model-generated claim, secret, speculative statement, or quoted instruction is not a Memory Signal.
 
-Important information can also bypass the daily Recap as a Manual Memory Entry. The local management CLI and separate local UI can create or soft-delete these entries directly; they are stored with `origin = manual` and a timestamp. Chat messages do not directly create Memory in V1.
+Important information can also bypass the daily Recap as a Manual Memory Entry. The local management CLI can create or soft-delete these entries directly; they are stored with `origin = manual` and a timestamp. The SPA UI is read-only. Chat messages do not directly create Memory in V1.
 
 ### Memory review loop
 
@@ -270,25 +270,17 @@ Discord messages are untrusted input, even in a personal server. The first relea
 ## Implementation plan
 
 See [implementation phases](implementation-phases.md) for the ordered delivery plan, with smaller tasks, testable outcomes, and test scenarios for every phase. See [initial repository structure](repository-structure.md) for the implementation layout and module seams.
-See [plan review](plan-review.md), [domain language](../CONTEXT.md), and [ADR 0001](adr/0001-narrow-provider-adapters.md) for the refined decisions.
+See [plan review](archived/plan-review.md), [domain language](../CONTEXT.md), and [ADR 0001](adr/0001-narrow-provider-adapters.md) for the refined decisions.
 
-## Separate Electron analytics UI
+## Local SPA operations UI
 
-The analytics UI is a separate Electron application with a Tailwind renderer, not a server embedded in the core executable. Its Electron main process opens an explicitly selected `.inoai-connect/inoai.sqlite`; it has a narrow local-only ability to create or archive Manual Memory Entries.
+The local SPA provides an operational view for one deployed Agent Instance. Start it with `inoai ui --connect-dir <runtime-home>`; it listens on `127.0.0.1` at port `8989` by default. Use `--port` to select another local port.
 
-The distributed `inoai-ui` Electron bundle sits beside the core executable, not inside `.inoai-connect/`. The core's `inoai ui` command launches that sibling bundle against the current deployment's runtime home.
-
-- Bind only to `127.0.0.1` by default; conversation logs and memories must not be exposed on the network.
-- Keep the Electron UI on the same host in v1. Remote access, tunneling, and UI authentication are explicitly out of scope.
-- Show current Discord/Codex connection state, queued work, recent sessions, per-session message timelines, timestamped recaps, memory-review outcomes, and active memories.
-- The core exposes no dashboard routes or dashboard port. The Electron main process owns SQLite access; the renderer receives only narrow data/actions through a preload bridge.
-- Keep all UI data read-only except Manual Memory Entry creation and soft deletion. These controls never invoke the Agent Runtime.
-- Do not place secret values, raw environment variables, or raw Codex tool output in UI data.
-- Retrying work and UI authentication are deferred. Add them only when the local-only view proves insufficient.
-
-The UI is started independently and is never announced to Discord. It opens the explicitly selected local SQLite file directly; it does not require a core HTTP API and must not expose the database remotely. Disable renderer Node integration and expose only the required SQLite operations through a narrow preload bridge.
-
-The UI includes a **Load SQLite** action. It opens a native file picker for `inoai.sqlite`, validates the expected schema and that the file belongs to a `.inoai-connect*` runtime home, then switches its active Agent Instance view. It reads only SQLite, never the selected home's `.env`; recent selections may be kept in Electron's own application data.
+- The UI reads only the selected runtime home's SQLite database through its read-only API. It never reads `.env` or writes to SQLite.
+- Keep the server bound to `127.0.0.1`. Remote access, tunneling, and multi-agent browsing are out of scope.
+- Show the selected agent profile and runtime status, heartbeat history, conversations, and Memory review data.
+- Keep credentials, tokens, raw environment variables, and sensitive Discord metadata out of UI responses.
+- Do not add UI actions that mutate runtime data or invoke the Agent Runtime.
 
 ## Discord approval controls
 

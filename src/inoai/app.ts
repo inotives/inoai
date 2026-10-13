@@ -27,6 +27,7 @@ import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
+import { parseHeartbeatSetupCommand, runHeartbeatSetup } from "./heartbeat/setup.js";
 
 export const appName = "inoai";
 export * from "./agent-instance/config.js";
@@ -441,12 +442,16 @@ export async function manageAllowlist(operation: AllowlistOperation, userId: str
 }
 
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.
-export type RunDependencies = { heartbeat?: typeof runHeartbeat; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
+export type RunDependencies = { heartbeat?: typeof runHeartbeat; heartbeatSetup?: typeof runHeartbeatSetup; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {
   if (args[0] === "heartbeat" && args[1] === "launchagent") {
     console.log(await (supplied.launchagent ?? manageLaunchAgent)(process.cwd(), parseLaunchAgentCommand(args.slice(2))));
+    return;
+  }
+  if (args[0] === "heartbeat" && args[1] === "setup") {
+    console.log(await (supplied.heartbeatSetup ?? runHeartbeatSetup)(process.cwd(), parseHeartbeatSetupCommand(args.slice(2))));
     return;
   }
   if (args[0] === "heartbeat") {

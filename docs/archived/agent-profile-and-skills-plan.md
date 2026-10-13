@@ -88,7 +88,7 @@ selected skill, and resolved revision (`resolved` for remote acquisition or
 `working-tree` for local acquisition).
 
 See the [skill-management phase plan](skill-management-phase-plan.md) and
-[ADR 0023](adr/0023-skill-acquisition-and-approval.md) for the workflow
+[ADR 0023](../adr/0023-skill-acquisition-and-approval.md) for the workflow
 boundary and approval rules.
 
 Acquisition copies a real package into the selected runtime home. If the

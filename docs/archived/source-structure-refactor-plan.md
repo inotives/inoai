@@ -6,7 +6,7 @@ Make the inoai TypeScript codebase easier to navigate, test, and extend while
 preserving all current behavior. This is a structural refactor, not a product
 feature or persistence migration.
 
-The governing decisions are in [ADR 0016](adr/0016-behavior-preserving-capability-modules.md).
+The governing decisions are in [ADR 0016](../adr/0016-behavior-preserving-capability-modules.md).
 
 ## Invariants
 

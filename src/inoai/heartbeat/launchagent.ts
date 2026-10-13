@@ -37,7 +37,7 @@ function xml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[character]!);
 }
 
-export function renderLaunchAgent(repository: string, command: LaunchAgentCommand, userHome = homedir(), nodeExecutable = process.execPath) {
+export function renderLaunchAgent(repository: string, command: LaunchAgentCommand, userHome = homedir(), nodeExecutable = process.execPath, environmentPath = process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin") {
   const checkout = resolve(repository);
   const runtimeHome = resolveRuntimeHome(checkout, command.connectDirectory ?? ".robin-xai-test").directory;
   const executable = join(checkout, "dist", "index.js");
@@ -52,6 +52,7 @@ export function renderLaunchAgent(repository: string, command: LaunchAgentComman
   <key>Label</key>${string(label)}
   <key>ProgramArguments</key>
   <array>${[resolve(nodeExecutable), executable, "heartbeat", "--connect-dir", basename(runtimeHome)].map(string).join("")}</array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key>${string(environmentPath)}</dict>
   <key>WorkingDirectory</key>${string(checkout)}
   <key>StandardOutPath</key>${string(join(logs, "heartbeat.log"))}
   <key>StandardErrorPath</key>${string(join(logs, "heartbeat-error.log"))}
@@ -64,7 +65,26 @@ export function renderLaunchAgent(repository: string, command: LaunchAgentComman
 }
 
 export type Launchctl = (args: string[]) => Promise<boolean>;
-const launchctl: Launchctl = async (args) => {
+
+export type LaunchAgentStatus = {
+  loaded: boolean;
+  supervisorPid?: number;
+};
+
+/** Inspect only the selected target and return a sanitized process summary. */
+export async function inspectLaunchAgent(target: string): Promise<LaunchAgentStatus> {
+  try {
+    const result = await execFile("/bin/launchctl", ["print", target]);
+    const match = /(?:^|\n)\s*pid\s*=\s*(\d+)\s*(?:\n|$)/u.exec(result.stdout);
+    return { loaded: true, supervisorPid: match ? Number(match[1]) : undefined };
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === 3 || code === 113) return { loaded: false };
+    throw new Error("LaunchAgent status unavailable");
+  }
+}
+
+export const launchctl: Launchctl = async (args) => {
   try {
     await execFile("/bin/launchctl", args);
     return true;

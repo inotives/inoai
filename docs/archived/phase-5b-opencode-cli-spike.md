@@ -141,7 +141,7 @@ Eight spike sessions were created: five normal sessions, two pre-assigned-ID ses
 - **Persona (owner decision D1):** `OPENCODE_CONFIG_CONTENT` `instructions` is ignored by 2.0.22, so the originally planned mechanism does not work. The owner chose to prepend `agent.md` to every Turn's stdin prompt as a clearly delimited "inoai operating instructions (not a user message)" block, read fresh each Turn. The adapter does not use `OPENCODE_CONFIG_CONTENT` or the experimental session instructions API. Edits to `agent.md` therefore reach the next Turn, and the project's `AGENTS.md` still applies natively. The cost is that the persona is part of conversation history rather than instructions. The planner updated these docs for D1:
   - `docs/implementation-phases.md` Phase 5b task 3 (`:201`) and the Phase 5b persona test scenario (`:214`)
   - `docs/discord-codex-cli-harness-proposal.md` "OpenCode runtime (Phase 5b)" section (`:104`)
-  - `docs/plan-review.md` decision 29
+  - `docs/archived/plan-review.md` decision 29
   - the Persona scope bullet in task-0052
 
   Do not write the project's `AGENTS.md`: it belongs to the project.

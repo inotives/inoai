@@ -39,7 +39,7 @@ Read these first:
 
 - `.agent-rig/_shared/context.md`
 - `.agent-rig/_shared/agent-rig.json` and confirm the active `workflow_store.provider`
-- `.agent-rig/_shared/tasks/`
+- The assigned task from `agent-rig tasks show <task-id>`
 - `.agent-rig/reviewer/context.md`
 
 ## Skills And Tools
@@ -58,19 +58,42 @@ If a similar global skill exists, assume the AgentRig-local version is the proje
 
 ## Workflow
 
-Read `.agent-rig/_shared/context.md` for the coordination contract. Record
-exactly one reviewer handoff decision: `approved`, `changes_requested`, or
-`blocked`. Write it with `agent-rig tasks handoff`: `approved` to `planner`,
-`changes_requested` to `worker`, or `blocked` to `planner`. Leave the task in
-`review`. The planner-manager changes task state and dependencies. Do not mark
-tasks `done`, return them to `in_progress`, unlock downstream work, or start a
-nested AgentRig loop.
+Read the coordination contract in `.agent-rig/_shared/context.md` and the
+shared workflow in `.agent-rig/_shared/workflow.md` when present. Read the
+assigned task with `agent-rig tasks show <task-id>`. Use the prompt's project
+repository root, complete role instructions, shared context, task brief,
+acceptance criteria, latest worker handoff, and current diff. Preserve local
+role precedence. Review in the same project workspace as the worker.
 
-Read `.agent-rig/_shared/context.md`. Inspect the changed files, compare them with the task and docs, and verify behavior with focused checks where useful. Do not rewrite implementation work during review unless explicitly asked.
+Independently verify acceptance criteria and run focused checks. Do not edit
+implementation files or repository notes. Return exactly one proposed handoff
+to the planner: `approved` to `planner`, `changes_requested` to `worker`, or
+`blocked` to `planner`. The planner records and routes it.
 
-Use the project-local `agent-rig tasks ...` CLI for every task status and handoff mutation. Find work ready for review with `agent-rig tasks --status review` and inspect acceptance criteria with `agent-rig tasks show <task-id>`. Read the newest worker handoff first and write an independent reviewer handoff. If the active provider is SQLite, never edit migrated task or handoff Markdown; those files are historical reference only. Report clean evidence so the manager can mark the task `done`; otherwise record findings so the manager can return the same task to `in_progress`. Do not unlock downstream work yourself.
+The planner is the only task and handoff state writer for Markdown and SQLite.
+Do not mutate task status, dependencies, canonical handoffs, or workflow-store
+files. Do not select or claim another task, start nested AgentRig loops, commit,
+or push. Migrated Markdown is historical reference only when SQLite is active.
 
-If you notice a recurring bug pattern, review smell, contract mismatch, or other out-of-norm event that future sessions should remember, write a short note under `.agent-rig/_shared/notes/`. Skip routine review summaries.
+Include reusable findings in the returned handoff. Do not write workflow records.
+
+## Investigation
+
+1. Read the task, acceptance criteria, and latest worker handoff. Inspect the
+   supplied diff first to identify the review scope.
+2. When CodeGraph is available, use `codegraph_explore` and `codegraph_node` to
+   independently inspect changed symbols, callers, tests, and nearby behavior.
+3. Inspect the relevant source and changed files. If CodeGraph is unavailable
+   or reports stale results, use focused `rg` searches and direct file inspection.
+4. When context-mode is available, use it to process large files, logs, test
+   output, or generated data. Otherwise, inspect only relevant sections and
+   keep command output bounded.
+5. Run focused behavioral tests with normal test commands. Include findings
+   with file and line references and check results in the required handoff.
+
+Limit investigation to the task scope. Expand only when evidence requires it.
+These optional tools reduce navigation and context cost. They do not replace
+source inspection, behavioral verification, or handoff and state ownership rules.
 
 ## Safe Operations
 
@@ -96,7 +119,7 @@ Call the sandbox runner like this:
 
 ## Human Escalation
 
-Ask the human when review scope is unclear, evidence is missing, or a finding depends on product intent rather than code behavior.
+Return a finding to the planner when review scope is unclear, evidence is missing, or a finding depends on product intent rather than code behavior.
 
 ## Technical English
 
@@ -116,6 +139,11 @@ agent-facing text.
 
 ## Output
 
+Return proposed handoff content as Markdown with these fields.
 
-
-Lead with findings ordered by severity, include file and line references when possible, and say clearly when no issues are found. Mention test gaps or residual risk. When something reusable or abnormal surfaced, leave a concise findings note in `.agent-rig/_shared/notes/`.
+- **Decision:** `approved`, `changes_requested`, or `blocked`.
+- **Recipient:** `worker` for `changes_requested`, otherwise `planner`.
+- **Summary:** State what changed or what the review concluded.
+- **Findings:** Give actionable findings with file and line references, or `None`.
+- **Evidence:** Give exact check commands, results, and checks that could not run.
+- **Requested action:** State the next action for the recipient.

@@ -1,7 +1,7 @@
 # Heartbeat Supervisor operations
 
 The supervisor is optional. It owns one inoai child and applies the policy in
-[ADR 0019](adr/0019-external-heartbeat-supervisor.md). Normal core startup stays
+[ADR 0019](docs/adr/0019-external-heartbeat-supervisor.md). Normal core startup stays
 unchanged. The primary test runtime is `.robin-xai-test`. Foreground
 execution accepts `--connect-dir`; without it, it selects `.inoai-connect`.
 LaunchAgent commands default to `.robin-xai-test`.
@@ -32,7 +32,7 @@ The first health check runs 60 minutes after child launch. Checks do not send
 Discord requests; the child sends its normal startup notice. Use Ctrl-C or
 SIGTERM to stop the supervisor and child. Stop waits for confirmed child exit.
 
-## Operator follow-up: one-command service setup
+## Active setup: one-command service deployment
 
 The foreground workflow is useful for diagnostics but is not a suitable normal
 deployment flow. An operator should not need to keep a terminal open, identify
@@ -40,18 +40,47 @@ stale locks, or manually coordinate a core process and a supervisor. A stale
 lock is safe to reclaim only after the recorded owner is proven dead; database
 files and WAL/SHM files must never be removed as part of this recovery.
 
-Follow-up work should add one explicit setup command, for example:
+Use the active setup command for normal background deployment:
 
 ```sh
 npm start -- heartbeat setup --connect-dir .robin-xai-test
 ```
 
-The command should install or replace the runtime's LaunchAgent, enable
-`RunAtLoad` and `KeepAlive`, load and kickstart the service, and verify the
-resolved service status. It should remain owner-local, preserve the existing
-lock safety rules, and report a clear recovery instruction when ownership is
-unverifiable. The existing `render`, `install`, `bootstrap`, and `kickstart`
-commands remain available for advanced diagnostics and migration.
+`--connect-dir` is required. Setup never selects a default runtime home. It
+does not build source code or install dependencies, so run `npm run build`
+before setup and ensure that `dist/index.js` exists.
+
+Setup performs these actions in order:
+
+1. Validate macOS, the compiled entrypoint, the selected runtime home, and its
+   lock ownership before changing service state.
+2. Render a target-specific plist with `RunAtLoad` and `KeepAlive` enabled. The
+   plist captures the setup process's `PATH` so user-installed agent CLIs remain
+   available when launchd starts the service.
+3. Reuse an unchanged healthy service without a restart. For configuration
+   drift, stop and unload only the known target service, then replace its plist
+   atomically.
+4. Load and kickstart the target service.
+5. Verify the service, supervisor, child, and child-owned runtime lock within
+   10 seconds. Setup does not wait for the hourly health check or Discord
+   readiness.
+
+The command is safe to repeat. It does not create duplicate services. If
+activation or verification fails, setup restores the previous plist and loaded
+service state, or removes the new service when no previous service existed. It
+retains local diagnostics and does not leave a failed `KeepAlive` retry loop.
+
+Lock safety remains strict. Setup may stop and unload only its exact target. It
+must not kill an independently running core. Startup may reclaim only a lock
+whose recorded owner is proven dead. Missing or proven stale locks follow
+normal startup recovery. Live, malformed, foreign, or unverifiable locks fail
+closed and are never deleted. Never remove the SQLite database or its WAL/SHM
+files to recover from a lock or health failure.
+
+Setup prints sanitized human-readable status. It does not print credentials,
+lock contents, child output, environment values, or full local paths. The
+existing `render`, `install`, `status`, `stop`, `unload`, and `uninstall`
+commands remain available for advanced diagnostics and manual control.
 
 ## Logs and failure behavior
 
@@ -88,10 +117,11 @@ files to clear a health failure. For repeated child exits,
 unload the service, then run the normal core in the foreground to obtain its
 safe startup diagnostics. Do not remove a lock while its owner can still run.
 
-## Optional LaunchAgent installation
+## Low-level LaunchAgent controls
 
-These are explicit operator actions. Automated acceptance must not install or
-enable the real service.
+These commands are explicit low-level controls. `heartbeat setup` is the
+active deployment path above. Automated acceptance must not install or enable
+the real service.
 
 ```sh
 npm start -- heartbeat launchagent render --connect-dir .robin-xai-test
