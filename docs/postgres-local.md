@@ -90,11 +90,17 @@ The retained PostgreSQL store and integration tests exercise leases in
 `inoai_control.agent_instance_leases`. Those leases do not control the current
 SQLite runtime or its [Heartbeat Supervisor](../INSTRUCTIONS.md).
 
-One core process writes each runtime-home SQLite database. UI and read-only
-tools may inspect it. Stop the core before running local write commands. The
-local `inoai.lock` guards same-machine ownership; do not share a runtime home
-between machines. Startup reclaims only locks proven stale by process identity.
-WAL/SHM files are normal SQLite artifacts, not stale locks.
+One core process owns each runtime home and holds its local `inoai.lock`; do not
+share a runtime home between machines. The supported allowlist and Memory CLI
+commands below can run while the core is active through a short-lived
+maintenance connection. SQLite serializes writes: a maintenance write waits up
+to 5 seconds, then reports a retryable busy error. Retry it manually. Allowlist
+changes apply to later authorization checks; Memory changes apply to later
+prompt composition and do not alter an already-composed Turn. `memory list` is
+read-only. The UI remains read-only; other live database writes, IPC, and
+direct SQLite edits are not supported. Startup reclaims only locks proven
+stale by process identity. WAL/SHM files are normal SQLite artifacts, not
+stale locks.
 
 ## Discord allowlist CLI
 
@@ -112,8 +118,9 @@ npm run allowlist:disable -- --connect-dir .robin-xai-test --user-id <discord-us
 
 The commands are idempotent, default to the `family` role, and never print
 credentials or raw database errors. The configured owner cannot be changed
-by these commands. Stop the core before running these write commands. They
-use the selected runtime home's SQLite database. Inspect its `users` table, for example:
+by these commands. They use the selected runtime home's SQLite database and
+can run while its core is active. Use the retry guidance above if a write
+reports that SQLite is busy. Inspect its `users` table, for example:
 
 ```sql
 SELECT external_user_id, display_name, role, state
@@ -121,3 +128,21 @@ FROM users
 WHERE transport = 'discord'
 ORDER BY id;
 ```
+
+## Memory CLI
+
+List active Memory without changing database state:
+
+```sh
+npm start -- memory list --connect-dir .robin-xai-test
+```
+
+Add or soft-delete a manual Memory entry while the runtime is active:
+
+```sh
+npm start -- memory add "Remember this for later" --connect-dir .robin-xai-test
+npm start -- memory delete <id> --connect-dir .robin-xai-test
+```
+
+Adds and deletes affect later prompt composition. They do not change a Turn
+whose prompt has already been composed.

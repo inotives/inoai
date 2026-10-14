@@ -307,9 +307,15 @@ sync implementation, exporter, or dual-write path.
 
 **Baseline outcome:** a fresh runtime home starts without PostgreSQL or
 Docker. Existing SQLite data is reused. There is no automatic
-PostgreSQL-to-SQLite migration. One core process writes each runtime-home
-SQLite database; UI and read-only tools may inspect it. Stop the core before
-using local write commands. Do not share a runtime home between machines.
+PostgreSQL-to-SQLite migration. One core process owns each runtime home and
+holds its Runtime Home Lock. The local CLI supports live `allowlist:add`,
+`allowlist:disable`, `memory add`, `memory delete`, and read-only `memory list`
+through short-lived maintenance connections. Writes wait up to the 5-second
+SQLite busy timeout and return a retryable error if the database remains busy.
+Allowlist changes apply to later authorization checks; Memory changes apply to
+later prompt composition, not an already-composed Turn. UI access remains
+read-only; other live database writes and IPC are out of scope. Do not share a
+runtime home between machines.
 
 **Baseline checks:**
 
