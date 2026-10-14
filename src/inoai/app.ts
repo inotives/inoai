@@ -16,12 +16,12 @@ import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
 import { OpenCodeRuntime } from "./connectors/agent-runtime/opencode-runtime.js";
-import { acquireRuntimeHomeLock, bootstrapRuntimeHome } from "./agent-instance/runtime-home.js";
+import { acquireRuntimeHomeLock, bootstrapRuntimeHome, inspectRuntimeHomeLock, resolveRuntimeHome } from "./agent-instance/runtime-home.js";
 import { createChatTransport } from "./connectors/discord/discord.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "./transport/ports.js";
 export type { ChatTransport, IncomingMessage, ThreadControl } from "./transport/ports.js";
 import type { OperationalStore } from "./persistence/operational-store.js";
-import { openDatabase } from "./connectors/persistence/sqlite/legacy-database.js";
+import { openDatabase, withMaintenanceDatabase } from "./connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "./connectors/persistence/sqlite/operational-store.js";
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { loadAgentProfile } from "./agent-instance/profile.js";
@@ -432,13 +432,33 @@ export function parseSkillsCommand(args: string[]): SkillCommand {
 }
 
 export async function manageAllowlist(operation: AllowlistOperation, userId: string, displayName: string | undefined, launchDirectory = process.cwd(), connectDirectory?: string): Promise<UserRecord> {
-  const instance = await start(launchDirectory, connectDirectory);
-  const { store, configuration } = instance;
   try {
-    return await manageAllowlistWithStore(store, operation, configuration.discordGuildId, userId, displayName);
-  } finally {
-    await instance.release();
+    const runtimeHome = resolveRuntimeHome(launchDirectory, connectDirectory);
+    if (await inspectRuntimeHomeLock(runtimeHome.lockFile) === "live") {
+      const configuration = await loadConfiguration(runtimeHome.envFile);
+      if (userId === configuration.discordOwnerUserId) throw new Error("The configured Discord owner cannot be changed by this command");
+      return await withMaintenanceDatabase(runtimeHome, (database) =>
+        manageAllowlistWithStore(createSqliteOperationalStore(database), operation, configuration.discordGuildId, userId, displayName));
+    }
+
+    const instance = await start(launchDirectory, connectDirectory);
+    try {
+      return await manageAllowlistWithStore(instance.store, operation, instance.configuration.discordGuildId, userId, displayName);
+    } finally {
+      await instance.release();
+    }
+  } catch (error) {
+    if (isSqliteBusyError(error)) throw new Error("SQLite database is busy. Retry the allowlist command shortly.");
+    throw error;
   }
+}
+
+function isSqliteBusyError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const sqliteError = error as Error & { code?: string; errcode?: number; errno?: number };
+  return sqliteError.code === "SQLITE_BUSY" || sqliteError.code === "SQLITE_LOCKED"
+    || [5, 6].includes(sqliteError.errcode ?? sqliteError.errno ?? -1)
+    || /database is (?:locked|busy)/i.test(error.message);
 }
 
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.

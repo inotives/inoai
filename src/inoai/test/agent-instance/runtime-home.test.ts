@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import test from "node:test";
 
 import {
@@ -22,6 +24,77 @@ import { manageMemory, manageAllowlist } from "../../app.js";
 
 async function temporaryDeployment(): Promise<string> {
   return mkdtemp(join(tmpdir(), "inoai-test-"));
+}
+
+async function waitForExit(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await once(child, "exit");
+}
+
+async function startRuntimeLockHolder(deployment: string, connectDirectory: string): Promise<{ child: ReturnType<typeof spawn>; lockContents: string; stop: () => Promise<void> }> {
+  const runtimeHomeModule = new URL("../../agent-instance/runtime-home.js", import.meta.url).href;
+  const script = `
+    import { acquireRuntimeHomeLock, resolveRuntimeHome } from ${JSON.stringify(runtimeHomeModule)};
+    const home = resolveRuntimeHome(process.env.TEST_DEPLOYMENT, process.env.TEST_CONNECT_DIRECTORY);
+    const release = await acquireRuntimeHomeLock(home);
+    process.stdout.write(await (await import('node:fs/promises')).readFile(home.lockFile, 'utf8'));
+    process.stdout.write('\\n');
+    process.stdin.once('data', async () => { await release(); process.exit(0); });
+    process.stdin.resume();
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, TEST_DEPLOYMENT: deployment, TEST_CONNECT_DIRECTORY: connectDirectory },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const lines = createInterface({ input: child.stdout });
+  try {
+    const [lockContents] = await Promise.race([
+      once(lines, "line") as Promise<[string]>,
+      once(child, "exit").then(([code, signal]) => { throw new Error(`Lock holder exited before acquiring lock (${code ?? signal})`); }),
+    ]);
+    return {
+      child,
+      lockContents,
+      async stop() {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          lines.close();
+          return;
+        }
+        child.stdin.end("release");
+        const exited = await Promise.race([
+          waitForExit(child).then(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), 3_000)),
+        ]);
+        if (!exited) {
+          child.kill("SIGTERM");
+          const terminated = await Promise.race([
+            waitForExit(child).then(() => true),
+            new Promise<false>((resolve) => setTimeout(() => resolve(false), 3_000)),
+          ]);
+          if (!terminated) {
+            child.kill("SIGKILL");
+            await waitForExit(child);
+          }
+        }
+        lines.close();
+      },
+    };
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await waitForExit(child);
+    lines.close();
+    throw error;
+  }
+}
+
+function runCli(deployment: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const executable = fileURLToPath(new URL("../../../index.js", import.meta.url));
+  const child = spawn(process.execPath, [executable, ...args], { cwd: deployment, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+  return once(child, "close").then(([code]) => ({ code: code as number | null, stdout, stderr }));
 }
 
 const validEnv = [
@@ -315,6 +388,107 @@ test("SQLite startup reuses sessions and Memory and closes its handle on shutdow
     assert.equal((await manageAllowlist("add", "123", "Family", deployment)).state, "active");
     assert.equal((await manageAllowlist("disable", "123", undefined, deployment)).state, "disabled");
   } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("allowlist CLI adds and disables users while a separate runtime process holds the lock", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  const ownerId = "111111111111111111";
+  const familyUserId = "222222222222222222";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv.replace("DISCORD_OWNER_USER_ID=owner", `DISCORD_OWNER_USER_ID=${ownerId}`));
+    const instance = await start(deployment, connectDirectory);
+    await instance.release();
+
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    const add = await runCli(deployment, ["allowlist:add", "--user-id", familyUserId, "--display-name", "Family Name", "--connect-dir", connectDirectory]);
+    assert.equal(add.code, 0, add.stderr);
+    assert.deepEqual(JSON.parse(add.stdout), { action: "add", user_id: familyUserId, guild_id: "guild", role: "family", state: "active" });
+
+    const database = new DatabaseSync(home.databaseFile);
+    try {
+      const active = database.prepare("SELECT * FROM users WHERE transport='discord' AND workspace_id='guild' AND external_user_id=?").get(familyUserId) as {
+        role: string; state: string; created_by: string; updated_by: string; deleted_at: number | null; deleted_by: string | null;
+      };
+      assert.equal(active.role, "family");
+      assert.equal(active.state, "active");
+      assert.equal(active.created_by, "allowlist-cli");
+      assert.equal(active.updated_by, "allowlist-cli");
+      assert.equal(active.deleted_at, null);
+      assert.equal(active.deleted_by, null);
+    } finally {
+      database.close();
+    }
+
+    const disable = await runCli(deployment, ["allowlist:disable", "--user-id", familyUserId, "--connect-dir", connectDirectory]);
+    assert.equal(disable.code, 0, disable.stderr);
+    assert.deepEqual(JSON.parse(disable.stdout), { action: "disable", user_id: familyUserId, guild_id: "guild", role: "family", state: "disabled" });
+
+    const verification = new DatabaseSync(home.databaseFile);
+    try {
+      const disabled = verification.prepare("SELECT state, created_by, updated_by, deleted_at, deleted_by FROM users WHERE transport='discord' AND workspace_id='guild' AND external_user_id=?").get(familyUserId) as {
+        state: string; created_by: string; updated_by: string; deleted_at: number | null; deleted_by: string | null;
+      };
+      assert.equal(disabled.state, "disabled");
+      assert.equal(disabled.created_by, "allowlist-cli");
+      assert.equal(disabled.updated_by, "allowlist-cli");
+      assert.equal(disabled.deleted_at, null);
+      assert.equal(disabled.deleted_by, null);
+    } finally {
+      verification.close();
+    }
+
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+
+    const invalidUserId = "333333333333333333";
+    const invalid = await runCli(deployment, ["allowlist:add", "--user-id", invalidUserId, "--display-name", "   ", "--connect-dir", connectDirectory]);
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /--display-name must be between 1 and 256 characters/);
+    assert.doesNotMatch(invalid.stderr, new RegExp(`${invalidUserId}|guild`));
+
+    const owner = await runCli(deployment, ["allowlist:disable", "--user-id", ownerId, "--connect-dir", connectDirectory]);
+    assert.equal(owner.code, 1);
+    assert.match(owner.stderr, /configured Discord owner cannot be changed/);
+    assert.doesNotMatch(owner.stderr, new RegExp(`${ownerId}|guild`));
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    await lockHolder?.stop();
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("allowlist CLI reports SQLite busy as retryable without partial writes or identifiers", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  const targetUserId = "444444444444444444";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  let database: DatabaseSync | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(deployment, connectDirectory);
+    await instance.release();
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    database = new DatabaseSync(home.databaseFile);
+    database.exec("BEGIN IMMEDIATE");
+
+    const result = await runCli(deployment, ["allowlist:add", "--user-id", targetUserId, "--display-name", "Busy User", "--connect-dir", connectDirectory]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /SQLite database is busy\. Retry the allowlist command shortly\./);
+    assert.doesNotMatch(result.stderr, new RegExp(`${targetUserId}|guild`));
+
+    database.exec("ROLLBACK");
+    const row = database.prepare("SELECT 1 FROM users WHERE transport='discord' AND workspace_id='guild' AND external_user_id=?").get(targetUserId);
+    assert.equal(row, undefined);
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    if (database?.isTransaction) database.exec("ROLLBACK");
+    database?.close();
+    await lockHolder?.stop();
     await rm(deployment, { recursive: true, force: true });
   }
 });
