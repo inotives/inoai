@@ -1,10 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import type { Configuration } from "../../../agent-instance/config.js";
-import type { RuntimeHome } from "../../../agent-instance/runtime-home.js";
+import { inspectRuntimeHomeLock, resolveRuntimeHome, type RuntimeHome } from "../../../agent-instance/runtime-home.js";
 
 export const databaseBusyTimeoutMs = 5_000;
 
@@ -243,6 +243,63 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
   } catch (error) {
     database.close();
     throw error;
+  }
+}
+
+export class MaintenanceDatabaseUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`Maintenance database unavailable: ${reason}`);
+    this.name = "MaintenanceDatabaseUnavailableError";
+  }
+}
+
+function validateMaintenanceDatabase(database: DatabaseSync): void {
+  const objects = new Set((database.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as Array<{ name: string }>).map(({ name }) => name));
+  const required = [...initialSchema.matchAll(/CREATE (?:TABLE|(?:UNIQUE )?INDEX) IF NOT EXISTS (\w+)/g)].map((match) => match[1]!);
+  if (required.some((name) => !objects.has(name))) {
+    throw new MaintenanceDatabaseUnavailableError("schema initialization or migration is required");
+  }
+  const messageColumns = database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+  if (!messageColumns.some(({ name }) => name === "delivery_state")) {
+    throw new MaintenanceDatabaseUnavailableError("schema migration is required");
+  }
+  const recovery = database.prepare(`SELECT
+    EXISTS(SELECT 1 FROM messages WHERE direction='user' AND state='processing' AND deleted_at IS NULL) AS stale_messages,
+    EXISTS(SELECT 1 FROM memory_reviews WHERE state='processing' AND deleted_at IS NULL) AS stale_reviews,
+    EXISTS(SELECT 1 FROM messages WHERE id IN (SELECT request_message_id FROM approvals WHERE request_message_id IS NOT NULL)
+      AND direction='agent' AND body != 'Legacy approval request redacted') AS unredacted_requests,
+    EXISTS(SELECT 1 FROM approvals WHERE summary != 'Legacy approval request redacted'
+      OR (state='pending' AND deleted_at IS NULL)) AS legacy_approvals`).get() as {
+      stale_messages: number; stale_reviews: number; unredacted_requests: number; legacy_approvals: number;
+    };
+  if (Object.values(recovery).some(Boolean)) {
+    throw new MaintenanceDatabaseUnavailableError("runtime startup recovery is required");
+  }
+}
+
+/** Run a short maintenance operation against an initialized, live runtime home. */
+export async function withMaintenanceDatabase<T>(home: RuntimeHome, operation: (database: DatabaseSync) => T | Promise<T>): Promise<T> {
+  const directory = resolve(home.directory);
+  const databaseFile = resolve(home.databaseFile);
+  const selectedHome = resolveRuntimeHome(dirname(directory), basename(directory));
+  if (directory !== selectedHome.directory || databaseFile !== selectedHome.databaseFile
+    || resolve(home.lockFile) !== selectedHome.lockFile
+    || !lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()
+    || !lstatSync(home.lockFile).isFile() || lstatSync(home.lockFile).isSymbolicLink()
+    || !existsSync(databaseFile) || !lstatSync(databaseFile).isFile() || lstatSync(databaseFile).isSymbolicLink()) {
+    throw new UnsafeDatabasePathError(home.databaseFile);
+  }
+  if (await inspectRuntimeHomeLock(home.lockFile) !== "live") {
+    throw new MaintenanceDatabaseUnavailableError("a live runtime lock was not confirmed");
+  }
+
+  const database = new DatabaseSync(databaseFile);
+  try {
+    database.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${databaseBusyTimeoutMs}`);
+    validateMaintenanceDatabase(database);
+    return await operation(database);
+  } finally {
+    database.close();
   }
 }
 
