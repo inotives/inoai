@@ -302,12 +302,28 @@ export async function manageMemory(
   launchDirectory = process.cwd(),
   connectDirectory?: string,
 ): Promise<MemoryRecord | MemoryRecord[] | void> {
-  const instance = await start(launchDirectory, connectDirectory);
-  const { store, owner } = instance;
   try {
-    return await manageMemoryWithStore(store, operation, argument, owner.id);
-  } finally {
-    await instance.release();
+    const runtimeHome = resolveRuntimeHome(launchDirectory, connectDirectory);
+    if (await inspectRuntimeHomeLock(runtimeHome.lockFile) === "live") {
+      const configuration = await loadConfiguration(runtimeHome.envFile);
+      return await withMaintenanceDatabase(runtimeHome, async (database) => {
+        const store = createSqliteOperationalStore(database);
+        if (operation === "list") return manageMemoryWithStore(store, operation, argument);
+        const owner = await store.findUser("discord", configuration.discordGuildId, configuration.discordOwnerUserId);
+        if (!owner || owner.role !== "owner") throw new Error("Configured Discord owner is missing from the runtime database");
+        return manageMemoryWithStore(store, operation, argument, owner.id);
+      });
+    }
+
+    const instance = await start(launchDirectory, connectDirectory);
+    try {
+      return await manageMemoryWithStore(instance.store, operation, argument, instance.owner.id);
+    } finally {
+      await instance.release();
+    }
+  } catch (error) {
+    if (isSqliteBusyError(error)) throw new Error("SQLite database is busy. Retry the Memory command shortly.");
+    throw error;
   }
 }
 

@@ -19,7 +19,9 @@ import {
 } from "../../agent-instance/runtime-home.js";
 import { defaultAgentProfile } from "../../agent-instance/profile.js";
 import { start } from "../../../index.js";
-import { openDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
+import { openDatabase, withMaintenanceDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
+import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
+import { composeTurnPrompt } from "../../conversation/prompt-context.js";
 import { manageMemory, manageAllowlist } from "../../app.js";
 
 async function temporaryDeployment(): Promise<string> {
@@ -484,6 +486,111 @@ test("allowlist CLI reports SQLite busy as retryable without partial writes or i
     database.exec("ROLLBACK");
     const row = database.prepare("SELECT 1 FROM users WHERE transport='discord' AND workspace_id='guild' AND external_user_id=?").get(targetUserId);
     assert.equal(row, undefined);
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    if (database?.isTransaction) database.exec("ROLLBACK");
+    database?.close();
+    await lockHolder?.stop();
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("Memory CLI list, add, and delete work under a live runtime lock", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  let verification: DatabaseSync | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(deployment, connectDirectory);
+    const ownerId = instance.owner.id;
+    const session = await instance.store.createSession({
+      user_id: ownerId, transport: "discord", workspace_id: instance.configuration.discordGuildId,
+      parent_conversation_id: "channel", conversation_id: "memory-prompt-test",
+      initiating_external_message_id: "memory-init", agent_provider: "codex",
+      agent_session_id: "memory-prompt-session", project_path: deployment,
+    }, "test");
+    const inbound = await instance.store.archiveMessage({
+      session_id: session.id, transport: "discord", workspace_id: instance.configuration.discordGuildId,
+      external_message_id: "memory-question", external_author_id: instance.configuration.discordOwnerUserId,
+      user_id: ownerId, direction: "user", body: "Which editor should I use?",
+      reply_to_external_message_id: null, in_reply_to_message_id: null,
+    }, "test");
+    assert(inbound.message);
+    await instance.release();
+
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    verification = new DatabaseSync(home.databaseFile);
+    const dataVersion = (verification.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
+    const listed = await runCli(deployment, ["memory", "list", "--connect-dir", connectDirectory]);
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.deepEqual(JSON.parse(listed.stdout), []);
+    assert.equal((verification.prepare("PRAGMA data_version").get() as { data_version: number }).data_version, dataVersion);
+
+    const previousPrompt = await withMaintenanceDatabase(home, (database) =>
+      composeTurnPrompt(createSqliteOperationalStore(database), inbound.message!));
+    assert.equal(previousPrompt, "Which editor should I use?");
+
+    const add = await runCli(deployment, ["memory", "add", "  My favorite editor is Helix  ", "--connect-dir", connectDirectory]);
+    assert.equal(add.code, 0, add.stderr);
+    const added = JSON.parse(add.stdout) as { id: number; body: string; origin: string; created_by_user_id: number; created_by: string; updated_by: string };
+    assert.equal(added.body, "My favorite editor is Helix");
+    assert.equal(added.origin, "manual");
+    assert.equal(added.created_by_user_id, ownerId);
+    assert.equal(added.created_by, `manual-cli:user:${ownerId}`);
+    assert.equal(added.updated_by, `manual-cli:user:${ownerId}`);
+
+    const laterPrompt = await withMaintenanceDatabase(home, (database) =>
+      composeTurnPrompt(createSqliteOperationalStore(database), inbound.message!));
+    assert.match(laterPrompt, /My favorite editor is Helix/);
+    assert.equal(previousPrompt, "Which editor should I use?");
+
+    const invalid = await runCli(deployment, ["memory", "add", "   ", "--connect-dir", connectDirectory]);
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /Usage: inoai memory add <text>/);
+
+    const deleted = await runCli(deployment, ["memory", "delete", String(added.id), "--connect-dir", connectDirectory]);
+    assert.equal(deleted.code, 0, deleted.stderr);
+    assert.equal(deleted.stdout, "undefined\n");
+    const deletedRecord = verification.prepare("SELECT state, updated_by, deleted_at, deleted_by FROM memories WHERE id=?").get(added.id) as {
+      state: string; updated_by: string; deleted_at: number | null; deleted_by: string | null;
+    };
+    assert.equal(deletedRecord.state, "deleted");
+    assert.equal(deletedRecord.updated_by, `manual-cli:user:${ownerId}`);
+    assert.notEqual(deletedRecord.deleted_at, null);
+    assert.equal(deletedRecord.deleted_by, `manual-cli:user:${ownerId}`);
+    const afterDelete = await withMaintenanceDatabase(home, (database) =>
+      composeTurnPrompt(createSqliteOperationalStore(database), inbound.message!));
+    assert.equal(afterDelete, "Which editor should I use?");
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    verification?.close();
+    await lockHolder?.stop();
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("Memory add reports a retryable busy error without a partial insert", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  let database: DatabaseSync | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(deployment, connectDirectory);
+    await instance.release();
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    database = new DatabaseSync(home.databaseFile);
+    database.exec("BEGIN IMMEDIATE");
+
+    const result = await runCli(deployment, ["memory", "add", "Busy memory entry", "--connect-dir", connectDirectory]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /SQLite database is busy\. Retry the Memory command shortly\./);
+
+    database.exec("ROLLBACK");
+    assert.equal(database.prepare("SELECT 1 FROM memories WHERE body='Busy memory entry'").get(), undefined);
     assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
   } finally {
     if (database?.isTransaction) database.exec("ROLLBACK");
