@@ -124,6 +124,14 @@ agent-rig tasks handoff <task-id> --sender <role> --recipient <role> --status <s
 - Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), and OpenCode (Phase 5b) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
 - The SPA UI reads only the selected runtime home's SQLite file through its local read-only data boundary. It must never read `.env` or expose credentials.
 
+### Live SQLite maintenance
+
+- While the Agent Instance is running, the local CLI supports `allowlist:add`, `allowlist:disable`, `memory add`, `memory delete`, and read-only `memory list` through short-lived maintenance connections. Use `--connect-dir` to select the runtime home.
+- The Runtime Home Lock remains held by the runtime. Do not stop or restart it, remove or alter its lock, or edit its SQLite files directly to run these commands.
+- SQLite allows one writer at a time. A maintenance write can wait up to the 5-second busy timeout; if it returns the retryable busy error, retry the command. The CLI does not queue the operation indefinitely.
+- Allowlist changes affect later authorization checks. Memory changes affect later prompt composition only; they do not change an already-composed or in-flight Turn. `memory list` is read-only.
+- This support does not extend to other database-writing commands, UI writes, or IPC. The SPA UI remains read-only. Stopped and fresh homes retain their normal startup behavior.
+
 ## Technical English
 
 Use short, direct sentences in planning documents, tasks, handoffs, ADRs, and

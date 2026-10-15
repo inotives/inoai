@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,15 +27,17 @@ import {
   listMessages,
   messagesForMemoryReview,
   openDatabase,
+  MaintenanceDatabaseUnavailableError,
   markRuntimeStarted,
   resetSession,
   softDeleteMemory,
   softDeleteMessage,
   UnsafeDatabasePathError,
   upsertUser,
+  withMaintenanceDatabase,
 } from "../../../connectors/persistence/sqlite/legacy-database.js";
 import { validateConfiguration } from "../../../agent-instance/config.js";
-import { bootstrapRuntimeHome } from "../../../agent-instance/runtime-home.js";
+import { acquireRuntimeHomeLock, bootstrapRuntimeHome, inspectRuntimeHomeLock } from "../../../agent-instance/runtime-home.js";
 
 test("opens the selected runtime database with WAL and a bounded busy timeout", async () => {
   const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
@@ -46,6 +50,134 @@ test("opens the selected runtime database with WAL and a bounded busy timeout", 
       assert.equal(timeout.timeout, databaseBusyTimeoutMs);
     } finally {
       database.close();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("maintenance operations use a live runtime database and always close without changing its lock", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    openDatabase(home).close();
+    const release = await acquireRuntimeHomeLock(home);
+    const originalLock = await readFile(home.lockFile, "utf8");
+    let successfulHandle: DatabaseSync | undefined;
+    let failedHandle: DatabaseSync | undefined;
+    try {
+      const result = await withMaintenanceDatabase(home, (database) => {
+        successfulHandle = database;
+        assert.equal((database.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout, databaseBusyTimeoutMs);
+        assert.equal((database.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys, 1);
+        return "complete";
+      });
+      assert.equal(result, "complete");
+      assert.throws(() => successfulHandle!.prepare("SELECT 1"), /closed|not open/i);
+
+      await assert.rejects(withMaintenanceDatabase(home, (database) => {
+        failedHandle = database;
+        throw new Error("operation failed");
+      }), /operation failed/);
+      assert.throws(() => failedHandle!.prepare("SELECT 1"), /closed|not open/i);
+      assert.equal(await readFile(home.lockFile, "utf8"), originalLock);
+    } finally {
+      await release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("maintenance opens the database while a separate process holds the runtime lock", { skip: process.platform !== "darwin" }, async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  let child: ReturnType<typeof spawn> | undefined;
+  let childExit: Promise<unknown> | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    openDatabase(home).close();
+    const runtimeHomeModule = new URL("../../../agent-instance/runtime-home.js", import.meta.url).href;
+    const script = `
+      import { acquireRuntimeHomeLock, resolveRuntimeHome } from ${JSON.stringify(runtimeHomeModule)};
+      const home = resolveRuntimeHome(process.env.INOAI_TEST_DEPLOYMENT, ".inoai-connect");
+      const release = await acquireRuntimeHomeLock(home);
+      process.stdout.write("ready\\n");
+      process.stdin.once("data", async () => { await release(); process.exit(0); });
+      process.once("SIGTERM", async () => { await release(); process.exit(0); });
+      process.stdin.resume();
+    `;
+    child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, INOAI_TEST_DEPLOYMENT: deployment },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let childError = "";
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { childError += chunk; });
+    childExit = new Promise((resolve) => child!.once("exit", resolve));
+    await Promise.race([
+      once(child.stdout!, "data"),
+      childExit.then(() => { throw new Error(`Lock-holder process exited before acquiring the lock: ${childError}`); }),
+    ]);
+    const originalLock = await readFile(home.lockFile, "utf8");
+    assert.equal(await inspectRuntimeHomeLock(home.lockFile), "live", `child pid ${child.pid} lock: ${originalLock}`);
+    assert.equal(await withMaintenanceDatabase(home, (database) => database.prepare("SELECT 1 AS ready").get()?.ready), 1);
+    assert.equal(await readFile(home.lockFile, "utf8"), originalLock);
+  } finally {
+    if (child) {
+      child.stdin?.end("release");
+      await Promise.race([childExit, new Promise((resolve) => setTimeout(resolve, 3_000))]);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+        await Promise.race([childExit, new Promise((resolve) => setTimeout(resolve, 3_000))]);
+      }
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await childExit;
+      }
+    }
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("maintenance refuses a live database that needs startup recovery without changing it", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    const database = openDatabase(home);
+    const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
+    const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "parent", conversation_id: "thread", initiating_external_message_id: "start", agent_provider: "codex", agent_session_id: "agent-session", project_path: deployment });
+    const message = archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "inbound", external_author_id: "owner", user_id: user.id, direction: "user", body: "message", reply_to_external_message_id: null, in_reply_to_message_id: null }).message!;
+    database.prepare("UPDATE messages SET state='processing', runtime_started_at=unixepoch() WHERE id=?").run(message.id);
+    database.close();
+    const release = await acquireRuntimeHomeLock(home);
+    try {
+      await assert.rejects(withMaintenanceDatabase(home, () => assert.fail("must not run")), MaintenanceDatabaseUnavailableError);
+      const check = new DatabaseSync(home.databaseFile);
+      assert.equal((check.prepare("SELECT state FROM messages WHERE id=?").get(message.id) as { state: string }).state, "processing");
+      check.close();
+    } finally {
+      await release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("maintenance refuses a live database that needs migration without changing it", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    openDatabase(home).close();
+    const legacy = new DatabaseSync(home.databaseFile);
+    legacy.exec("ALTER TABLE messages DROP COLUMN delivery_state");
+    legacy.close();
+    const release = await acquireRuntimeHomeLock(home);
+    try {
+      await assert.rejects(withMaintenanceDatabase(home, () => assert.fail("must not run")), MaintenanceDatabaseUnavailableError);
+      const check = new DatabaseSync(home.databaseFile);
+      assert.equal((check.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).some(({ name }) => name === "delivery_state"), false);
+      check.close();
+    } finally {
+      await release();
     }
   } finally {
     await rm(deployment, { recursive: true, force: true });

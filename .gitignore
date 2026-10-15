@@ -1,4 +1,5 @@
 .agent-rig/.creds/
+.DS_Store
 /.env
 /.inoai-connect*/
 /.robin-*/
