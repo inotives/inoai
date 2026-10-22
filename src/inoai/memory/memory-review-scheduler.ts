@@ -49,6 +49,7 @@ export class MemoryReviewScheduler {
   private stopped = false;
   private pokePromise: Promise<void> | undefined;
   private pokeRequested = false;
+  private taskHeld = false;
 
   constructor(
     private readonly database: OperationalStore,
@@ -73,7 +74,7 @@ export class MemoryReviewScheduler {
   // runs the daily cycle when due and starts the next due review. While chat is busy neither runs, so the cycle's
   // enqueue transaction never delays a claimed Turn; it runs on the next idle poke or timer tick.
   poke(): Promise<void> {
-    if (!this.started || this.stopped) return Promise.resolve();
+    if (!this.started || this.stopped || this.taskHeld) return Promise.resolve();
     if (this.pokePromise) { this.pokeRequested = true; return this.pokePromise; }
     this.pokePromise ??= this.runPoke().finally(() => { this.pokePromise = undefined; });
     return this.pokePromise;
@@ -81,6 +82,7 @@ export class MemoryReviewScheduler {
 
   private async runPoke(): Promise<void> {
     try {
+      if (this.taskHeld) return;
       const busy = await this.chatBusy();
       if (this.active) {
         if (busy) this.active.controller.abort("preempted");
@@ -92,12 +94,14 @@ export class MemoryReviewScheduler {
         return;
       }
       await this.runCycleIfDue();
+      if (this.taskHeld) return;
       if (!this.runtime.review) {
         if (this.pokeRequested && !this.stopped) { this.pokeRequested = false; await this.runPoke(); }
         return;
       }
       const row = await this.claimDue();
-      if (row) this.run(row);
+      if (row && this.taskHeld) await this.database.updateMemoryReview(row.id, { state: "pending" }, actor);
+      else if (row) this.run(row);
       if (this.pokeRequested && !this.stopped) {
         this.pokeRequested = false;
         await this.runPoke();
@@ -109,6 +113,15 @@ export class MemoryReviewScheduler {
 
   async idle(): Promise<void> {
     while (this.active || this.pokePromise) await Promise.all([...(this.active ? [this.active.done] : []), ...(this.pokePromise ? [this.pokePromise] : [])]);
+  }
+
+  async pauseForTask(): Promise<() => void> {
+    this.taskHeld = true;
+    while (this.active || this.pokePromise) {
+      this.active?.controller.abort("task");
+      await Promise.all([...(this.active ? [this.active.done] : []), ...(this.pokePromise ? [this.pokePromise] : [])]);
+    }
+    return () => { this.taskHeld = false; void this.poke(); };
   }
 
   // Aborts an active review and waits for it to settle, so the caller can close the runtime afterwards.
@@ -246,7 +259,7 @@ export class MemoryReviewScheduler {
       return;
     }
     if (signal.aborted) {
-      // Cancelled by chat or shutdown: back to pending without using an attempt. Only chat counts as a deferral.
+      // Cancelled by chat, a Task, or shutdown: back to pending without using an attempt. Only chat counts as a deferral.
       if (signal.reason !== "preempted") {
       await update({ state: "pending" });
         return;

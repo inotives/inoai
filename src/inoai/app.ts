@@ -13,6 +13,7 @@ import type { UserRecord } from "./connectors/persistence/sqlite/legacy-database
 import type { MemoryRecord } from "./memory/ports.js";
 import { ConversationWorker } from "./conversation/conversation-worker.js";
 import { TaskRunExecutor } from "./conversation/task-run-executor.js";
+import { TaskScheduler } from "./conversation/task-scheduler.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
@@ -701,8 +702,6 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       process.exitCode = 1;
     });
   }, transport);
-  const taskRunner = new TaskRunExecutor(instance.store! as OperationalStore & TaskOperationsStore,
-    runtime, instance.runtimeHome, transport, worker, instance.configuration.agentProvider);
   // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
   // chat always runs first.
   const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {
@@ -710,7 +709,14 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     clock: supplied.schedulerClock,
     onFailure: () => console.error("Memory review scheduler failed; the review stays queued"),
   });
-  worker.onQueueChange(() => scheduler.poke());
+  const taskRunner = new TaskRunExecutor(instance.store! as OperationalStore & TaskOperationsStore,
+    runtime, instance.runtimeHome, transport, worker, instance.configuration.agentProvider,
+    { now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000),
+      pauseReview: () => scheduler.pauseForTask() });
+  const taskScheduler = new TaskScheduler(instance.store! as TaskOperationsStore, taskRunner,
+    supplied.schedulerClock, () => console.error("Task scheduler failed; due Tasks stay queued"));
+  taskRunner.onSettled(() => { void taskScheduler.poke(); });
+  worker.onQueueChange(() => { void scheduler.poke(); void taskScheduler.poke(); });
   const concurrentSessionsValidated = await probeConcurrency();
   let keepAlive: NodeJS.Timeout | undefined;
   let startup: Promise<ChatTransport> | undefined;
@@ -722,6 +728,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         instance.closing = true;
         await Promise.allSettled([...instance.pendingIngestion]);
         await transport.stop();
+        await taskScheduler.stop();
         // Abort an active review and let it settle before the worker closes the runtime.
         await scheduler.stop();
         await taskRunner.stop();
@@ -762,6 +769,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();
+    if (instance.store?.listTasks) taskScheduler.start();
     if (!suppliedRuntime) console.log(`${runtime.displayName} cross-session concurrency: ${concurrentSessionsValidated ? "enabled" : "unavailable; using global FIFO"}`);
   } catch (error) {
     await shutdown(1);

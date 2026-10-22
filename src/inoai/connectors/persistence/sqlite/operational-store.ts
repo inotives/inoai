@@ -27,7 +27,7 @@ export interface TaskOperationsStore {
   pauseTask(taskId: number, actor?: string): Promise<boolean>;
   resumeTask(taskId: number, actor?: string): Promise<boolean>;
   cancelTask(taskId: number, now: number, actor?: string): Promise<boolean>;
-  recoverTaskRuns(actor?: string): Promise<void>;
+  recoverTaskRuns(actor?: string, now?: number): Promise<void>;
 }
 
 export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore {
@@ -55,7 +55,7 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async pauseTask(taskId, actor) { return pauseTask(database, taskId, actor); },
     async resumeTask(taskId, actor) { return resumeTask(database, taskId, actor); },
     async cancelTask(taskId, now, actor) { return cancelTask(database, taskId, now, actor); },
-    async recoverTaskRuns(actor) { recoverTaskRuns(database, actor); },
+    async recoverTaskRuns(actor, now) { recoverTaskRuns(database, actor, now); },
     async claimLegacyApprovalNotice(id) { return claimLegacyApprovalNotice(database, id); },
     async resolveLegacyApprovalNotice(id, messageId) { resolveLegacyApprovalNotice(database, id, messageId); },
     async recoverStaleWork(actor = "startup-recovery") {

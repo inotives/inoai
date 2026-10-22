@@ -13,36 +13,46 @@ type ActiveRun = { taskId: number; runId: number; sessionId?: string; cancelled:
 
 export class TaskRunExecutor {
   private active?: ActiveRun;
+  private settled?: () => void;
 
   constructor(private readonly store: Store, private readonly runtime: AgentRuntime,
     private readonly home: RuntimeHome, private readonly transport: Pick<ChatTransport, "sendMessage" | "uploadFile">,
-    private readonly worker: Pick<ConversationWorker, "reserveTaskRun">, private readonly agentProvider: string) {}
+    private readonly worker: Pick<ConversationWorker, "reserveTaskRun">, private readonly agentProvider: string,
+    private readonly options: { now?: () => number; pauseReview?: () => Promise<() => void> } = {}) {}
+
+  onSettled(listener: () => void): void { this.settled = listener; }
+  private now(): number { return this.options.now?.() ?? Math.floor(Date.now() / 1000); }
 
   async start(taskId: number): Promise<"started" | "busy" | "unavailable"> {
-    const release = await this.worker.reserveTaskRun();
-    if (!release) return "busy";
+    const releaseChat = await this.worker.reserveTaskRun();
+    if (!releaseChat) return "busy";
+    let releaseReview: (() => void) | undefined;
     let handedOff = false;
     try {
+      releaseReview = await this.options.pauseReview?.();
+      if (await this.store.chatBusy()) return "busy";
       const task = await this.store.getTask(taskId);
       if (!task || task.state !== "active") return "unavailable";
-      const run = await this.store.claimTaskRun(taskId, Math.floor(Date.now() / 1000), "task-runtime");
+      const run = await this.store.claimTaskRun(taskId, this.now(), "task-runtime");
       if (!run) return "busy";
       const active: ActiveRun = { taskId, runId: run.id, cancelled: false, done: Promise.resolve() };
       this.active = active;
       handedOff = true;
       active.done = this.execute(task.id, run.id, active).finally(() => {
         if (this.active === active) this.active = undefined;
-        release();
+        releaseChat();
+        releaseReview?.();
+        this.settled?.();
       });
       void active.done.catch(() => undefined);
       return "started";
     } finally {
-      if (!handedOff) release();
+      if (!handedOff) { releaseChat(); releaseReview?.(); }
     }
   }
 
   async cancel(taskId: number): Promise<boolean> {
-    if (!await this.store.cancelTask(taskId, Math.floor(Date.now() / 1000), "user:owner")) return false;
+    if (!await this.store.cancelTask(taskId, this.now(), "user:owner")) return false;
     const active = this.active;
     if (active?.taskId === taskId) {
       active.cancelled = true;
@@ -57,7 +67,7 @@ export class TaskRunExecutor {
     active.cancelled = true;
     if (active.sessionId) await this.runtime.cancel(active.sessionId).catch(() => undefined);
     await active.done;
-    await this.store.failTaskRun(active.runId, "Interrupted by shutdown", Math.floor(Date.now() / 1000), "task-runtime");
+    await this.store.failTaskRun(active.runId, "Interrupted by shutdown", this.now(), "task-runtime");
   }
 
   private async execute(taskId: number, runId: number, active: ActiveRun): Promise<void> {
@@ -105,7 +115,7 @@ export class TaskRunExecutor {
       if (active.cancelled) return;
       if (answer === undefined) throw new Error("Task Run returned no answer");
       const paths = await artifactPaths(output, relativeOutput);
-      await this.store.completeTaskRun(runId, cursor, paths, Math.floor(Date.now() / 1000), "task-runtime");
+      await this.store.completeTaskRun(runId, cursor, paths, this.now(), "task-runtime");
       const summary = answer.trim().slice(0, 1200) || "Task Run completed.";
       const report = `Task #${taskId} run #${runId} completed.\n${summary}\n${paths.length ? `Files: ${paths.join(", ")}` : "No files produced."}`;
       await this.transport.sendMessage(task.conversation_id, report.slice(0, 1900)).catch(() => undefined);
@@ -117,7 +127,7 @@ export class TaskRunExecutor {
         catch { await this.transport.sendMessage(task.conversation_id, `Upload failed; local file: ${path}`).catch(() => undefined); }
       }
     } catch {
-      if (!active.cancelled && await this.store.failTaskRun(runId, "Task Run failed; check local logs", Math.floor(Date.now() / 1000), "task-runtime")) {
+      if (!active.cancelled && await this.store.failTaskRun(runId, "Task Run failed; check local logs", this.now(), "task-runtime")) {
         if (conversationId) await this.transport.sendMessage(conversationId, `Task #${taskId} run #${runId} failed. Check the local archive; it will not retry automatically.`).catch(() => undefined);
       }
     }

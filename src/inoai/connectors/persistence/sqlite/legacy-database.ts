@@ -502,15 +502,15 @@ export function recoverStaleWork(database: DatabaseSync, actor = "startup-recove
   }
 }
 
-export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recovery"): void {
+export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recovery", now = Math.floor(Date.now() / 1000)): void {
   database.exec("BEGIN IMMEDIATE");
   try {
     const stale = database.prepare("SELECT DISTINCT task_id FROM task_runs WHERE state='processing' AND deleted_at IS NULL").all() as Array<{ task_id: number }>;
-    database.prepare(`UPDATE task_runs SET state='failed', failure_detail='Interrupted by restart', completed_at=unixepoch(), updated_at=unixepoch(), updated_by=?
-      WHERE state='processing' AND deleted_at IS NULL`).run(actor);
-    const updateTask = database.prepare(`UPDATE tasks SET next_due_at=unixepoch()+interval_seconds, updated_at=unixepoch(), updated_by=?
+    database.prepare(`UPDATE task_runs SET state='failed', failure_detail='Interrupted by restart', completed_at=?, updated_at=?, updated_by=?
+      WHERE state='processing' AND deleted_at IS NULL`).run(now, now, actor);
+    const updateTask = database.prepare(`UPDATE tasks SET next_due_at=?+interval_seconds, updated_at=?, updated_by=?
       WHERE id=? AND task_type='recurring' AND state IN ('active','paused') AND deleted_at IS NULL`);
-    for (const { task_id } of stale) updateTask.run(actor, task_id);
+    for (const { task_id } of stale) updateTask.run(now, now, actor, task_id);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
