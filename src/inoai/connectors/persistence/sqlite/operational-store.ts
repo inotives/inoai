@@ -5,6 +5,7 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   archiveFailureNotice, archiveMessage, archiveResponseChunks, bindAgentSession, claimNextMessage, claimResponseChunk,
+  cancelTask, claimTaskRun, completeTaskRun, createTask, failTaskRun, getTask, getTaskRun, listTaskRuns, listTasks, pauseTask, recoverTaskRuns, resumeTask,
   completeMemoryReview, confirmResponseChunk, completeMessageWithResponse, createEvent, createMemory, createMemoryReview, createSession, failProcessingMessage,
   failRemainingResponseChunks, failResponseChunk, getSession, listEvents, listMemories, listMessages,
   listPendingResponseChunks, markRuntimeStarted, messagesForMemoryReview, recoverStaleWork, rebindAgentSession,
@@ -12,9 +13,24 @@ import {
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
-import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord } from "./legacy-database.js";
+import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord } from "./legacy-database.js";
 
-export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore {
+export interface TaskOperationsStore {
+  createTask(task: NewTask, actor?: string): Promise<TaskRecord>;
+  getTask(id: number): Promise<TaskRecord | undefined>;
+  listTasks(): Promise<TaskRecord[]>;
+  getTaskRun(id: number): Promise<TaskRunRecord | undefined>;
+  listTaskRuns(taskId: number): Promise<TaskRunRecord[]>;
+  claimTaskRun(taskId: number, now: number, actor?: string): Promise<TaskRunRecord | undefined>;
+  completeTaskRun(runId: number, messageCursor: number, artifactPaths: string[], now: number, actor?: string): Promise<TaskRunRecord>;
+  failTaskRun(runId: number, detail: string, now: number, actor?: string): Promise<boolean>;
+  pauseTask(taskId: number, actor?: string): Promise<boolean>;
+  resumeTask(taskId: number, actor?: string): Promise<boolean>;
+  cancelTask(taskId: number, now: number, actor?: string): Promise<boolean>;
+  recoverTaskRuns(actor?: string): Promise<void>;
+}
+
+export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore {
   function transaction<T>(work: () => T): T {
     database.exec("BEGIN IMMEDIATE");
     try {
@@ -26,8 +42,20 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
       throw error;
     }
   }
-  const store: OperationalStore = {
+  const store: OperationalStore & TaskOperationsStore = {
     async legacyApprovalNotices() { return legacyApprovalNotices(database); },
+    async createTask(task, actor) { return createTask(database, task, actor); },
+    async getTask(id) { return getTask(database, id); },
+    async listTasks() { return listTasks(database); },
+    async getTaskRun(id) { return getTaskRun(database, id); },
+    async listTaskRuns(taskId) { return listTaskRuns(database, taskId); },
+    async claimTaskRun(taskId, now, actor) { return claimTaskRun(database, taskId, now, actor); },
+    async completeTaskRun(runId, messageCursor, artifactPaths, now, actor) { return completeTaskRun(database, runId, messageCursor, artifactPaths, now, actor); },
+    async failTaskRun(runId, detail, now, actor) { return failTaskRun(database, runId, detail, now, actor); },
+    async pauseTask(taskId, actor) { return pauseTask(database, taskId, actor); },
+    async resumeTask(taskId, actor) { return resumeTask(database, taskId, actor); },
+    async cancelTask(taskId, now, actor) { return cancelTask(database, taskId, now, actor); },
+    async recoverTaskRuns(actor) { recoverTaskRuns(database, actor); },
     async claimLegacyApprovalNotice(id) { return claimLegacyApprovalNotice(database, id); },
     async resolveLegacyApprovalNotice(id, messageId) { resolveLegacyApprovalNotice(database, id, messageId); },
     async recoverStaleWork(actor = "startup-recovery") {

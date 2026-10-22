@@ -1,6 +1,6 @@
 # inoai SQLite schema
 
-This is the initial SQLite schema for the chat-to-agent bridge. Times are Unix seconds. External platform identifiers are `TEXT` to avoid JavaScript integer precision loss.
+This is the SQLite schema for the chat-to-agent bridge. Times are Unix seconds. External platform identifiers are `TEXT` to avoid JavaScript integer precision loss. Runtime startup applies new tables and indexes with idempotent `CREATE ... IF NOT EXISTS` statements, so existing runtime homes keep their rows while gaining the Task schema.
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -181,6 +181,58 @@ CREATE TABLE memories (
 
 CREATE INDEX active_memories
   ON memories(state, id);
+
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY,
+  goal TEXT NOT NULL CHECK (length(trim(goal)) > 0),
+  task_type TEXT NOT NULL CHECK (task_type IN ('one_time', 'recurring')),
+  interval_seconds INTEGER,
+  state TEXT NOT NULL DEFAULT 'active'
+    CHECK (state IN ('active', 'paused', 'completed', 'cancelled')),
+  conversation_id TEXT NOT NULL,
+  session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+  next_due_at INTEGER,
+  message_cursor INTEGER NOT NULL DEFAULT 0 CHECK (message_cursor >= 0),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((task_type = 'one_time' AND interval_seconds IS NULL) OR
+    (task_type = 'recurring' AND interval_seconds > 0 AND interval_seconds % 3600 = 0)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+
+CREATE INDEX due_tasks
+  ON tasks(state, next_due_at, id)
+  WHERE deleted_at IS NULL;
+
+CREATE TABLE task_runs (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  state TEXT NOT NULL CHECK (state IN ('processing', 'completed', 'failed', 'cancelled')),
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  failure_detail TEXT CHECK (failure_detail IS NULL OR length(failure_detail) <= 500),
+  artifact_paths_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(artifact_paths_json)),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((state = 'processing' AND completed_at IS NULL) OR
+    (state != 'processing' AND completed_at IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX one_active_task_run
+  ON task_runs(state)
+  WHERE state = 'processing' AND deleted_at IS NULL;
+CREATE INDEX task_runs_by_task
+  ON task_runs(task_id, id)
+  WHERE deleted_at IS NULL;
 ```
 
 ## Audit fields
@@ -198,6 +250,8 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - A `memory_reviews` row is a timestamped recap entry. It records the source range since that Agent Session's last completed recap, its concise recap text, and any Memory actions. Only normal chat work runs ahead of it.
 - Daily scheduling uses Events rather than new tables: one `memory_review_cycle` Event per local date, `memory_review_deferred` when chat preempts a review (five per review per day at most), and `memory_review_skipped` for a runtime without review support. Reviews may update or delete only `origin = review` Memory; dropped actions are recorded as non-secret `ignored` outcomes.
 - `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history.
+- `tasks` binds one bounded goal to its Discord Conversation and Agent Session. One-time Tasks have no interval or automatic due time. Recurring intervals use whole hours stored as seconds; the first due time is one interval after creation. The cursor is the newest archived message consumed by the Task.
+- `task_runs` records one Agent Runtime iteration and its output paths. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them; recurring Tasks keep their next interval.
 - `approvals` remains in the schema for compatibility, but V1 creates no new pending approvals or Discord approval controls (ADR 0003). Codex approval requests are declined immediately; only a non-secret outcome Event is stored. On restart, any pending row left by an earlier local build becomes `failed`; legacy summaries and linked agent-authored request bodies are redacted, without changing user-authored Messages. Its saved data is never authority to answer or replay a lost runtime request (ADR 0001).
 
 ## Worker rules
@@ -206,6 +260,8 @@ The Phase 5 queue durably sets `runtime_started_at` before invoking the Agent Ru
 
 Reset ends the active Session and atomically fails its still-pending and processing inbound Messages plus unsent response chunks. The archived rows and the ended Session's Agent Session ID remain for audit; a later Message may create a new active Session in the same Conversation.
 
+Task Run claims use an immediate transaction. The database index prevents a second processing Task Run in the same Agent Instance. Completion, failure, cancellation, and startup recovery set `completed_at` and update audit fields. Pause prevents new claims but lets an active run finish. Cancellation marks an active run cancelled and ends the Task. Normal Task and Task Run reads exclude soft-deleted rows.
+
 Use a transaction when claiming work (`pending` to `processing`) and when finalizing a response plus its inbound message. The claim must reject a Message if another Message for its Session is already `processing`. A failed Recap retries up to three times later that day, with a one-hour initial delay and exponential backoff. After that it remains `failed` until the next daily cycle. No `jobs` or lock table is needed until more than one process is intentionally supported.
 
 ## Deferred deliberately
@@ -213,4 +269,4 @@ Use a transaction when claiming work (`pending` to `processing`) and when finali
 - Full-text or vector search: inject active global memory plus the active session memory initially; add retrieval only when memory volume makes that insufficient.
 - A `memory_sources` join table: one strongest source message plus the review range is enough for v1.
 - Guilds, projects, permissions, and configuration tables: V1 reads these boundaries from `.env`. A simple transport-scoped `users` allowlist is intentionally retained for future family access.
-- Scheduled tasks and task-run ledgers: add them only in the later task phase, after normal conversation and Memory review behavior is proven.
+- PostgreSQL persistence for Tasks and Task Runs remains deferred; the accepted implementation uses the selected Agent Instance's SQLite database.
