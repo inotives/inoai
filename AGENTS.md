@@ -6,11 +6,10 @@ inoai is a local TypeScript bridge between a chat transport and a locally authen
 
 ## Trinary Agents workflow
 
-The active Agent Tasks phase uses the project-local
-`.agents/skills/trinary-agents/SKILL.md`. Its local, ignored
-`trinary-workspace/` holds the approved feature plan, task briefs, statuses,
-dashboard, and append-only handoffs. The feature and task READMEs are the
-source of truth for this phase.
+Use the installed `trinary-agents` skill for the active Agent Tasks phase. Its
+local, ignored `trinary-workspace/` holds the approved feature plan, task
+briefs, statuses, dashboard, and append-only handoffs. The feature and task
+READMEs are the source of truth for this phase.
 
 The project-manager selects one dependency-free task at a time, changes task
 status, and records handoffs. A worker implements only the assigned scope and
