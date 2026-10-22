@@ -160,6 +160,50 @@ CREATE TABLE IF NOT EXISTS memories (
   CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS active_memories ON memories(state, id);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY,
+  goal TEXT NOT NULL CHECK (length(trim(goal)) > 0),
+  task_type TEXT NOT NULL CHECK (task_type IN ('one_time', 'recurring')),
+  interval_seconds INTEGER,
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'paused', 'completed', 'cancelled')),
+  conversation_id TEXT NOT NULL,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  next_due_at INTEGER,
+  message_cursor INTEGER NOT NULL DEFAULT 0 CHECK (message_cursor >= 0),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((task_type = 'one_time' AND interval_seconds IS NULL) OR
+    (task_type = 'recurring' AND interval_seconds > 0 AND interval_seconds % 3600 = 0)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL)),
+  UNIQUE (session_id)
+);
+CREATE INDEX IF NOT EXISTS due_tasks ON tasks(state, next_due_at, id) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS task_runs (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  state TEXT NOT NULL CHECK (state IN ('processing', 'completed', 'failed', 'cancelled')),
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  failure_detail TEXT CHECK (failure_detail IS NULL OR length(failure_detail) <= 500),
+  artifact_paths_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(artifact_paths_json)),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((state = 'processing' AND completed_at IS NULL) OR (state != 'processing' AND completed_at IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_task_run ON task_runs(state)
+  WHERE state = 'processing' AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS task_runs_by_task ON task_runs(task_id, id) WHERE deleted_at IS NULL;
 `;
 
 export class UnsafeDatabasePathError extends Error {
@@ -238,6 +282,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     database.exec(initialSchema);
     migrateMessages(database);
     recoverStaleWork(database);
+    recoverTaskRuns(database);
     recoverLegacyApprovals(database);
     return database;
   } catch (error) {
@@ -269,8 +314,9 @@ function validateMaintenanceDatabase(database: DatabaseSync): void {
     EXISTS(SELECT 1 FROM messages WHERE id IN (SELECT request_message_id FROM approvals WHERE request_message_id IS NOT NULL)
       AND direction='agent' AND body != 'Legacy approval request redacted') AS unredacted_requests,
     EXISTS(SELECT 1 FROM approvals WHERE summary != 'Legacy approval request redacted'
-      OR (state='pending' AND deleted_at IS NULL)) AS legacy_approvals`).get() as {
-      stale_messages: number; stale_reviews: number; unredacted_requests: number; legacy_approvals: number;
+      OR (state='pending' AND deleted_at IS NULL)) AS legacy_approvals,
+    EXISTS(SELECT 1 FROM task_runs WHERE state='processing' AND deleted_at IS NULL) AS stale_task_runs`).get() as {
+      stale_messages: number; stale_reviews: number; unredacted_requests: number; legacy_approvals: number; stale_task_runs: number;
     };
   if (Object.values(recovery).some(Boolean)) {
     throw new MaintenanceDatabaseUnavailableError("runtime startup recovery is required");
@@ -401,6 +447,31 @@ export type MemoryReviewRecord = AuditColumns & {
   completed_at: number | null;
 };
 
+export type TaskRecord = AuditColumns & {
+  id: number;
+  goal: string;
+  task_type: "one_time" | "recurring";
+  interval_seconds: number | null;
+  state: "active" | "paused" | "completed" | "cancelled";
+  conversation_id: string;
+  session_id: number;
+  next_due_at: number | null;
+  message_cursor: number;
+};
+
+export type TaskRunRecord = AuditColumns & {
+  id: number;
+  task_id: number;
+  state: "processing" | "completed" | "failed" | "cancelled";
+  started_at: number;
+  completed_at: number | null;
+  failure_detail: string | null;
+  artifact_paths: string[];
+};
+
+export type NewTask = Pick<TaskRecord, "goal" | "task_type" | "conversation_id" | "session_id">
+  & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor">>;
+
 export type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
 export type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
 export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failure_detail" | "started_at" | "runtime_started_at" | "completed_at" | "provisional_id" | "delivery_state" | "state"> & { state?: MessageRecord["state"] };
@@ -425,6 +496,138 @@ export function recoverStaleWork(database: DatabaseSync, actor = "startup-recove
     database.prepare(`UPDATE memory_reviews SET state = 'pending', updated_at = unixepoch(), updated_by = ?
       WHERE state = 'processing' AND deleted_at IS NULL`).run(actor);
     database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recovery", now = Math.floor(Date.now() / 1000)): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const stale = database.prepare("SELECT DISTINCT task_id FROM task_runs WHERE state='processing' AND deleted_at IS NULL").all() as Array<{ task_id: number }>;
+    database.prepare(`UPDATE task_runs SET state='failed', failure_detail='Interrupted by restart', completed_at=?, updated_at=?, updated_by=?
+      WHERE state='processing' AND deleted_at IS NULL`).run(now, now, actor);
+    const updateTask = database.prepare(`UPDATE tasks SET next_due_at=?+interval_seconds, updated_at=?, updated_by=?
+      WHERE id=? AND task_type='recurring' AND state IN ('active','paused') AND deleted_at IS NULL`);
+    for (const { task_id } of stale) updateTask.run(now, now, actor, task_id);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+type TaskRunRow = Omit<TaskRunRecord, "artifact_paths"> & { artifact_paths_json: string };
+function taskRun(row: TaskRunRow): TaskRunRecord {
+  const { artifact_paths_json, ...record } = row;
+  return { ...record, artifact_paths: JSON.parse(artifact_paths_json) as string[] };
+}
+
+export function createTask(database: DatabaseSync, task: NewTask, actor = "system"): TaskRecord {
+  if (!task.goal.trim()) throw new RangeError("Task goal is required");
+  if (task.task_type === "recurring" && (!Number.isSafeInteger(task.interval_seconds) || task.interval_seconds! <= 0 || task.interval_seconds! % 3600 !== 0)) throw new RangeError("Recurring Task interval must be whole hours");
+  if (task.task_type === "one_time" && (task.interval_seconds != null || task.next_due_at != null)) throw new RangeError("One-time Task cannot have a schedule");
+  if (!database.prepare("SELECT 1 FROM sessions WHERE id=? AND conversation_id=? AND state='active' AND deleted_at IS NULL").get(task.session_id, task.conversation_id)) throw new Error("Task Session is not active in its Conversation");
+  const nextDueAt = task.next_due_at ?? (task.task_type === "recurring" ? Math.floor(Date.now() / 1000) + task.interval_seconds! : null);
+  const result = database.prepare(`INSERT INTO tasks (goal,task_type,interval_seconds,state,conversation_id,session_id,next_due_at,message_cursor,created_by,updated_by)
+    VALUES (?,?,?,'active',?,?,?,?,?,?)`).run(task.goal.trim(), task.task_type, task.interval_seconds ?? null, task.conversation_id, task.session_id, nextDueAt, task.message_cursor ?? 0, actor, actor);
+  return activeRow<TaskRecord>(database, "SELECT * FROM tasks WHERE id=? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+}
+
+export function getTask(database: DatabaseSync, id: number): TaskRecord | undefined {
+  return activeRow<TaskRecord>(database, "SELECT * FROM tasks WHERE id=? AND deleted_at IS NULL", id);
+}
+
+export function listTasks(database: DatabaseSync): TaskRecord[] {
+  return database.prepare("SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY id").all() as TaskRecord[];
+}
+
+export function listTaskRuns(database: DatabaseSync, taskId: number): TaskRunRecord[] {
+  return (database.prepare("SELECT * FROM task_runs WHERE task_id=? AND deleted_at IS NULL ORDER BY id").all(taskId) as TaskRunRow[]).map(taskRun);
+}
+
+export function getTaskRun(database: DatabaseSync, id: number): TaskRunRecord | undefined {
+  const row = database.prepare("SELECT * FROM task_runs WHERE id=? AND deleted_at IS NULL").get(id) as TaskRunRow | undefined;
+  return row ? taskRun(row) : undefined;
+}
+
+export function claimTaskRun(database: DatabaseSync, taskId: number, now: number, actor = "task-scheduler"): TaskRunRecord | undefined {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const task = getTask(database, taskId);
+    if (!task || task.state !== "active") throw new Error("Task is not active");
+    if (database.prepare("SELECT 1 FROM task_runs WHERE state='processing' AND deleted_at IS NULL").get()) {
+      database.exec("COMMIT");
+      return undefined;
+    }
+    const result = database.prepare(`INSERT INTO task_runs (task_id,state,started_at,created_at,created_by,updated_at,updated_by)
+      VALUES (?,'processing',?,?,?, ?,?)`).run(taskId, now, now, actor, now, actor);
+    const row = database.prepare("SELECT * FROM task_runs WHERE id=?").get(Number(result.lastInsertRowid)) as TaskRunRow;
+    database.exec("COMMIT");
+    return taskRun(row);
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function completeTaskRun(database: DatabaseSync, runId: number, messageCursor: number, artifactPaths: string[], now: number, actor = "task-runtime"): TaskRunRecord {
+  if (!Number.isSafeInteger(messageCursor) || messageCursor < 0) throw new RangeError("Invalid Task message cursor");
+  if (artifactPaths.some((path) => !path.startsWith("results/") || path.startsWith("/") || path.split(/[\\/]/).includes(".."))) throw new RangeError("Task artifacts must use relative results/ paths");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const current = database.prepare("SELECT task_id FROM task_runs WHERE id=? AND state='processing' AND deleted_at IS NULL").get(runId) as { task_id: number } | undefined;
+    if (!current) throw new Error("Task Run is not processing");
+    const changed = database.prepare(`UPDATE task_runs SET state='completed',completed_at=?,artifact_paths_json=?,updated_at=?,updated_by=?
+      WHERE id=? AND state='processing' AND deleted_at IS NULL`).run(now, JSON.stringify(artifactPaths), now, actor, runId);
+    if (changed.changes !== 1) throw new Error("Task Run changed before completion");
+    database.prepare(`UPDATE tasks SET message_cursor=?,next_due_at=CASE WHEN task_type='recurring' THEN ?+interval_seconds ELSE NULL END,
+      state=CASE WHEN task_type='one_time' AND state='active' THEN 'completed' ELSE state END,updated_at=?,updated_by=?
+      WHERE id=? AND deleted_at IS NULL AND state IN ('active','paused')`).run(messageCursor, now, now, actor, current.task_id);
+    const row = database.prepare("SELECT * FROM task_runs WHERE id=?").get(runId) as TaskRunRow;
+    database.exec("COMMIT");
+    return taskRun(row);
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function failTaskRun(database: DatabaseSync, runId: number, detail: string, now: number, actor = "task-runtime"): boolean {
+  const safeDetail = detail.replace(/(token|secret|password|api[_-]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 500);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const changed = database.prepare(`UPDATE task_runs SET state='failed',failure_detail=?,completed_at=?,updated_at=?,updated_by=?
+      WHERE id=? AND state='processing' AND deleted_at IS NULL`).run(safeDetail || "Task run failed", now, now, actor, runId);
+    if (changed.changes === 1) {
+      database.prepare(`UPDATE tasks SET next_due_at=CASE WHEN task_type='recurring' THEN ?+interval_seconds ELSE NULL END,updated_at=?,updated_by=?
+        WHERE id=(SELECT task_id FROM task_runs WHERE id=?) AND state IN ('active','paused') AND deleted_at IS NULL`).run(now, now, actor, runId);
+    }
+    database.exec("COMMIT");
+    return changed.changes === 1;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function pauseTask(database: DatabaseSync, taskId: number, actor = "user:owner"): boolean {
+  return database.prepare("UPDATE tasks SET state='paused',updated_at=unixepoch(),updated_by=? WHERE id=? AND state='active' AND deleted_at IS NULL").run(actor, taskId).changes === 1;
+}
+
+export function resumeTask(database: DatabaseSync, taskId: number, actor = "user:owner"): boolean {
+  return database.prepare("UPDATE tasks SET state='active',updated_at=unixepoch(),updated_by=? WHERE id=? AND state='paused' AND deleted_at IS NULL").run(actor, taskId).changes === 1;
+}
+
+export function cancelTask(database: DatabaseSync, taskId: number, now: number, actor = "user:owner"): boolean {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const changed = database.prepare("UPDATE tasks SET state='cancelled',updated_at=?,updated_by=? WHERE id=? AND state IN ('active','paused') AND deleted_at IS NULL").run(now, actor, taskId);
+    if (changed.changes === 1) database.prepare(`UPDATE task_runs SET state='cancelled',completed_at=?,updated_at=?,updated_by=?
+      WHERE task_id=? AND state='processing' AND deleted_at IS NULL`).run(now, now, actor, taskId);
+    database.exec("COMMIT");
+    return changed.changes === 1;
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;

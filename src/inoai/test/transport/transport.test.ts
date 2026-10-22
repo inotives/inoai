@@ -35,6 +35,7 @@ class FakeClient extends EventEmitter {
   sentChannelIds: string[] = [];
   threadCount = 0;
   deletedThreads: string[] = [];
+  deletedMessages: string[] = [];
   editedApprovals: string[] = [];
   threadStarted?: () => void;
   threadGate?: Promise<void>;
@@ -43,6 +44,7 @@ class FakeClient extends EventEmitter {
     guildId: "guild",
     threads: { create: async (options: unknown) => { this.threadStarted?.(); await this.threadGate; if (this.failThread) throw new Error("thread creation failed"); this.sent.push(options); return { id: ++this.threadCount === 1 ? "thread" : `thread-${this.threadCount}` }; } },
     send: async (options: unknown) => { this.sendStarted?.(); await this.sendGate; if (this.failSend) throw new Error("send failed"); this.sentChannelIds.push(id); this.sent.push(options); return { id: `sent-${this.sent.length}` }; },
+    messages: { delete: async (messageId: string) => { this.deletedMessages.push(`${id}:${messageId}`); } },
   } : {
     isThread: () => id.startsWith("thread"),
     isTextBased: () => true,
@@ -82,6 +84,8 @@ test("Discord gateway lifecycle and message mapping use a fake client", async ()
   assert.equal(await transport.createConversation("parent", "message", "task"), "thread");
   assert.equal(await transport.sendMessage("thread", "answer", "previous"), "sent-2");
   assert.equal(await transport.publishHealth("channel", "inoai is online", "guild"), "sent-3");
+  await transport.deleteMessage("parent", "starter");
+  assert.deepEqual(fake.deletedMessages, ["parent:starter"]);
   await assert.rejects(transport.publishHealth("channel", "inoai is online", "other-guild"), /configured guild/);
   assert.deepEqual(fake.sent, [
     { name: "task", startMessage: "message" },
@@ -106,6 +110,16 @@ test("Discord gateway lifecycle and message mapping use a fake client", async ()
   assert.equal(transport.health().state, "stopped");
 });
 
+test("Discord uploads a Task artifact with its relative path and no mentions", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  await transport.start(() => undefined);
+  assert.equal(await transport.uploadFile("thread", "/tmp/report.md", "results/1/2/report.md"), "sent-1");
+  assert.deepEqual(fake.sent[0], { content: "results/1/2/report.md",
+    files: [{ attachment: "/tmp/report.md", name: "report.md" }], allowedMentions: { parse: [] } });
+  await transport.stop();
+});
+
 test("native inoai interaction is deferred privately and routed without a message event", async () => {
   const fake = new FakeClient();
   const transport = new DiscordTransport("", fake as unknown as Client);
@@ -114,7 +128,7 @@ test("native inoai interaction is deferred privately and routed without a messag
   await transport.start(() => { throw new Error("Slash command must not enter the message queue"); }, undefined, undefined,
     async (control) => { controls.push(`${control.command}:${control.conversationId}:${control.externalUserId}:${control.conversationOwnedByBot}`); await control.respond("ready"); });
   const interaction = (channelId: string, ownerId: string) => ({
-    isChatInputCommand: () => true, commandName: "inoai", options: { getSubcommand: () => "status" },
+    isChatInputCommand: () => true, commandName: "inoai", options: { getSubcommand: () => "status", getSubcommandGroup: () => null },
     guildId: "guild", channelId, channel: { isThread: () => true, parentId: "channel", ownerId },
     user: { id: "owner" },
     deferReply: async (options: unknown) => { replies.push(options); },
@@ -128,6 +142,31 @@ test("native inoai interaction is deferred privately and routed without a messag
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(controls, ["status:thread:owner:true", "status:other-thread:owner:false"]);
   assert.deepEqual(replies.slice(2), [{ flags: MessageFlags.Ephemeral }, { content: "ready", allowedMentions: { parse: [] } }]);
+  await transport.stop();
+});
+
+test("Discord Task command maps options and disables mentions in its private reply", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const replies: unknown[] = [];
+  const controls: unknown[] = [];
+  await transport.start(() => undefined, undefined, undefined, async (control) => {
+    controls.push({ command: control.command, goal: control.taskGoal, type: control.taskType,
+      interval: control.intervalSeconds, channel: control.guildTextChannelId });
+    await control.respond("<@everyone> Task created");
+  });
+  fake.emit(Events.InteractionCreate, {
+    isChatInputCommand: () => true, commandName: "inoai", options: {
+      getSubcommand: () => "create", getSubcommandGroup: () => "task",
+      getString: (name: string) => ({ goal: "Write a report", type: "recurring", unit: "days" })[name as "goal" | "type" | "unit"],
+      getInteger: () => 2,
+    }, guildId: "guild", channelId: "channel", channel: { type: ChannelType.GuildText, isThread: () => false }, user: { id: "owner" },
+    deferReply: async (value: unknown) => { replies.push(value); },
+    editReply: async (value: unknown) => { replies.push(value); },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(controls, [{ command: "task-create", goal: "Write a report", type: "recurring", interval: 172800, channel: "channel" }]);
+  assert.deepEqual(replies, [{ flags: MessageFlags.Ephemeral }, { content: "<@everyone> Task created", allowedMentions: { parse: [] } }]);
   await transport.stop();
 });
 
@@ -425,7 +464,7 @@ test("startup announces once and archives one health Event across reconnects", a
       const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(fake.registeredGuild, "guild");
-      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset"]);
+      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset", "task"]);
       assert.deepEqual(fake.sentChannelIds, ["status"]);
       const event = listEvents(instance.database)[0];
       assert.equal(event.event_type, "startup_online");

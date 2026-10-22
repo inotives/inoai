@@ -69,14 +69,27 @@ export class DiscordTransport implements ChatTransport {
     this.client.on(Events.InteractionCreate, (interaction) => {
       if (this.state !== "ready" || !onControl || !interaction.isChatInputCommand() || interaction.commandName !== "inoai") return;
       const command = interaction.options.getSubcommand(false);
-      if (command !== "status" && command !== "cancel" && command !== "reset") return;
+      const group = interaction.options.getSubcommandGroup(false);
+      if (command !== "status" && command !== "cancel" && command !== "reset"
+         && !(group === "task" && (command === "create" || command === "list" || command === "pause" || command === "resume" || command === "run" || command === "cancel"))) return;
       void (async () => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await onControl({
-          command, workspaceId: interaction.guildId, conversationId: interaction.channelId,
+          command: (group === "task" ? `task-${command}` : command) as ThreadControl["command"],
+          workspaceId: interaction.guildId, conversationId: interaction.channelId,
           parentConversationId: interaction.channel?.isThread() ? interaction.channel.parentId : null,
+          guildTextChannelId: interaction.channel?.type === ChannelType.GuildText ? interaction.channelId
+            : interaction.channel?.isThread() ? interaction.channel.parentId : null,
           externalUserId: interaction.user.id,
           conversationOwnedByBot: interaction.channel?.isThread() === true && interaction.channel.ownerId === this.client.user?.id,
+          taskGoal: command === "create" ? interaction.options.getString("goal", true) : undefined,
+          taskType: command === "create" ? interaction.options.getString("type", true) as "one_time" | "recurring" : undefined,
+          intervalSeconds: command === "create" ? (() => {
+            const interval = interaction.options.getInteger("interval");
+            const unit = interaction.options.getString("unit");
+            return interval && unit ? interval * (unit === "days" ? 86400 : 3600) : undefined;
+          })() : undefined,
+           taskId: group === "task" && (command === "pause" || command === "resume" || command === "run" || command === "cancel") ? interaction.options.getInteger("id") ?? undefined : undefined,
           respond: (text) => interaction.editReply({ content: text, allowedMentions: { parse: [] } }).then(() => undefined),
         });
       })().catch(() => { void interaction.editReply({ content: "Control unavailable. Please try again." }).catch(() => undefined); });
@@ -98,7 +111,24 @@ export class DiscordTransport implements ChatTransport {
     const command = new SlashCommandBuilder().setName("inoai").setDescription("Control this inoai conversation")
       .addSubcommand((part) => part.setName("status").setDescription("Show this conversation's state"))
       .addSubcommand((part) => part.setName("cancel").setDescription("Stop the active turn"))
-      .addSubcommand((part) => part.setName("reset").setDescription("Start a fresh session after this turn"));
+      .addSubcommand((part) => part.setName("reset").setDescription("Start a fresh session after this turn"))
+      .addSubcommandGroup((group) => group.setName("task").setDescription("Manage inoai Tasks")
+        .addSubcommand((part) => part.setName("create").setDescription("Create a Task thread")
+          .addStringOption((option) => option.setName("goal").setDescription("What the Task should do").setRequired(true))
+          .addStringOption((option) => option.setName("type").setDescription("Task type").setRequired(true)
+            .addChoices({ name: "One time", value: "one_time" }, { name: "Recurring", value: "recurring" }))
+          .addIntegerOption((option) => option.setName("interval").setDescription("Recurring interval").setMinValue(1))
+          .addStringOption((option) => option.setName("unit").setDescription("Recurring interval unit")
+            .addChoices({ name: "Hours", value: "hours" }, { name: "Days", value: "days" })))
+        .addSubcommand((part) => part.setName("list").setDescription("List Tasks"))
+        .addSubcommand((part) => part.setName("pause").setDescription("Pause a Task")
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
+        .addSubcommand((part) => part.setName("resume").setDescription("Resume a Task")
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
+        .addSubcommand((part) => part.setName("run").setDescription("Run a Task now")
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
+        .addSubcommand((part) => part.setName("cancel").setDescription("Cancel a Task and its active run")
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1))));
     if (!this.client.application) throw new Error("Discord application unavailable for command registration");
     await this.client.application.commands.create(command.toJSON(), guildId);
   }
@@ -122,6 +152,12 @@ export class DiscordTransport implements ChatTransport {
     await channel.delete();
   }
 
+  async deleteMessage(conversationId: string, messageId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (channel?.type !== ChannelType.GuildText) throw new Error("Discord parent conversation must be a guild text channel");
+    await channel.messages.delete(messageId);
+  }
+
   async sendMessage(conversationId: string, text: string, replyToExternalMessageId?: string): Promise<string> {
     let channel;
     try { channel = await this.client.channels.fetch(conversationId); }
@@ -129,6 +165,14 @@ export class DiscordTransport implements ChatTransport {
     if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
     const message = await channel.send({ content: text, allowedMentions: { parse: [], repliedUser: false },
       ...(replyToExternalMessageId ? { reply: { messageReference: replyToExternalMessageId } } : {}) });
+    return message.id;
+  }
+
+  async uploadFile(conversationId: string, filePath: string, name: string): Promise<string> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
+    const message = await channel.send({ content: name.slice(0, 1900),
+      files: [{ attachment: filePath, name: name.split("/").at(-1) }], allowedMentions: { parse: [] } });
     return message.id;
   }
 

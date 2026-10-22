@@ -1,4 +1,0 @@
-role = "planner"
-tool = "codex"
-instructions = "instructions.md"
-context = "context.md"

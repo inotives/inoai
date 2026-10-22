@@ -50,6 +50,7 @@ export class ConversationWorker {
   private queueListener: (() => void) | undefined;
   private pumpPromise: Promise<void> | undefined;
   private wakeRequested = false;
+  private taskReserved = false;
 
   constructor(
     private readonly database: OperationalStore,
@@ -81,7 +82,7 @@ export class ConversationWorker {
           if (!this.stopping) this.wakeRequested = true;
         });
       }
-      while (this.mode === "per-session" || this.active.size === 0) {
+      while (!this.taskReserved && (this.mode === "per-session" || this.active.size === 0)) {
         const message = await this.database.claimNextMessage(this.mode, "conversation-worker");
         if (!message) break;
         this.turnCancellation.set(message.id, new AbortController());
@@ -124,6 +125,22 @@ export class ConversationWorker {
   }
 
   concurrencyMode(): "global" | "per-session" { return this.mode; }
+
+  async reserveTaskRun(): Promise<(() => void) | undefined> {
+    if (this.stopping || this.taskReserved) return undefined;
+    this.taskReserved = true;
+    try {
+      await this.idle();
+      if (!await this.database.chatBusy()) return () => { this.taskReserved = false; void this.wake(); };
+    } catch (error) {
+      this.taskReserved = false;
+      void this.wake();
+      throw error;
+    }
+    this.taskReserved = false;
+    void this.wake();
+    return undefined;
+  }
 
   async cancelSession(sessionId: number): Promise<boolean> {
     const messages = await this.database.listMessages(sessionId);
