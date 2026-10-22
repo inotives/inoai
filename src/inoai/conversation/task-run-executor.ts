@@ -71,7 +71,7 @@ export class TaskRunExecutor {
   }
 
   private async execute(taskId: number, runId: number, active: ActiveRun): Promise<void> {
-    const output = join(dirname(this.home.directory), "results", String(taskId), String(runId));
+    const output = join(this.home.directory, "results", String(taskId), String(runId));
     const relativeOutput = `results/${taskId}/${runId}`;
     let conversationId: string | undefined;
     try {
@@ -81,7 +81,7 @@ export class TaskRunExecutor {
       const messages = (await this.store.listMessages(task.session_id)).filter((message) =>
         message.id > task.message_cursor && message.direction === "user" && message.state === "completed");
       const cursor = messages.at(-1)?.id ?? task.message_cursor;
-      const results = join(dirname(this.home.directory), "results");
+      const results = join(this.home.directory, "results");
       const taskDirectory = dirname(output);
       await mkdir(results, { recursive: true });
       const resultsInfo = await lstat(results);
@@ -122,7 +122,7 @@ export class TaskRunExecutor {
       for (const path of paths) {
         try {
           if (!this.transport.uploadFile) throw new Error("File upload unavailable");
-          await this.transport.uploadFile(task.conversation_id, join(dirname(this.home.directory), path), path);
+          await this.transport.uploadFile(task.conversation_id, join(this.home.directory, path), path);
         }
         catch { await this.transport.sendMessage(task.conversation_id, `Upload failed; local file: ${path}`).catch(() => undefined); }
       }

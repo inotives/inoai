@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -71,8 +71,10 @@ test("manual Task Run claims once, uses its thread cursor, and keeps unique uplo
       assert.match(prompts[0]!, /Use Markdown/);
       assert.deepEqual((await store.listTaskRuns(task.id))[0]?.artifact_paths, [`results/${task.id}/1/report.md`]);
       assert.equal(uploads.length, 1);
+      assert.equal(uploads[0], join(instance.runtimeHome.directory, "results", String(task.id), "1", "report.md"));
       assert.match(sent.join("\n"), /results\/1\/1\/report.md/);
-      assert.equal(await readFile(join(directory, "results", String(task.id), "1", "report.md"), "utf8"), "report 1");
+      assert.equal(await readFile(join(instance.runtimeHome.directory, "results", String(task.id), "1", "report.md"), "utf8"), "report 1");
+      await assert.rejects(access(join(directory, "results")));
 
       assert.equal(await runner.start(task.id), "started");
       await until(async () => {
@@ -82,8 +84,8 @@ test("manual Task Run claims once, uses its thread cursor, and keeps unique uplo
       });
       await runner.stop();
       assert.doesNotMatch(prompts[1]!, /Use Markdown/);
-      assert.equal(await readFile(join(directory, "results", String(task.id), "1", "report.md"), "utf8"), "report 1");
-      assert.equal(await readFile(join(directory, "results", String(task.id), "2", "report.md"), "utf8"), "report 2");
+      assert.equal(await readFile(join(instance.runtimeHome.directory, "results", String(task.id), "1", "report.md"), "utf8"), "report 1");
+      assert.equal(await readFile(join(instance.runtimeHome.directory, "results", String(task.id), "2", "report.md"), "utf8"), "report 2");
     } finally { await instance.release(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -129,7 +131,8 @@ test("failed one-time Task waits for manual retry; upload failure keeps local ar
       await runner.stop();
       assert.equal((await store.getTask(task.id))?.state, "completed");
       assert.match(sent.join("\n"), /Upload failed; local file: results\/1\/2\/report.html/);
-      assert.equal(await readFile(join(directory, "results", "1", "2", "report.html"), "utf8"), "<p>ready</p>");
+      assert.equal(await readFile(join(instance.runtimeHome.directory, "results", "1", "2", "report.html"), "utf8"), "<p>ready</p>");
+      await assert.rejects(access(join(directory, "results")));
     } finally { await instance.release(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

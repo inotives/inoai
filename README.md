@@ -56,11 +56,11 @@ my-project/
 │   ├── .env
 │   ├── agent.md
 │   ├── inoai.sqlite
-│   └── backups/
-├── .robin-xai-test/           # the Robin-XAI test instance
+│   ├── backups/
+│   └── results/               # Task files by Task ID and Run ID
+├── .robin-xai-test/           # Robin-XAI test instance (with its own results/)
 ├── .inoai-connect-claude/     # Claude CLI adapter (Phase 5a)
 ├── .inoai-connect-opencode/   # OpenCode CLI adapter (Phase 5b)
-└── results/                   # Task files, grouped by Task ID and Run ID
 ```
 
 On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process writes each runtime-home database; the UI and read-only tools may inspect it. Stop the core before using local commands that write Memory or the allowlist. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
@@ -320,7 +320,7 @@ Messages you send in a Task thread are saved as guidance for its next run. They 
 
 The in-process scheduler checks for due recurring Tasks at startup and about once per minute; the external Heartbeat Supervisor remains health-only. After downtime it runs an overdue Task once, without replaying missed intervals. The next due time is one interval after a run completes or fails. A failed or restart-interrupted run is recorded as failed and never retried automatically; use `run` for a manual retry. Pausing prevents new runs while letting an active run finish. Resuming restores its existing due time. Cancelling ends the Task and stops its active run.
 
-For requested files, the agent is directed to write under the deployment folder's `results/<task-id>/<run-id>/`, outside the hidden runtime home. Each run gets a new directory, so earlier output remains. inoai posts the run summary and relative file paths in the Task thread and uploads a copy of each produced file to Discord. If an upload fails, the local file remains and the thread receives its relative path. Keep these files in your deployment backup plan; SQLite stores the paths and run history, not the file contents.
+For requested files, the agent is directed to write under the selected runtime home's `results/<task-id>/<run-id>/`. Each run gets a new directory, so earlier output remains. inoai posts the run summary and relative file paths in the Task thread and uploads a copy of each produced file to Discord. If an upload fails, the local file remains and the thread receives its relative path. Keep these files in your runtime-home backup plan; SQLite stores the paths and run history, not the file contents.
 
 ## Heartbeat Supervisor
 
