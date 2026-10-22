@@ -23,6 +23,7 @@ export type { ChatTransport, IncomingMessage, ThreadControl } from "./transport/
 import type { OperationalStore } from "./persistence/operational-store.js";
 import { openDatabase, withMaintenanceDatabase } from "./connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "./connectors/persistence/sqlite/operational-store.js";
+import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operational-store.js";
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
@@ -71,10 +72,10 @@ export async function validateProfile(launchDirectory = process.cwd(), connectDi
   return { runtimeHome, profile };
 }
 
-export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore) {
+export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore & Partial<TaskOperationsStore>) {
   const { runtimeHome, configuration } = await validate(launchDirectory, connectDirectory);
   const release = await acquireRuntimeHomeLock(runtimeHome);
-  let store: OperationalStore | undefined;
+  let store: (OperationalStore & Partial<TaskOperationsStore>) | undefined;
   try {
     store = storeFactory?.(runtimeHome) ?? createSqliteOperationalStore(openDatabase(runtimeHome));
     const owner = await store.bootstrapOwner(configuration);
@@ -115,14 +116,34 @@ export async function startTransport(
   transport: ChatTransport = createChatTransport(instance.configuration),
   onFailure?: (error: Error) => void,
   worker?: ConversationWorker,
-  operationalStore?: OperationalStore,
+  operationalStore?: OperationalStore & Partial<TaskOperationsStore>,
 ): Promise<ChatTransport> {
-  const store = operationalStore ?? instance.store;
+  const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
   const receive = onIncomingMessage ?? ((message: IncomingMessage) => { void (async () => {
     if (instance.closing) return;
     const eligible = await classifyIncomingMessage(store, instance.configuration, message);
     const workspaceId = message.workspaceId;
+    const task = message.parentConversationId && eligible ? (await store.listTasks?.())?.find((item) =>
+      item.conversation_id === message.conversationId && item.session_id === ("session" in eligible ? eligible.session.id : -1)) : undefined;
+    const pendingTaskSession = !task && eligible?.kind === "bound-thread"
+      && (await store.getSession(eligible.session.id))?.agent_session_id.startsWith("pending:task:");
+    if (task || pendingTaskSession) {
+      if (eligible?.kind === "bound-thread" && eligible.user.id === instance.owner.id
+        && message.externalUserId === instance.configuration.discordOwnerUserId && task?.state !== "cancelled") {
+        try {
+          await store.archiveMessage({
+            session_id: eligible.session.id, transport: message.transport, workspace_id: workspaceId!,
+            external_message_id: message.externalMessageId, external_author_id: message.externalUserId,
+            user_id: eligible.user.id, direction: "user", state: "completed", body: message.body,
+            reply_to_external_message_id: message.replyToExternalMessageId, in_reply_to_message_id: null,
+          }, "task:steering");
+        } catch (error) {
+          console.error("Discord Task message failed:", error instanceof Error ? error.message : error);
+        }
+      }
+      return;
+    }
     if (eligible?.kind === "reset-thread" && workspaceId !== null) {
       try {
         const session = await store.createSession({
@@ -213,6 +234,71 @@ export async function startTransport(
   })().catch((error: unknown) => console.error("Discord message handling failed:", error instanceof Error ? error.message : error)); });
   const control = async (request: ThreadControl) => {
     const denied = "This control is available only in your active inoai thread.";
+    if (request.command.startsWith("task-")) {
+      if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
+        || request.externalUserId !== instance.configuration.discordOwnerUserId || !request.guildTextChannelId
+        || !store.createTask || !store.listTasks || !store.pauseTask || !store.resumeTask) {
+        await request.respond("Task control unavailable in this channel.");
+        return;
+      }
+      const owner = await store.findUser("discord", request.workspaceId, request.externalUserId);
+      if (!owner || owner.id !== instance.owner.id) { await request.respond("Task control unavailable in this channel."); return; }
+      const tasks = await store.listTasks();
+      if (request.parentConversationId && !tasks.some((item) => item.conversation_id === request.conversationId)) {
+        await request.respond("Task control unavailable in this channel.");
+        return;
+      }
+      if (request.command === "task-create") {
+        const goal = request.taskGoal?.trim();
+        const type = request.taskType;
+        const interval = request.intervalSeconds;
+        if (!goal || (type !== "one_time" && type !== "recurring")
+          || (type === "recurring" && (!Number.isSafeInteger(interval) || interval! < 3600 || interval! % 3600 !== 0))
+          || (type === "one_time" && interval !== undefined)) {
+          await request.respond("Provide a goal and a valid Task type. Recurring Tasks need a whole-hour or whole-day interval.");
+          return;
+        }
+        let starterId: string | undefined;
+        let threadId: string | undefined;
+        let sessionId: number | undefined;
+        let createdTaskId: number | undefined;
+        try {
+          starterId = await transport.sendMessage(request.guildTextChannelId, "inoai Task thread");
+          threadId = await transport.createConversation(request.guildTextChannelId, starterId, "inoai Task");
+          const session = await store.createSession({
+            user_id: owner.id, transport: "discord", workspace_id: request.workspaceId,
+            parent_conversation_id: request.guildTextChannelId, conversation_id: threadId,
+            initiating_external_message_id: starterId, agent_provider: instance.configuration.agentProvider,
+            agent_session_id: `pending:task:${threadId}`, project_path: dirname(instance.runtimeHome.directory),
+          }, "task:create");
+          sessionId = session.id;
+          const task = await store.createTask({ goal, task_type: type, interval_seconds: interval,
+            conversation_id: threadId, session_id: session.id }, "user:owner");
+          createdTaskId = task.id;
+        } catch {
+          if (sessionId) await store.resetSession(sessionId, "task:create-failed").catch(() => undefined);
+          if (threadId) await transport.deleteConversation(threadId).catch(() => undefined);
+          if (starterId) await transport.deleteMessage?.(request.guildTextChannelId, starterId).catch(() => undefined);
+          await request.respond("Task creation failed. Check that inoai can create a thread here, then try again.");
+          return;
+        }
+        await request.respond(`Task #${createdTaskId} created: https://discord.com/channels/${request.workspaceId}/${threadId}`);
+        return;
+      }
+      if (request.command === "task-list") {
+        const lines = tasks.map((task) => `#${task.id} ${task.task_type === "one_time" ? "one time" : "recurring"} ${task.state}; next: ${task.next_due_at === null ? "none" : `<t:${task.next_due_at}:f>`}; https://discord.com/channels/${request.workspaceId}/${task.conversation_id}`);
+        await request.respond((lines.join("\n") || "No Tasks yet.").slice(0, 1900));
+        return;
+      }
+      const taskId = request.taskId ?? tasks.find((item) => item.conversation_id === request.conversationId)?.id;
+      const task = tasks.find((item) => item.id === taskId);
+      if (!task) { await request.respond("Task not found. Provide its ID or use this command in its thread."); return; }
+      const changed = request.command === "task-pause"
+        ? await store.pauseTask(task.id, "user:owner") : await store.resumeTask(task.id, "user:owner");
+      await request.respond(changed ? `Task #${task.id} ${request.command === "task-pause" ? "paused" : "resumed"}.`
+        : `Task #${task.id} cannot be ${request.command === "task-pause" ? "paused" : "resumed"} from its current state.`);
+      return;
+    }
     if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
       || request.externalUserId !== instance.configuration.discordOwnerUserId || !request.parentConversationId
       || request.parentConversationId === instance.configuration.discordStatusChannelId) {
@@ -223,6 +309,10 @@ export async function startTransport(
     const session = owner ? await store.findSessionByConversation(
       "discord", request.workspaceId, request.parentConversationId, request.conversationId,
     ) : undefined;
+    if (session && (await store.listTasks?.())?.some((item) => item.session_id === session.id)) {
+      await request.respond("Use /inoai task controls in this Task thread.");
+      return;
+    }
     if (session && session.user_id !== owner?.id) {
       await request.respond(request.conversationOwnedByBot ? denied
         : "This thread belongs to another inoai bot. Choose that bot's /inoai command to control it.");

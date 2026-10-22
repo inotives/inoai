@@ -21,12 +21,17 @@ export type TransportHealth = {
 };
 
 export type ThreadControl = {
-  command: "status" | "cancel" | "reset";
+  command: "status" | "cancel" | "reset" | "task-create" | "task-list" | "task-pause" | "task-resume";
   workspaceId: string | null;
   conversationId: string;
   parentConversationId: string | null;
+  guildTextChannelId?: string | null;
   externalUserId: string;
   conversationOwnedByBot: boolean;
+  taskGoal?: string;
+  taskType?: "one_time" | "recurring";
+  intervalSeconds?: number;
+  taskId?: number;
   respond(text: string): Promise<void>;
 };
 
@@ -36,6 +41,7 @@ export interface ChatTransport extends ConversationTransport {
   stop(): Promise<void>;
   createConversation(parentConversationId: string, initialMessageId: string, name: string): Promise<string>;
   deleteConversation(conversationId: string): Promise<void>;
+  deleteMessage?(conversationId: string, messageId: string): Promise<void>;
   sendMessage(conversationId: string, text: string, replyToExternalMessageId?: string): Promise<string>;
   showWorking?(conversationId: string): Promise<void>;
   disableLegacyApprovalControls?(conversationId: string, messageId: string): Promise<void>;
