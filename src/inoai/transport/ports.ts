@@ -21,7 +21,7 @@ export type TransportHealth = {
 };
 
 export type ThreadControl = {
-  command: "status" | "cancel" | "reset" | "task-create" | "task-list" | "task-pause" | "task-resume";
+  command: "status" | "cancel" | "reset" | "task-create" | "task-list" | "task-pause" | "task-resume" | "task-run" | "task-cancel";
   workspaceId: string | null;
   conversationId: string;
   parentConversationId: string | null;
@@ -43,6 +43,7 @@ export interface ChatTransport extends ConversationTransport {
   deleteConversation(conversationId: string): Promise<void>;
   deleteMessage?(conversationId: string, messageId: string): Promise<void>;
   sendMessage(conversationId: string, text: string, replyToExternalMessageId?: string): Promise<string>;
+  uploadFile?(conversationId: string, filePath: string, name: string): Promise<string>;
   showWorking?(conversationId: string): Promise<void>;
   disableLegacyApprovalControls?(conversationId: string, messageId: string): Promise<void>;
   publishHealth(targetConversationId: string, text: string, workspaceId: string): Promise<string>;

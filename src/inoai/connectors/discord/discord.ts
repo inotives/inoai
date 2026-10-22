@@ -71,7 +71,7 @@ export class DiscordTransport implements ChatTransport {
       const command = interaction.options.getSubcommand(false);
       const group = interaction.options.getSubcommandGroup(false);
       if (command !== "status" && command !== "cancel" && command !== "reset"
-        && !(group === "task" && (command === "create" || command === "list" || command === "pause" || command === "resume"))) return;
+         && !(group === "task" && (command === "create" || command === "list" || command === "pause" || command === "resume" || command === "run" || command === "cancel"))) return;
       void (async () => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await onControl({
@@ -89,7 +89,7 @@ export class DiscordTransport implements ChatTransport {
             const unit = interaction.options.getString("unit");
             return interval && unit ? interval * (unit === "days" ? 86400 : 3600) : undefined;
           })() : undefined,
-          taskId: command === "pause" || command === "resume" ? interaction.options.getInteger("id") ?? undefined : undefined,
+           taskId: group === "task" && (command === "pause" || command === "resume" || command === "run" || command === "cancel") ? interaction.options.getInteger("id") ?? undefined : undefined,
           respond: (text) => interaction.editReply({ content: text, allowedMentions: { parse: [] } }).then(() => undefined),
         });
       })().catch(() => { void interaction.editReply({ content: "Control unavailable. Please try again." }).catch(() => undefined); });
@@ -124,6 +124,10 @@ export class DiscordTransport implements ChatTransport {
         .addSubcommand((part) => part.setName("pause").setDescription("Pause a Task")
           .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
         .addSubcommand((part) => part.setName("resume").setDescription("Resume a Task")
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
+        .addSubcommand((part) => part.setName("run").setDescription("Run a Task now")
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
+        .addSubcommand((part) => part.setName("cancel").setDescription("Cancel a Task and its active run")
           .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1))));
     if (!this.client.application) throw new Error("Discord application unavailable for command registration");
     await this.client.application.commands.create(command.toJSON(), guildId);
@@ -161,6 +165,14 @@ export class DiscordTransport implements ChatTransport {
     if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
     const message = await channel.send({ content: text, allowedMentions: { parse: [], repliedUser: false },
       ...(replyToExternalMessageId ? { reply: { messageReference: replyToExternalMessageId } } : {}) });
+    return message.id;
+  }
+
+  async uploadFile(conversationId: string, filePath: string, name: string): Promise<string> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
+    const message = await channel.send({ content: name.slice(0, 1900),
+      files: [{ attachment: filePath, name: name.split("/").at(-1) }], allowedMentions: { parse: [] } });
     return message.id;
   }
 

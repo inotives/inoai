@@ -6,6 +6,10 @@ import test from "node:test";
 
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { start, startTransport } from "../../app.js";
+import type { AgentRuntime, RuntimeEvent } from "../../agent-runtime/ports.js";
+import { TaskRunExecutor } from "../../conversation/task-run-executor.js";
+import type { TaskOperationsStore } from "../../connectors/persistence/sqlite/operational-store.js";
+import type { OperationalStore } from "../../persistence/operational-store.js";
 import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../../transport/ports.js";
 
 const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNER_USER_ID=owner",
@@ -61,7 +65,13 @@ test("Task controls authorize the owner, create a thread, and keep steering out 
     const instance = await start(directory);
     try {
       const transport = new TaskTransport();
-      await startTransport(instance, undefined, transport);
+      const runtime: AgentRuntime = { displayName: "fake", loginHint: "none",
+        createSession: async () => "runtime-session", resumeSession: async () => {}, cancel: async () => {},
+        health: () => ({ state: "ready" }), close: async () => {},
+        async *runTurn(): AsyncIterable<RuntimeEvent> { yield { type: "answer", text: "Done" }; } };
+      const runner = new TaskRunExecutor(instance.store as OperationalStore & TaskOperationsStore,
+        runtime, instance.runtimeHome, transport, { reserveTaskRun: async () => () => {} }, "codex");
+      await startTransport(instance, undefined, transport, undefined, undefined, undefined, runner);
       const create = { taskGoal: "Write a report", taskType: "recurring" as const, intervalSeconds: 3600 };
       assert.match(await transport.control("task-create", { ...create, externalUserId: "stranger" }), /unavailable/);
       assert.match(await transport.control("task-create", { ...create, workspaceId: null }), /unavailable/);
@@ -88,6 +98,12 @@ test("Task controls authorize the owner, create a thread, and keep steering out 
       assert.match(await transport.control("task-resume", { conversationId: "task-thread", parentConversationId: "channel" }), /resumed/);
       assert.match(await transport.control("task-create", { taskGoal: "Once", taskType: "one_time" }), /Task #2 created/);
       assert.equal((await instance.store.getTask?.(2))?.next_due_at, null);
+      assert.match(await transport.control("task-run", { taskId: 2, externalUserId: "stranger" }), /unavailable/);
+      assert.equal((await instance.store.listTaskRuns?.(2))?.length, 0);
+      assert.match(await transport.control("task-run", { taskId: 2 }), /run started/);
+      await until(async () => (await instance.store.getTaskRun?.(1))?.state === "completed");
+      assert.match(await transport.control("task-cancel", { taskId: task.id, externalUserId: "stranger" }), /unavailable/);
+      await runner.stop();
 
       const incoming: IncomingMessage = { transport: "discord", workspaceId: "guild", conversationId: "task-thread",
         parentConversationId: "channel", externalMessageId: "steer-1", externalUserId: "owner", body: "Use Markdown",
@@ -101,6 +117,7 @@ test("Task controls authorize the owner, create a thread, and keep steering out 
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal((await instance.store.listMessages(task.session_id)).length, 1);
       assert.match(await transport.control("reset", { conversationId: "task-thread", parentConversationId: "channel" }), /Use \/inoai task controls/);
+      assert.match(await transport.control("task-cancel", { taskId: task.id }), /cancelled/);
     } finally { await instance.release(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -110,6 +110,16 @@ test("Discord gateway lifecycle and message mapping use a fake client", async ()
   assert.equal(transport.health().state, "stopped");
 });
 
+test("Discord uploads a Task artifact with its relative path and no mentions", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  await transport.start(() => undefined);
+  assert.equal(await transport.uploadFile("thread", "/tmp/report.md", "results/1/2/report.md"), "sent-1");
+  assert.deepEqual(fake.sent[0], { content: "results/1/2/report.md",
+    files: [{ attachment: "/tmp/report.md", name: "report.md" }], allowedMentions: { parse: [] } });
+  await transport.stop();
+});
+
 test("native inoai interaction is deferred privately and routed without a message event", async () => {
   const fake = new FakeClient();
   const transport = new DiscordTransport("", fake as unknown as Client);

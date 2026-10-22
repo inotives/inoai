@@ -12,6 +12,7 @@ import { loadConfiguration } from "./agent-instance/config.js";
 import type { UserRecord } from "./connectors/persistence/sqlite/legacy-database.js";
 import type { MemoryRecord } from "./memory/ports.js";
 import { ConversationWorker } from "./conversation/conversation-worker.js";
+import { TaskRunExecutor } from "./conversation/task-run-executor.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
@@ -79,6 +80,7 @@ export async function start(launchDirectory = process.cwd(), connectDirectory?: 
   try {
     store = storeFactory?.(runtimeHome) ?? createSqliteOperationalStore(openDatabase(runtimeHome));
     const owner = await store.bootstrapOwner(configuration);
+    await store.recoverTaskRuns?.();
     const pendingIngestion = new Set<Promise<void>>();
     const activeStore = store;
     let cleanup: Promise<void> | undefined;
@@ -117,6 +119,7 @@ export async function startTransport(
   onFailure?: (error: Error) => void,
   worker?: ConversationWorker,
   operationalStore?: OperationalStore & Partial<TaskOperationsStore>,
+  taskRunner?: TaskRunExecutor,
 ): Promise<ChatTransport> {
   const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
@@ -293,6 +296,20 @@ export async function startTransport(
       const taskId = request.taskId ?? tasks.find((item) => item.conversation_id === request.conversationId)?.id;
       const task = tasks.find((item) => item.id === taskId);
       if (!task) { await request.respond("Task not found. Provide its ID or use this command in its thread."); return; }
+      if (request.command === "task-run") {
+        if (!taskRunner) { await request.respond("Task execution unavailable."); return; }
+        const result = await taskRunner.start(task.id);
+        await request.respond(result === "started" ? `Task #${task.id} run started. Results will appear in its thread.`
+          : result === "busy" ? "Chat or another Task Run is active. Try again when it finishes."
+            : `Task #${task.id} cannot run from its current state.`);
+        return;
+      }
+      if (request.command === "task-cancel") {
+        if (!taskRunner) { await request.respond("Task execution unavailable."); return; }
+        const changed = await taskRunner.cancel(task.id);
+        await request.respond(changed ? `Task #${task.id} cancelled.` : `Task #${task.id} cannot be cancelled from its current state.`);
+        return;
+      }
       const changed = request.command === "task-pause"
         ? await store.pauseTask(task.id, "user:owner") : await store.resumeTask(task.id, "user:owner");
       await request.respond(changed ? `Task #${task.id} ${request.command === "task-pause" ? "paused" : "resumed"}.`
@@ -684,6 +701,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       process.exitCode = 1;
     });
   }, transport);
+  const taskRunner = new TaskRunExecutor(instance.store! as OperationalStore & TaskOperationsStore,
+    runtime, instance.runtimeHome, transport, worker, instance.configuration.agentProvider);
   // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
   // chat always runs first.
   const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {
@@ -705,6 +724,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         await transport.stop();
         // Abort an active review and let it settle before the worker closes the runtime.
         await scheduler.stop();
+        await taskRunner.stop();
         await worker.stop();
       } finally {
         await startup?.catch(() => undefined);
@@ -738,7 +758,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         console.error(failure instanceof Error ? failure.message : failure);
         process.exitCode = 1;
       });
-    }, worker);
+    }, worker, undefined, taskRunner);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();
