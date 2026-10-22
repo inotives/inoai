@@ -37,7 +37,7 @@ One persisted user instruction and the Agent Runtime response it produces.
 _Avoid_: Message, task
 
 **Task**:
-A bounded, durable sequence of Agent Runtime iterations created from a short user goal.
+A bounded, durable sequence of Agent Runtime iterations created from a short user goal. A Task is one-time or recurring; each Task owns its Conversation and Agent Session, and recurring Tasks run on a fixed interval.
 _Avoid_: Job, workflow
 
 **Task Run**:
