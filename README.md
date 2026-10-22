@@ -39,9 +39,10 @@ It drives the CLI you already use instead of calling a model API. Codex runs on 
 - SQLite records users, sessions, messages, events, approvals, daily Recaps, and shared Memory, with audit fields and soft deletion in each runtime home.
 - Permission requests fail closed with a fixed notice. Discord **Approve** / **Reject** buttons are deferred.
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
+- Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
 - A separate macOS Electron app (Phase 7) reads the selected local SQLite database; SQLite is the core runtime's source of truth.
 
-Status: Conversation workers, Codex, Claude CLI, OpenCode, and Daily Memory Review (Claude homes only in V1) are implemented. The runtime now uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink, Electron app, and V1 hardening remain.
+Status: Conversation workers, Codex, Claude CLI, OpenCode, Daily Memory Review (Claude homes only in V1), and Tasks are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink, Electron app, and V1 hardening remain.
 
 ## Core Model
 
@@ -58,7 +59,8 @@ my-project/
 │   └── backups/
 ├── .robin-xai-test/           # the Robin-XAI test instance
 ├── .inoai-connect-claude/     # Claude CLI adapter (Phase 5a)
-└── .inoai-connect-opencode/   # OpenCode CLI adapter (Phase 5b)
+├── .inoai-connect-opencode/   # OpenCode CLI adapter (Phase 5b)
+└── results/                   # Task files, grouped by Task ID and Run ID
 ```
 
 On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process writes each runtime-home database; the UI and read-only tools may inspect it. Stop the core before using local commands that write Memory or the allowlist. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
@@ -281,8 +283,11 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `/inoai status` | Show the thread's session, queue, and failure counts. |
 | `/inoai cancel` | Stop the active Turn. |
 | `/inoai reset` | End the session, cancel queued work, keep the archive, and start a fresh session with the next message. |
+| `/inoai task create` | Create a one-time or recurring Task in a guild text channel or an existing Task thread. |
+| `/inoai task list` | Show Task IDs, states, next due times, and thread links. |
+| `/inoai task run`, `pause`, `resume`, `cancel` | Manage a Task by ID, or omit `id` inside its Task thread. |
 
-The `/inoai` slash commands are owner-only, work in a thread the bot owns, and reply privately.
+The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel.
 
 Allowlist commands use the selected runtime home's SQLite database and
 never print credentials. Stop the core before running these write commands.
@@ -294,6 +299,28 @@ FROM users
 WHERE transport = 'discord'
 ORDER BY id;
 ```
+
+## Tasks
+
+The configured owner can create a Task in any accessible guild text channel or an existing Task thread. The bot creates a dedicated thread, Conversation, and Agent Session for it. A one-time Task waits for `/inoai task run`; a recurring Task first becomes due one interval after creation. Use the slash command options shown by Discord, for example:
+
+```text
+/inoai task create goal:"Write a Markdown project summary" type:One time
+/inoai task create goal:"Write a daily HTML report" type:Recurring interval:1 unit:Days
+/inoai task list
+/inoai task run id:1
+/inoai task pause id:2
+/inoai task resume id:2
+/inoai task cancel id:2
+```
+
+`goal` and `type` are required. Recurring Tasks also require a positive whole-number `interval` and `unit` of Hours or Days. For `run`, `pause`, `resume`, and `cancel`, omit `id` only when using the command inside that Task's thread. `list` shows the IDs and next due times. A completed one-time Task cannot run again; create another Task for a new run.
+
+Messages you send in a Task thread are saved as guidance for its next run. They do not start ordinary chat Turns or change a run already in progress. Each run makes one Agent Runtime iteration. Only one Task Run starts at a time per Agent Instance, and queued chat takes priority. If chat arrives during a Task Run, that run finishes before chat; chat then runs before another Task Run. A Task Run also waits for an active Memory Review to settle.
+
+The in-process scheduler checks for due recurring Tasks at startup and about once per minute; the external Heartbeat Supervisor remains health-only. After downtime it runs an overdue Task once, without replaying missed intervals. The next due time is one interval after a run completes or fails. A failed or restart-interrupted run is recorded as failed and never retried automatically; use `run` for a manual retry. Pausing prevents new runs while letting an active run finish. Resuming restores its existing due time. Cancelling ends the Task and stops its active run.
+
+For requested files, the agent is directed to write under the deployment folder's `results/<task-id>/<run-id>/`, outside the hidden runtime home. Each run gets a new directory, so earlier output remains. inoai posts the run summary and relative file paths in the Task thread and uploads a copy of each produced file to Discord. If an upload fails, the local file remains and the thread receives its relative path. Keep these files in your deployment backup plan; SQLite stores the paths and run history, not the file contents.
 
 ## Heartbeat Supervisor
 
@@ -381,7 +408,7 @@ A review sends archived Message text, current Memory, and recent Recaps to the r
 8.  V1 acceptance and operational hardening
 ```
 
-See [docs/implementation-phases.md](docs/implementation-phases.md). Deferred after V1: Slack and Telegram adapters; remote UI access and cross-instance Memory sharing; scheduled multi-step Tasks; cross-machine backups and Windows/Linux release packages.
+See [docs/implementation-phases.md](docs/implementation-phases.md). Deferred after V1: Slack and Telegram adapters; remote UI access and cross-instance Memory sharing; multi-step Task loops and calendar schedules; cross-machine backups and Windows/Linux release packages.
 
 ## Development
 

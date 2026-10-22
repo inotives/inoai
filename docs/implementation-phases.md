@@ -387,6 +387,6 @@ original acceptance scope remain unimplemented.
 
 Automatic local rotating backups are not implemented. A future local-network backup phase may copy SQLite-consistent snapshots or a fresh SQLite backup to a Linux machine on the same network. It must not expose the archive outside the local network.
 
-## Deferred task direction
+## Agent Tasks — implemented
 
-Introduce Tasks only after V1 is proven. A Task will own a dedicated Conversation and Agent Session; user messages in that thread steer the Task's next run rather than start independent Turns. Define its schema, iteration budget, task-state record, and cancellation semantics then.
+The Agent Tasks phase adds owner-only Discord controls, durable SQLite Task and Task Run state, and a dedicated Conversation and Agent Session for each Task. One-time Tasks run on request. Recurring Tasks use whole-hour or whole-day intervals and are checked by the in-process minute scheduler. After downtime, an overdue Task runs once; failed or interrupted runs are not retried automatically. Task-thread messages guide a later run. Requested files go to deployment-root `results/<task-id>/<run-id>/` and are uploaded to the Task thread when possible. See [Tasks in the README](../README.md#tasks) and [the SQLite schema](sqlite-schema.md#how-the-tables-work).
