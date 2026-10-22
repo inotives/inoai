@@ -393,7 +393,7 @@ npm run typecheck
 npm run build
 ```
 
-For each phase, follow the workflow in [AGENTS.md](AGENTS.md): grill the phase docs, branch from `main`, split the phase into AgentRig tasks, and drive each task through an independent worker and reviewer before the integrated phase review.
+For each phase, follow the workflow in [AGENTS.md](AGENTS.md): start a feature branch, approve the plan, split it into Trinary tasks, and use an independent worker and reviewer before integrated acceptance.
 
 The TypeScript source is organized by capability boundary. `app/` is the
 composition root; `conversation/`, `memory/`, `persistence/`, `runtime/`, and
@@ -455,7 +455,7 @@ inoai/
 │   ├── database.ts                           # SQLite compatibility entry point
 │   ├── ui.ts                                 # Electron UI launcher
 │   └── test/
-├── .agent-rig/                               # AgentRig tasks and handoffs
+├── .agents/skills/trinary-agents/            # Project-local Trinary workflow skill
 ├── AGENTS.md
 ├── CONTEXT.md
 ├── README.md

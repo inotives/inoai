@@ -1,15 +1,9 @@
-.agent-rig/.creds/
+/.agent-rig/
 .DS_Store
 /.env
 /.inoai-connect*/
 /.robin-*/
 /trinary-workspace/
 /.agent-rig.backup-*/
-/.agent-rig/_shared/notes/
-/.agent-rig/_shared/profile-backups/
-/.agent-rig/_shared/workflow.sqlite-*
-/.agent-rig/_shared/workflow.sqlite.backup
-/.agent-rig/worker/runs/
-/.agent-rig/reviewer/runs/
 /dist/
 /node_modules/
