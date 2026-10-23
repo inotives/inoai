@@ -688,6 +688,28 @@ export function resumeTask(database: DatabaseSync, taskId: number, actor = "user
   }
 }
 
+/** Moves a UI-created Task and its Session from a `pending:ui:` placeholder to a new thread in one transaction. */
+export function bindTaskConversation(database: DatabaseSync, taskId: number, binding: {
+  conversationId: string; parentConversationId: string; initiatingExternalMessageId: string;
+}, now: number, actor = "task-runtime"): void {
+  if (!binding.conversationId || binding.conversationId.startsWith("pending:")) throw new Error("Invalid Task conversation ID");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const task = getTask(database, taskId);
+    if (!task || !task.conversation_id.startsWith("pending:ui:")) throw new Error("Task conversation is not pending");
+    const session = database.prepare(`UPDATE sessions SET conversation_id=?,parent_conversation_id=?,initiating_external_message_id=?,
+      updated_at=?,updated_by=? WHERE id=? AND conversation_id=? AND state='active' AND deleted_at IS NULL`)
+      .run(binding.conversationId, binding.parentConversationId, binding.initiatingExternalMessageId, now, actor, task.session_id, task.conversation_id);
+    const changed = database.prepare("UPDATE tasks SET conversation_id=?,updated_at=?,updated_by=? WHERE id=? AND conversation_id=? AND deleted_at IS NULL")
+      .run(binding.conversationId, now, actor, taskId, task.conversation_id);
+    if (session.changes !== 1 || changed.changes !== 1) throw new Error("Task conversation changed before binding");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function cancelTask(database: DatabaseSync, taskId: number, now: number, actor = "user:owner"): boolean {
   database.exec("BEGIN IMMEDIATE");
   try {

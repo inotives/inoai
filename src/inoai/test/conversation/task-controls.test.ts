@@ -50,11 +50,13 @@ class TaskTransport implements ChatTransport {
   health(): TransportHealth { return { state: "ready", botUserId: "inoai" }; }
 }
 
-async function until(check: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function until(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (await check()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
+  if (await check()) return;
   throw new Error("Condition did not become true");
 }
 

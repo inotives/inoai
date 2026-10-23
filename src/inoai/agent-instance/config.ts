@@ -17,6 +17,7 @@ export type Configuration = {
   discordGuildId: string;
   discordOwnerUserId: string;
   discordStatusChannelId: string;
+  discordTaskChannelId?: string;
   chatProvider: "discord";
   agentProvider: "codex" | "claude" | "opencode";
   // Compatibility types for retained PostgreSQL tooling. Normal loading omits these fields.
@@ -53,6 +54,10 @@ export function validateConfiguration(values: Record<string, string | undefined>
   if (agentInstanceId && (!/^agent-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agentInstanceId) || agentInstanceId.length > 63)) {
     issues.push("AGENT_INSTANCE_ID must be a lowercase agent- slug of at most 63 characters");
   }
+  const discordTaskChannelId = values.DISCORD_TASK_CHANNEL_ID?.trim() || undefined;
+  if (discordTaskChannelId && !/^\d+$/.test(discordTaskChannelId)) {
+    issues.push("DISCORD_TASK_CHANNEL_ID must be a Discord channel ID");
+  }
   const claudeModel = values.AGENT_PROVIDER === "claude" ? values.CLAUDE_MODEL?.trim() || undefined : undefined;
   if (claudeModel && !/^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]*$/.test(claudeModel)) {
     issues.push("CLAUDE_MODEL must start with a letter or digit and contain only letters, digits, and . _ : - [ ]");
@@ -71,6 +76,7 @@ export function validateConfiguration(values: Record<string, string | undefined>
     discordGuildId: values.DISCORD_GUILD_ID!,
     discordOwnerUserId: values.DISCORD_OWNER_USER_ID!,
     discordStatusChannelId: values.DISCORD_STATUS_CHANNEL_ID!,
+    ...(discordTaskChannelId ? { discordTaskChannelId } : {}),
     chatProvider: "discord",
     agentProvider: values.AGENT_PROVIDER as Configuration["agentProvider"],
     agentInstanceId: agentInstanceId!,
