@@ -43,6 +43,15 @@ test("local UI binds to loopback and serves the dark ring console", async () => 
     assert.match(html, /inoai\.robotColor\./);
     assert.match(html, /aria-label="Close details"/);
     assert.equal(html.includes("Fixture-driven preview"), false);
+    // Activity: a 24h / 7d / 30d window switch and seven charts replace the message list.
+    assert.match(html, /const INSIGHT_WINDOWS = \['24h', '7d', '30d'\];/);
+    assert.match(html, /'aria-label': 'Chart window'/);
+    for (const [key, title] of [["tokens", "Token usage"], ["conversation-types", "Conversation types"], ["task-runs", "Task runs"], ["volume", "Message volume"], ["reply-time", "Reply time"], ["failures", "Failures by cause"], ["skills", "Skill calls"]]) {
+      assert.ok(html.includes(`chartCard('${key}', '${title}'`), `chart ${key} is rendered`);
+    }
+    assert.match(html, /createElementNS\(SVG_NS/);
+    assert.match(html, /'no data yet'/);
+    assert.equal(html.includes("recent.map(messageItem)"), false);
     const pageScript = html.split('<script type="module">')[1]?.split("</script>")[0] ?? "";
     assert.doesNotThrow(() => new Function(`return async () => {${pageScript}}`), "page script must parse");
     assert.equal(html.includes(".env"), false);

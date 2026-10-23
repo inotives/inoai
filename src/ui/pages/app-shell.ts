@@ -105,6 +105,44 @@ export function renderAppShell(): string {
   .custom{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
   .custom input{width:44px;height:30px;padding:0;border:1px solid var(--line);border-radius:8px;background:transparent;cursor:pointer}
   .custom code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+  .chart-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}
+  .chart-bar .seg,.chart-bar .list-head{margin:0}
+  .charts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .chart{min-width:0;padding:12px;border:1px solid var(--line);border-radius:14px;background:#ffffff06}
+  .chart.wide{grid-column:1/-1}
+  .chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px;margin-bottom:8px}
+  .chart-head small{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+  .chart-empty{color:var(--muted);font-size:12px;text-align:center;padding:18px 0}
+  .chart-foot{margin-top:6px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .ring-row{display:flex;align-items:center;gap:12px}
+  .ring-chart{display:block;flex:none;width:72px;height:72px}
+  .ring-chart .ring-value{fill:var(--text);font-size:15px;font-weight:300;text-anchor:middle;dominant-baseline:central;font-variant-numeric:tabular-nums}
+  .bars-chart{display:block;width:100%;height:auto;margin-bottom:6px}
+  .bars-chart .tick{fill:var(--muted);font-size:9px}
+  .bars-chart .tick.end{text-anchor:end}
+  .bars-chart .axis{stroke:var(--line);stroke-width:1}
+  .bars-chart .grid{stroke:var(--line);stroke-width:1;stroke-dasharray:2 3}
+  .bars-chart .hit{fill:transparent}
+  .bars-chart .bar:hover .hit{fill:#ffffff0a}
+  .bars-chart .fill{fill:currentColor;filter:drop-shadow(0 0 2px currentColor)}
+  .bar{transform-box:fill-box;transform-origin:50% 100%}
+  .arc{fill:none;stroke:currentColor;stroke-width:6;stroke-linecap:round;filter:drop-shadow(0 0 3px currentColor)}
+  .track{fill:none;stroke:#ffffff14;stroke-width:6;stroke-linecap:round}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11px;color:var(--muted)}
+  .ring-row .legend{flex-direction:column;gap:3px;min-width:0}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .legend i{width:7px;height:7px;border-radius:50%;flex:none;box-shadow:0 0 6px currentColor}
+  .legend b{color:var(--text);font-weight:500;font-variant-numeric:tabular-nums}
+  .hbars{display:flex;flex-direction:column;gap:6px}
+  .hrow{display:grid;grid-template-columns:minmax(0,8.5em) 1fr auto;gap:8px;align-items:center;font-size:12px}
+  .hrow span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+  .hrow b{font-weight:500;font-variant-numeric:tabular-nums}
+  .hbar{display:block;width:100%;height:10px;overflow:visible}
+  .charts.enter .bar{animation:rise .6s cubic-bezier(.2,.8,.2,1) both}
+  .charts.enter .arc{animation:glowin .7s ease-out both}
+  @keyframes rise{from{transform:scaleY(0)}}
+  @keyframes glowin{from{opacity:0}}
+  @media (max-width:420px){.charts{grid-template-columns:1fr}}
   @media (max-width:640px){.drawer{top:auto;height:78%;width:100%;border-left:0;border-top:1px solid var(--line);border-radius:22px 22px 0 0;transform:translateY(102%)}.label.core b{font-size:20px}}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -130,7 +168,7 @@ export function renderAppShell(): string {
 
 <script type="module">
 // ---------- data ----------
-const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tools: [], health: [], messages: [], memories: [] };
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tools: [], health: [], messages: [], memories: [], insights: null };
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -272,6 +310,114 @@ function skillDetail(v) {
     h('div', { class: 'viewer' }, viewer),
     h('div', { class: 'note' }, 'approved ' + when(skill.approvedAt))] };
 }
+// ---------- activity insights: hand-drawn SVG charts ----------
+// Charts use DOM nodes and text only. The selected window is a module variable,
+// so it survives the 60-second refresh.
+const INSIGHT_WINDOWS = ['24h', '7d', '30d'];
+let insightWindow = '24h', chartsEnter = false;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const sv = (tag, attrs = {}, ...kids) => {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+};
+const svgTip = (text) => sv('title', {}, text);
+const compact = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(Math.round(n));
+const duration = (s) => s < 60 ? Math.round(s) + 's' : s < 3600 ? (s / 60).toFixed(1) + 'm' : (s / 3600).toFixed(1) + 'h';
+const usd = (n) => '$' + (n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2));
+const bucketLabel = (iso, bucket) => bucket === 'hour' ? iso.slice(11, 16) : iso.slice(5, 10);
+const causeLabel = (cause) => cause.replace('runtime_failure:', 'runtime ').replace('turn_failed:', 'turn ').replaceAll('_', ' ');
+const noData = (text = 'no data yet') => h('div', { class: 'chart-empty' }, text);
+const legend = (rows) => h('div', { class: 'legend' }, rows.map(([color, label, value]) => h('span', {}, h('i', { style: 'background:' + color + ';color:' + color }), label, h('b', {}, value))));
+const chartCard = (key, title, sub, body, wide = false) => h('section', { class: 'chart' + (wide ? ' wide' : ''), 'data-chart': key, 'aria-label': title },
+  h('div', { class: 'chart-head' }, h('span', {}, title), sub ? h('small', {}, sub) : null), body);
+// A ring split into glowing arcs. Round caps eat into each arc, so arcs are
+// shortened by the cap width plus a small visible gap.
+function ringChart(parts, center, label) {
+  const R = 30, C = 2 * Math.PI * R, total = parts.reduce((sum, p) => sum + p.value, 0), live = parts.filter((p) => p.value > 0);
+  const svg = sv('svg', { viewBox: '0 0 80 80', class: 'ring-chart', role: 'img', 'aria-label': label }, sv('circle', { cx: 40, cy: 40, r: R, class: 'track' }));
+  const gap = live.length > 1 ? 9 : 0;
+  let at = 0;
+  for (const p of live) {
+    const len = (p.value / total) * C;
+    svg.append(sv('circle', { cx: 40, cy: 40, r: R, class: 'arc', style: 'color:' + p.color + (gap ? '' : ';stroke-linecap:butt'), transform: 'rotate(-90 40 40)',
+      'stroke-dasharray': Math.max(0.01, len - gap).toFixed(2) + ' ' + C.toFixed(2), 'stroke-dashoffset': (-(at + gap / 2)).toFixed(2) }, svgTip(p.tip)));
+    at += len;
+  }
+  svg.append(sv('text', { x: 40, y: 41, class: 'ring-value' }, center));
+  return svg;
+}
+// Stacked bars, one per bucket, scaled to the busiest bucket.
+function stackedBars(series, keys, bucket, format, label) {
+  const W = 300, TOP = 12, BASE = 78, n = series.length, slot = W / n, bw = Math.min(18, Math.max(2, slot * 0.62));
+  const peak = Math.max(1, ...series.map((row) => keys.reduce((sum, k) => sum + row[k.key], 0)));
+  const svg = sv('svg', { viewBox: '0 0 300 94', class: 'bars-chart', role: 'img', 'aria-label': label },
+    sv('line', { x1: 0, x2: W, y1: TOP, y2: TOP, class: 'grid' }),
+    sv('line', { x1: 0, x2: W, y1: BASE + 0.5, y2: BASE + 0.5, class: 'axis' }),
+    sv('text', { x: 0, y: TOP - 4, class: 'tick' }, 'peak ' + format(peak)));
+  series.forEach((row, i) => {
+    const g = sv('g', { class: 'bar' }, svgTip(bucketLabel(row.start, bucket) + ' UTC · ' + keys.map((k) => k.label + ' ' + format(row[k.key])).join(' · ')),
+      sv('rect', { x: (i * slot).toFixed(2), y: TOP, width: slot.toFixed(2), height: BASE - TOP, class: 'hit' }));
+    let y = BASE;
+    for (const k of keys) {
+      const height = (row[k.key] / peak) * (BASE - TOP);
+      if (height <= 0) continue;
+      y -= height;
+      g.append(sv('rect', { x: (i * slot + (slot - bw) / 2).toFixed(2), y: y.toFixed(2), width: bw.toFixed(2), height: Math.max(0.8, height).toFixed(2), rx: Math.min(2, bw / 2).toFixed(2), class: 'fill', style: 'color:' + k.color }));
+    }
+    svg.append(g);
+  });
+  svg.append(sv('text', { x: 0, y: 91, class: 'tick' }, bucketLabel(series[0].start, bucket) + ' UTC'), sv('text', { x: W, y: 91, class: 'tick end' }, bucketLabel(series[n - 1].start, bucket)));
+  return svg;
+}
+// Horizontal bars with a label and count per row.
+const HBAR_LIMIT = 6;
+function hbars(rows, color, label) {
+  const peak = Math.max(1, ...rows.map((r) => r.value));
+  const list = h('div', { class: 'hbars', role: 'list', 'aria-label': label }, rows.slice(0, HBAR_LIMIT).map((r) => h('div', { class: 'hrow', role: 'listitem', title: r.label + ': ' + r.value },
+    h('span', {}, r.label),
+    sv('svg', { class: 'hbar', 'aria-hidden': 'true' }, sv('line', { x1: 3, x2: '98%', y1: 5, y2: 5, class: 'track' }), sv('line', { x1: 3, x2: (2 + (r.value / peak) * 96).toFixed(1) + '%', y1: 5, y2: 5, class: 'arc', style: 'color:' + color })),
+    h('b', {}, r.value))));
+  if (rows.length > HBAR_LIMIT) list.append(h('div', { class: 'note' }, '+' + (rows.length - HBAR_LIMIT) + ' more'));
+  return list;
+}
+function insightCharts(w) {
+  const per = w.bucket === 'hour' ? 'per hour' : 'per day';
+  const tk = w.tokens.totals, tokenSum = tk.input + tk.cached + tk.output;
+  const tokenKeys = [{ key: 'input', label: 'input', color: 'var(--sky)' }, { key: 'cached', label: 'cached', color: 'var(--violet)' }, { key: 'output', label: 'output', color: 'var(--mint)' }];
+  const ct = w.conversationTypes, convTotal = ct.chat + ct.oneTime + ct.recurring;
+  const conv = [['var(--sky)', 'chat', ct.chat], ['var(--amber)', 'one-time', ct.oneTime], ['var(--violet)', 'recurring', ct.recurring]];
+  const tr = w.taskRuns, runTotal = tr.completed + tr.failed;
+  const runs = [['var(--mint)', 'completed', tr.completed], ['var(--coral)', 'failed', tr.failed]];
+  const volumeKeys = [{ key: 'owner', label: 'owner', color: 'var(--sky)' }, { key: 'agent', label: 'agent', color: 'var(--mint)' }];
+  const owner = w.volume.reduce((sum, b) => sum + b.owner, 0), agent = w.volume.reduce((sum, b) => sum + b.agent, 0);
+  const rt = w.replyTime;
+  const failureTotal = w.failures.reduce((sum, f) => sum + f.count, 0), skillTotal = w.skills.reduce((sum, s) => sum + s.count, 0);
+  const ringParts = (rows) => rows.map(([color, label, value]) => ({ color, value, tip: label + ': ' + value }));
+  return [
+    chartCard('tokens', 'Token usage', tokenSum ? compact(tokenSum) + ' · ' + per : per, tokenSum ? [
+      stackedBars(w.tokens.series, tokenKeys, w.bucket, compact, 'Token usage ' + per),
+      legend(tokenKeys.map((k) => [k.color, k.label, compact(tk[k.key])])),
+      h('div', { class: 'chart-foot' }, compact(tokenSum) + ' tokens · ' + tk.turns + (tk.turns === 1 ? ' turn' : ' turns') + (tk.costUsd !== null ? ' · ' + usd(tk.costUsd) : ''))] : noData(), true),
+    chartCard('conversation-types', 'Conversation types', convTotal ? compact(convTotal) + ' msgs' : '', convTotal
+      ? h('div', { class: 'ring-row' }, ringChart(ringParts(conv), compact(convTotal), 'Conversation types'), legend(conv.map(([c, l, v]) => [c, l, compact(v)]))) : noData()),
+    chartCard('task-runs', 'Task runs', runTotal ? runTotal + ' runs' : '', runTotal
+      ? h('div', { class: 'ring-row' }, ringChart(ringParts(runs), compact(runTotal), 'Task runs'), legend(runs.map(([c, l, v]) => [c, l, compact(v)]))) : noData()),
+    chartCard('volume', 'Message volume', owner + agent ? compact(owner + agent) + ' · ' + per : per, owner + agent ? [
+      stackedBars(w.volume, volumeKeys, w.bucket, compact, 'Message volume ' + per),
+      legend([['var(--sky)', 'owner', compact(owner)], ['var(--mint)', 'agent', compact(agent)]])] : noData(), true),
+    chartCard('reply-time', 'Reply time', rt.count ? rt.count + (rt.count === 1 ? ' reply' : ' replies') : '', rt.count && rt.medianSeconds !== null && rt.p90Seconds !== null
+      ? h('div', { class: 'ring-row' },
+        ringChart([{ color: 'var(--mint)', value: rt.medianSeconds, tip: 'median ' + duration(rt.medianSeconds) }, { color: 'var(--amber)', value: Math.max(0, rt.p90Seconds - rt.medianSeconds), tip: 'p90 ' + duration(rt.p90Seconds) }], duration(rt.medianSeconds), 'Reply time'),
+        legend([['var(--mint)', 'median', duration(rt.medianSeconds)], ['var(--amber)', 'p90', duration(rt.p90Seconds)]]))
+      : noData('no replies yet'), true),
+    chartCard('failures', 'Failures by cause', failureTotal ? String(failureTotal) : '', w.failures.length
+      ? hbars(w.failures.map((f) => ({ label: causeLabel(f.cause), value: f.count })), 'var(--coral)', 'Failures by cause') : noData(), true),
+    chartCard('skills', 'Skill calls', skillTotal ? String(skillTotal) : '', w.skills.length
+      ? hbars(w.skills.map((s) => ({ label: s.skill, value: s.count })), 'var(--pink)', 'Skill calls') : noData(), true),
+  ];
+}
 const SECTIONS = {
   profile: (v) => ({ kicker: 'agent', title: v.data.profile.agentInstanceId, body: [
     h('dl', { class: 'kv' },
@@ -285,10 +431,21 @@ const SECTIONS = {
     h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
     h('div', { class: 'list', style: 'margin-top:16px' }, v.hours.flatMap((x) => x.events).filter((x) => x.state !== 'healthy').reverse().map((x) =>
       h('div', { class: 'item' }, h('div', { class: 'meta' }, pill(x.state), h('span', { class: 'when' }, when(x.createdAt))), h('p', {}, describe(x.detail)))))] }),
-  activity: (v) => ({ kicker: 'activity', title: v.m.messages24h + ' messages today', body: [
-    h('div', { class: 'stats' }, [[v.m.messages24h, 'last 24h'], [v.m.messages30d, 'last 30 days'], [v.m.activeSessions, 'active sessions'], [v.m.messagesPerSession, 'msgs / session · 24h']].map(([value, label]) => h('div', { class: 'stat' }, h('b', {}, value), h('span', {}, label)))),
-    h('div', { class: 'list-head' }, 'last 24 hours'),
-    (() => { const recent = v.data.messages.filter((x) => Date.now() - Date.parse(x.createdAt) <= DAY); return recent.length ? h('div', { class: 'list' }, recent.map(messageItem)) : empty('No messages in the last 24 hours'); })()] }),
+  activity: (v) => {
+    // The window switch redraws only the charts, so scroll position stays put.
+    const box = h('div', { class: 'charts' + (chartsEnter ? ' enter' : '') });
+    chartsEnter = false;
+    const draw = () => { const w = v.data.insights?.[insightWindow]; box.replaceChildren(...(w ? insightCharts(w) : [empty('Charts need a newer UI server')])); };
+    draw();
+    const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Chart window' }, INSIGHT_WINDOWS.map((key) => h('button', { type: 'button', 'data-window': key, 'aria-pressed': String(key === insightWindow), onclick: (e) => {
+      insightWindow = key; seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === e.currentTarget))); box.classList.add('enter'); draw();
+    } }, key)));
+    return { kicker: 'activity', title: v.m.messages24h + ' messages today', body: [
+      h('div', { class: 'stats' }, [[v.m.messages24h, 'last 24h'], [v.m.messages30d, 'last 30 days'], [v.m.activeSessions, 'active sessions'], [v.m.messagesPerSession, 'msgs / session · 24h']].map(([value, label]) => h('div', { class: 'stat' }, h('b', {}, value), h('span', {}, label)))),
+      h('div', { class: 'chart-bar' }, h('div', { class: 'list-head' }, 'insights'), seg),
+      box,
+      h('div', { class: 'note' }, 'Chart buckets are UTC and end with the current hour or day. The tiles above roll from now.')] };
+  },
   failures: (v) => ({ kicker: 'failed replies', title: v.m.failedReplies24h + ' today · ' + v.m.failedReplies30d + ' in 30d', body: [
     (() => { const rows = v.data.messages.filter((x) => x.direction === 'agent' && x.state === 'failed').map(messageItem); return rows.length ? h('div', { class: 'list' }, rows) : empty('No failed replies'); })()] }),
   conversations: (v) => ({ kicker: 'messages', title: 'Conversations', body: [searchable({
@@ -332,6 +489,8 @@ let openSection = null, drawerShiftPx = 0;
 Object.keys(SECTIONS).forEach((key) => rail.append(h('button', { type: 'button', 'aria-label': key, title: key, style: 'color:' + CSS[key], onclick: () => openDrawer(key) }, icon(key))));
 function openDrawer(key, keepSkill = false) {
   if (!keepSkill) skillView = null;
+  // Charts animate on a fresh open, not on the 60-second refresh.
+  chartsEnter = !keepSkill;
   const s = SECTIONS[key](view);
   openSection = key;
   const ico = document.getElementById('d-ico');
