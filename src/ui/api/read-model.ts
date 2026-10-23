@@ -6,7 +6,12 @@ import { validateEnabledSkills, type EnabledSkillsDocument } from "../../inoai/s
 
 type UiMessage = { id: number; workspaceId: string; transport: string; direction: string; state: string; body: string; createdAt: string; updatedAt: string };
 type UiSkillFile = { path: string; size: number; text: string | null };
-type UiTask = { id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: string; createdAt: string; runs: { completed: number; failed: number; lastState: string | null; lastAt: string } };
+export type UiTask = {
+  id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: string; createdAt: string;
+  title: string | null; outputSpec: string | null; timezone: string | null; scheduleKind: string | null; scheduleTime: string | null;
+  scheduleDays: string | null; endsAt: string; maxRuns: number | null; updatedAt: string;
+  runs: { completed: number; failed: number; lastState: string | null; lastAt: string };
+};
 type UiSkill = { id: string; version: string; approvedAt: string; capabilities: Record<string, string | boolean>; files: UiSkillFile[] };
 type UiMemory = { id: number; origin: string; state: string; body: string; review: { id: number; state: string; recap: string | null } | null; createdAt: string; updatedAt: string };
 
@@ -245,6 +250,36 @@ function loadInsightWindow(database: DatabaseSync, nowSeconds: number, bucket: "
   };
 }
 
+const scheduleColumns = ["title", "output_spec", "timezone", "schedule_kind", "schedule_time", "schedule_days", "ends_at", "max_runs"] as const;
+type TaskRow = { id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: number | null; createdAt: number; updatedAt: number;
+  title: string | null; output_spec: string | null; timezone: string | null; schedule_kind: string | null; schedule_time: string | null; schedule_days: string | null;
+  ends_at: number | null; max_runs: number | null; completed: number; failed: number; lastState: string | null; lastAt: number | null };
+
+/**
+ * Reads non-deleted tasks, newest first, or one task when `id` is given.
+ * A home whose tasks table predates the schedule columns reads them as null.
+ */
+export function readTasks(database: DatabaseSync, id?: number): UiTask[] {
+  const existing = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
+  const schedule = scheduleColumns.map((name) => existing.has(name) ? `t.${name}` : `NULL AS ${name}`).join(", ");
+  const rows = database.prepare(`SELECT t.id, t.goal, t.task_type AS taskType, t.state, t.interval_seconds AS intervalSeconds, t.next_due_at AS nextDueAt,
+      t.created_at AS createdAt, t.updated_at AS updatedAt, ${schedule},
+      (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'completed' AND r.deleted_at IS NULL) AS completed,
+      (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'failed' AND r.deleted_at IS NULL) AS failed,
+      (SELECT r.state FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastState,
+      (SELECT r.started_at FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastAt
+    FROM tasks t WHERE t.deleted_at IS NULL${id === undefined ? "" : " AND t.id = ?"} ORDER BY t.created_at DESC, t.id DESC LIMIT 200`)
+    .all(...(id === undefined ? [] : [id])) as TaskRow[];
+  return rows.map((row) => ({
+    id: row.id, goal: redact(row.goal), taskType: row.taskType, state: row.state, intervalSeconds: row.intervalSeconds,
+    nextDueAt: timestamp(row.nextDueAt), createdAt: timestamp(row.createdAt),
+    title: row.title === null ? null : redact(row.title), outputSpec: row.output_spec === null ? null : redact(row.output_spec),
+    timezone: row.timezone, scheduleKind: row.schedule_kind, scheduleTime: row.schedule_time, scheduleDays: row.schedule_days,
+    endsAt: timestamp(row.ends_at), maxRuns: row.max_runs, updatedAt: timestamp(row.updatedAt),
+    runs: { completed: Number(row.completed), failed: Number(row.failed), lastState: row.lastState, lastAt: timestamp(row.lastAt) },
+  }));
+}
+
 export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<UiData> {
   const [agentMarkdown, skillDetails, lockState] = await Promise.all([
     readFile(home.agentFile, "utf8").then(redact),
@@ -264,13 +299,7 @@ export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<U
     const metrics = { messages24h, messages30d: countMessages(nowSeconds - 30 * 86_400, false), failedReplies24h: countMessages(nowSeconds - 86_400, true), failedReplies30d: countMessages(nowSeconds - 30 * 86_400, true), activeSessions, messagesPerSession: activeSessions ? Number((messages24h / activeSessions).toFixed(1)) : 0 };
     const insights = { "24h": loadInsightWindow(database, nowSeconds, "hour", 24), "7d": loadInsightWindow(database, nowSeconds, "day", 7), "30d": loadInsightWindow(database, nowSeconds, "day", 30) };
     const memories = (database.prepare("SELECT m.id, m.origin, m.state, m.body, m.created_at AS createdAt, m.updated_at AS updatedAt, r.id AS reviewId, r.state AS reviewState, r.recap AS reviewRecap FROM memories m LEFT JOIN memory_reviews r ON r.id = m.review_id AND r.deleted_at IS NULL WHERE m.deleted_at IS NULL ORDER BY m.created_at DESC LIMIT 500").all() as Array<UiMemory & { createdAt: number; updatedAt: number; reviewId: number | null; reviewState: string | null; reviewRecap: string | null }>).map((row) => ({ id: row.id, origin: row.origin, state: row.state, body: redact(row.body), review: row.reviewId === null ? null : { id: row.reviewId, state: row.reviewState!, recap: row.reviewRecap === null ? null : redact(row.reviewRecap) }, createdAt: timestamp(row.createdAt), updatedAt: timestamp(row.updatedAt) }));
-    const tasks = (database.prepare(`SELECT t.id, t.goal, t.task_type AS taskType, t.state, t.interval_seconds AS intervalSeconds, t.next_due_at AS nextDueAt, t.created_at AS createdAt,
-        (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'completed' AND r.deleted_at IS NULL) AS completed,
-        (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'failed' AND r.deleted_at IS NULL) AS failed,
-        (SELECT r.state FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastState,
-        (SELECT r.started_at FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastAt
-      FROM tasks t WHERE t.deleted_at IS NULL ORDER BY t.created_at DESC, t.id DESC LIMIT 200`).all() as Array<{ id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: number | null; createdAt: number; completed: number; failed: number; lastState: string | null; lastAt: number | null }>)
-      .map((row) => ({ id: row.id, goal: redact(row.goal), taskType: row.taskType, state: row.state, intervalSeconds: row.intervalSeconds, nextDueAt: timestamp(row.nextDueAt), createdAt: timestamp(row.createdAt), runs: { completed: Number(row.completed), failed: Number(row.failed), lastState: row.lastState, lastAt: timestamp(row.lastAt) } }));
+    const tasks = readTasks(database);
     const health = (database.prepare("SELECT event_type AS eventType, detail, created_at AS createdAt FROM events WHERE event_type LIKE 'heartbeat%' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 24").all() as Array<{ eventType: string; detail: string | null; createdAt: number }>).map((row) => ({ eventType: row.eventType, detail: row.detail === null ? null : redact(row.detail), createdAt: timestamp(row.createdAt) }));
     const status = lockState === "live" ? "running" : lockState === "missing" || lockState === "stale" ? "stopped" : "unknown";
     return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, tools: [], health, messages, memories, insights };

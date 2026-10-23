@@ -1,10 +1,13 @@
 // The ring console: one self-contained page that reads /api/ui-data and draws it with three.js.
-export function renderAppShell(): string {
+// `token` is the per-launch write token. It is hex, so it is safe in an attribute.
+export function renderAppShell(token: string): string {
+  if (!/^[0-9a-f]+$/.test(token)) throw new RangeError("UI token must be hex");
   return `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="inoai-ui-token" content="${token}">
 <title>inoai</title>
 <link rel="stylesheet" href="https://cdn-uicons.flaticon.com/2.6.0/uicons-regular-rounded/css/uicons-regular-rounded.css">
 <style>
