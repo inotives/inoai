@@ -16,7 +16,7 @@ import { start, startTransport } from "../../../index.js";
 import { OpenCodeRuntime } from "../../connectors/agent-runtime/opencode-runtime.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { enableSkill, installSkillPackage } from "../../skills/skill-lifecycle.js";
-import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../../transport/ports.js";
+import type { ButtonClick, ChatTransport, IncomingMessage, MessageButton, ThreadControl, TransportHealth } from "../../transport/ports.js";
 
 const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNER_USER_ID=owner",
   "DISCORD_STATUS_CHANNEL_ID=status", "CHAT_PROVIDER=discord", "AGENT_PROVIDER=codex",
@@ -26,8 +26,11 @@ const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNE
 class FakeTransport implements ChatTransport {
   private incoming?: (message: IncomingMessage) => void;
   private onControl?: (control: ThreadControl) => Promise<void>;
+  private onButton?: (click: ButtonClick) => Promise<void>;
   private count = 0;
   readonly sent: string[] = [];
+  readonly buttons = new Map<string, MessageButton[]>();
+  readonly edits: { messageId: string; text: string; buttons: MessageButton[] }[] = [];
   start(onIncoming: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, _onFailure?: (error: Error) => void, onControl?: (control: ThreadControl) => Promise<void>): Promise<void> {
     this.incoming = onIncoming;
     this.onControl = onControl;
@@ -41,10 +44,29 @@ class FakeTransport implements ChatTransport {
       respond: async (text) => { answer = text; }, ...overrides });
     return answer;
   }
+  onButtonClick(handler: (click: ButtonClick) => Promise<void>): void { this.onButton = handler; }
+  /** Simulates a button click and returns the private reply or message update it produced. */
+  async click(messageId: string, customId: string, overrides: Partial<ButtonClick> = {}): Promise<{ reply?: string; update?: { text: string; buttons: MessageButton[] } }> {
+    const answer: { reply?: string; update?: { text: string; buttons: MessageButton[] } } = {};
+    await this.onButton?.({ customId, workspaceId: "guild", conversationId: "thread-a", messageId, externalUserId: "owner",
+      replyEphemeral: async (text) => { answer.reply = text; },
+      updateMessage: async (text, buttons = []) => { answer.update = { text, buttons }; this.buttons.set(messageId, buttons); },
+      ...overrides });
+    return answer;
+  }
   async stop(): Promise<void> {}
   async createConversation(): Promise<string> { return `thread-${++this.count}`; }
   async deleteConversation(): Promise<void> {}
   async sendMessage(_conversationId: string, text: string): Promise<string> { this.sent.push(text); return `sent-${this.sent.length}`; }
+  async sendMessageWithButtons(conversationId: string, text: string, buttons: MessageButton[]): Promise<string> {
+    const id = await this.sendMessage(conversationId, text);
+    this.buttons.set(id, buttons);
+    return id;
+  }
+  async editMessage(_conversationId: string, messageId: string, text: string, buttons: MessageButton[] = []): Promise<void> {
+    this.edits.push({ messageId, text, buttons });
+    this.buttons.set(messageId, buttons);
+  }
   async publishHealth(): Promise<string> { return "online"; }
   health(): TransportHealth { return { state: "ready", botUserId: "inoai" }; }
 }
