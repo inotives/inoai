@@ -7,16 +7,20 @@ import type { AgentRuntime, ReviewOptions, RuntimeEvent } from "../../agent-runt
 import { CodexAppServer } from "./codex-app-server.js";
 
 type ActiveTurn = { started: Promise<string>; interrupt?: Promise<void>; cancelRequested?: boolean };
-type TurnNotice = { method: string; params: { threadId?: string; turnId?: string; turn?: { id?: string; status?: string; error?: { codexErrorInfo?: unknown } }; delta?: string; item?: { type?: string; text?: string } } };
+type TurnNotice = { method: string; params: { threadId?: string; turnId?: string; turn?: { id?: string; status?: string; error?: { codexErrorInfo?: unknown } }; delta?: string; item?: { type?: string; text?: string }; tokenUsage?: { total?: unknown; last?: unknown } } };
+type TokenCounts = Record<(typeof tokenFields)[number], number>;
 
 // A review turn may only carry these items; any tool, command, file, or search item fails the review closed.
 const reviewItemTypes = new Set(["userMessage", "agentMessage", "reasoning"]);
+const tokenFields = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const;
 
 export class CodexRuntime implements AgentRuntime {
   readonly displayName = "Codex";
   readonly loginHint = "codex login";
   private readonly sessions = new Map<string, string>();
   private readonly active = new Map<string, ActiveTurn>();
+  // Last thread token total seen per thread in this process; the baseline for the next Turn's usage.
+  private readonly tokenTotals = new Map<string, TokenCounts>();
 
   // Owner decision D2: Codex reviews stay off unless enableReview is set, because a Codex review thread still loads
   // the owner's MCP servers (ADR 0010). index.ts never sets it; tests exercise the implementation directly.
@@ -39,6 +43,7 @@ export class CodexRuntime implements AgentRuntime {
     const id = result?.thread?.id;
     if (!id) throw new Error("Codex did not return a thread ID");
     this.sessions.set(id, projectPath);
+    this.tokenTotals.set(id, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 });
     return id;
   }
 
@@ -91,6 +96,11 @@ export class CodexRuntime implements AgentRuntime {
       }, this.idleTimeoutMs);
       let answer = "";
       let deltas = "";
+      // thread/tokenUsage/updated reports the thread's running total and the last model call, not the Turn.
+      // The Turn's usage is the total's growth from a total seen before the Turn; without one it is not reported.
+      const baseline = this.tokenTotals.get(sessionId);
+      let tokens = baseline;
+      let tokensReliable = !!baseline;
       while (true) {
         if (failure) throw failure;
         if (notices.length === 0) await new Promise<void>((resolve) => { wake = resolve; });
@@ -104,6 +114,14 @@ export class CodexRuntime implements AgentRuntime {
             yield { type: "progress", text: params.delta };
           } else if (method === "item/completed" && params.item?.type === "agentMessage" && typeof params.item.text === "string") {
             answer = params.item.text;
+          } else if (method === "thread/tokenUsage/updated") {
+            const total = tokenCounts(params.tokenUsage?.total);
+            const last = tokenCounts(params.tokenUsage?.last);
+            // Codex can repeat an unchanged total; any other value must equal the previous total plus the last call.
+            if (!total || !last || !tokens || (!sameCounts(total, tokens) && !tokenFields.every((field) => total[field] === tokens![field] + last[field]))) tokensReliable = false;
+            tokens = total;
+            if (total) this.tokenTotals.set(sessionId, total);
+            else this.tokenTotals.delete(sessionId);
           } else if (method === "turn/completed") {
             settled = true;
             if (params.turn?.status !== "completed") {
@@ -113,6 +131,7 @@ export class CodexRuntime implements AgentRuntime {
               if (code === "usageLimitExceeded" || code === "rateLimitExceeded" || code === "sessionBudgetExceeded") throw new RuntimeFailure("usage");
               throw new RuntimeFailure("uncertain");
             }
+            if (tokensReliable && baseline && tokens && !sameCounts(tokens, baseline)) yield usageEvent(tokens, baseline);
             yield { type: "answer", text: answer || deltas };
             return;
           }
@@ -233,4 +252,29 @@ export class CodexRuntime implements AgentRuntime {
     const turnId = await active.started;
     await (active.interrupt ??= this.server.request("turn/interrupt", { threadId: sessionId, turnId }).then(() => {}));
   }
+}
+
+function tokenCounts(value: unknown): TokenCounts | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const counts = Object.fromEntries(tokenFields.map((field) => [field, (value as Record<string, unknown>)[field]]));
+  if (!Object.values(counts).every((count) => typeof count === "number" && Number.isInteger(count) && count >= 0)) return undefined;
+  const valid = counts as TokenCounts;
+  return valid.cachedInputTokens <= valid.inputTokens ? valid : undefined;
+}
+
+function sameCounts(a: TokenCounts, b: TokenCounts): boolean {
+  return tokenFields.every((field) => a[field] === b[field]);
+}
+
+// Codex inputTokens includes cachedInputTokens, and outputTokens includes reasoningOutputTokens. Input is reported
+// without the cached part, as for Claude, so input and cached never count the same tokens twice.
+function usageEvent(total: TokenCounts, baseline: TokenCounts): RuntimeEvent {
+  const turn = (field: (typeof tokenFields)[number]) => total[field] - baseline[field];
+  return {
+    type: "usage",
+    inputTokens: turn("inputTokens") - turn("cachedInputTokens"),
+    cachedInputTokens: turn("cachedInputTokens"),
+    outputTokens: turn("outputTokens"),
+    reasoningTokens: turn("reasoningOutputTokens"),
+  };
 }
