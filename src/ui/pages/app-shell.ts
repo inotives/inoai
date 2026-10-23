@@ -34,8 +34,8 @@ export function renderAppShell(): string {
   .tooltip.on{opacity:1}
   .hint{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);opacity:.7;transition:opacity .6s;z-index:2;pointer-events:none}
   .fallback{position:fixed;inset:0;display:none;place-items:center;color:var(--muted);text-align:center;padding:24px}
-  .drawer{position:fixed;top:0;right:0;height:100%;width:min(440px,100%);background:var(--glass);backdrop-filter:blur(22px);border-left:1px solid var(--line);transform:translateX(102%);transition:transform .4s cubic-bezier(.2,.8,.2,1);z-index:10;display:flex;flex-direction:column}
-  .drawer.open{transform:none}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(440px,100%);background:var(--glass);backdrop-filter:blur(22px);border-left:1px solid var(--line);transform:translateX(102%);visibility:hidden;transition:transform .4s cubic-bezier(.2,.8,.2,1),visibility 0s linear .4s;z-index:10;display:flex;flex-direction:column}
+  .drawer.open{transform:none;visibility:visible;transition:transform .4s cubic-bezier(.2,.8,.2,1)}
   .d-head{display:flex;align-items:center;gap:12px;padding:20px 20px 12px}
   .d-head h2{margin:0;font-size:17px;font-weight:500}
   .d-head small{display:block;color:var(--muted);font-size:11px;letter-spacing:.14em;text-transform:uppercase}
@@ -105,6 +105,18 @@ export function renderAppShell(): string {
   .custom{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
   .custom input{width:44px;height:30px;padding:0;border:1px solid var(--line);border-radius:8px;background:transparent;cursor:pointer}
   .custom code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+  .styles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+  .style-btn{aspect-ratio:1;display:grid;place-items:center;padding:7px;border:1px solid var(--line);border-radius:12px;background:#ffffff05;cursor:pointer}
+  .style-btn:hover{background:#ffffff0f}
+  .style-btn[aria-pressed=true]{border-color:var(--text);box-shadow:0 0 12px #ffffff22}
+  .mini{display:grid;width:100%;gap:1px}
+  .mini i{aspect-ratio:1;border-radius:1px}
+  .label.zzz{font-weight:700;color:var(--sky);transition:opacity .4s}
+  .zzz i{display:inline-block;font-style:normal;font-size:11px;opacity:.7;animation:zfloat 2.4s ease-in-out infinite}
+  .zzz i:nth-child(2){font-size:14px;animation-delay:.8s}
+  .zzz i:nth-child(3){font-size:17px;animation-delay:1.6s}
+  @keyframes zfloat{0%{opacity:0;transform:translate(0,6px)}30%{opacity:.9}100%{opacity:0;transform:translate(8px,-14px)}}
+  .label.badge{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--pink);padding:2px 8px;border:1px solid #f0a6ca55;border-radius:999px;background:#f0a6ca14;transition:opacity .4s}
   .chart-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}
   .chart-bar .seg,.chart-bar .list-head{margin:0}
   .charts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -143,7 +155,7 @@ export function renderAppShell(): string {
   @keyframes rise{from{transform:scaleY(0)}}
   @keyframes glowin{from{opacity:0}}
   @media (max-width:420px){.charts{grid-template-columns:1fr}}
-  @media (max-width:640px){.drawer{top:auto;height:78%;width:100%;border-left:0;border-top:1px solid var(--line);border-radius:22px 22px 0 0;transform:translateY(102%)}.label.core b{font-size:20px}}
+  @media (max-width:640px){.drawer{top:auto;bottom:0;height:78%;height:78dvh;width:100%;border-left:0;border-top:1px solid var(--line);border-radius:22px 22px 0 0;transform:translateY(102%)}.label.core b{font-size:20px}.label span{letter-spacing:.12em;font-size:8.5px}}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 <script type="importmap">
@@ -168,7 +180,7 @@ export function renderAppShell(): string {
 
 <script type="module">
 // ---------- data ----------
-const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tools: [], health: [], messages: [], memories: [], insights: null };
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], tools: [], health: [], messages: [], memories: [], insights: null };
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -216,7 +228,7 @@ function derive(data) {
     // A full activity ring means twice the 30-day daily average.
     activityFrac: m.messages30d ? Math.min(1, m.messages24h / ((m.messages30d / 30) * 2)) : 0,
     failureFrac: replies24h ? Math.min(1, m.failedReplies24h / replies24h) : 0,
-    completedFrac: share(data.messages, (x) => x.state === 'completed'),
+    activeTasks: data.tasks.filter((x) => x.state === 'active'),
     reviewedFrac: share(data.memories, (x) => x.review?.state === 'completed'),
     name: data.profile.agentInstanceId.replace(/^inoai-connect-?/, '') || data.profile.agentInstanceId,
   };
@@ -224,10 +236,10 @@ function derive(data) {
 let view = derive(await loadData());
 
 // ---------- drawer (plain DOM, works without WebGL) ----------
-const ICONS = { profile: 'robot', health: 'heart-rate', activity: 'chart-line-up', failures: 'triangle-warning', conversations: 'comments', memory: 'brain', skills: 'sparkles', settings: 'settings' };
+const ICONS = { profile: 'robot', health: 'heart-rate', activity: 'chart-line-up', failures: 'triangle-warning', conversations: 'comments', tasks: 'calendar-clock', memory: 'brain', skills: 'sparkles', settings: 'settings' };
 const icon = (key) => h('i', { class: 'fi fi-rr-' + (ICONS[key] ?? key), 'aria-hidden': 'true' });
-const CSS = { profile: 'var(--text)', health: 'var(--mint)', activity: 'var(--sky)', failures: 'var(--coral)', conversations: 'var(--sky)', memory: 'var(--violet)', skills: 'var(--pink)', settings: 'var(--muted)' };
-const STATE_CSS = { healthy: 'var(--mint)', degraded: 'var(--amber)', restarted: 'var(--coral)', blocked: 'var(--coral)', unknown: 'var(--slate)', completed: 'var(--mint)', failed: 'var(--coral)', processing: 'var(--amber)', pending: 'var(--amber)', running: 'var(--mint)', stopped: 'var(--coral)' };
+const CSS = { profile: 'var(--text)', health: 'var(--mint)', activity: 'var(--sky)', failures: 'var(--coral)', conversations: 'var(--sky)', tasks: 'var(--amber)', memory: 'var(--violet)', skills: 'var(--pink)', settings: 'var(--muted)' };
+const STATE_CSS = { healthy: 'var(--mint)', degraded: 'var(--amber)', restarted: 'var(--coral)', blocked: 'var(--coral)', unknown: 'var(--slate)', completed: 'var(--mint)', failed: 'var(--coral)', processing: 'var(--amber)', pending: 'var(--amber)', running: 'var(--mint)', stopped: 'var(--coral)', active: 'var(--mint)', paused: 'var(--amber)', cancelled: 'var(--slate)' };
 const h = (tag, props = {}, ...kids) => {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) { if (k === 'class') el.className = v; else if (k === 'style') el.style.cssText = v; else if (k.startsWith('on')) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v); }
@@ -247,10 +259,22 @@ const memoryItem = (x) => h('button', { class: 'item', type: 'button', 'aria-exp
   h('div', { class: 'meta' }, x.origin, pill(x.review ? (x.review.state === 'completed' ? 'completed' : 'processing') : 'unknown', reviewKey(x)), h('span', { class: 'when' }, when(x.createdAt))),
   h('p', {}, x.body),
   h('div', { class: 'more' }, '#' + x.id + ' · ' + (x.review ? 'Review #' + x.review.id + ' · ' + x.review.state + (x.review.recap ? ' · ' + x.review.recap : '') : 'No linked memory review yet')));
+// Task rows: kind, state, next due time, and run history on expand.
+const taskKind = (x) => {
+  if (x.taskType !== 'recurring') return 'one-time';
+  const hours = (x.intervalSeconds ?? 0) / 3600;
+  return 'every ' + (hours % 24 === 0 ? hours / 24 + 'd' : hours + 'h');
+};
+const taskItem = (x) => h('button', { class: 'item', type: 'button', 'aria-expanded': 'false', onclick: toggle },
+  h('div', { class: 'meta' }, h('span', { style: 'color:' + (x.taskType === 'recurring' ? 'var(--amber)' : 'var(--sky)') }, taskKind(x)), pill(x.state),
+    h('span', { class: 'when' }, x.state === 'active' && x.nextDueAt ? 'next ' + when(x.nextDueAt) : when(x.createdAt))),
+  h('p', {}, x.goal),
+  h('div', { class: 'more' }, '#' + x.id + ' · ' + x.runs.completed + ' completed · ' + x.runs.failed + ' failed' + (x.runs.lastState ? ' · last run ' + x.runs.lastState + ' ' + when(x.runs.lastAt) : ' · no runs yet')));
+
 // Searchable list: text search plus one filter row. Each section keeps its own
 // query and filter, so they survive refreshes and section switches.
 const SEARCH_RESULT_LIMIT = 200;
-const searchState = { conversations: { query: '', option: 'all' }, memory: { query: '', option: 'all' } };
+const searchState = { conversations: { query: '', option: 'all' }, tasks: { query: '', option: 'all' }, memory: { query: '', option: 'all' } };
 function searchable({ state, items, noun, options, key, text, render, placeholder }) {
   const count = h('div', { class: 'list-head' }), results = h('div', { class: 'list' });
   const run = () => {
@@ -453,6 +477,9 @@ const SECTIONS = {
   },
   failures: (v) => ({ kicker: 'failed replies', title: v.m.failedReplies24h + ' today · ' + v.m.failedReplies30d + ' in 30d', body: [
     (() => { const rows = v.data.messages.filter((x) => x.direction === 'agent' && x.state === 'failed').map(messageItem); return rows.length ? h('div', { class: 'list' }, rows) : empty('No failed replies'); })()] }),
+  tasks: (v) => ({ kicker: v.activeTasks.length + ' active', title: v.data.tasks.length + ' tasks', body: [searchable({
+    state: searchState.tasks, items: v.data.tasks, noun: 'tasks', options: ['all', 'active', 'paused', 'completed', 'cancelled'], key: (x) => x.state,
+    text: (x) => [x.goal, '#' + x.id, taskKind(x)].join(' '), render: taskItem, placeholder: 'Search goal or #id' })] }),
   conversations: (v) => ({ kicker: 'messages', title: 'Conversations', body: [searchable({
     state: searchState.conversations, items: v.data.messages, noun: 'messages', options: ['all', 'completed', 'failed', 'processing'], key: (x) => x.state,
     text: (x) => [x.body, '#' + x.id, x.workspaceId, x.direction === 'agent' ? 'agent' : 'owner'].join(' '), render: messageItem, placeholder: 'Search text, #id or workspace' })] }),
@@ -467,13 +494,27 @@ const SECTIONS = {
     v.data.tools.length ? h('div', { class: 'tags', style: 'margin-top:12px' }, v.data.tools.map((s) => h('span', {}, s))) : null] }),
   settings: () => ({ kicker: 'settings', title: 'Appearance', body: [
     h('div', { class: 'setting' },
-      h('div', { class: 'setting-head' }, h('span', {}, 'Robot colour'), h('small', {}, 'saved in this browser')),
+      h('div', { class: 'setting-head' }, h('span', {}, 'Robot style'), h('small', {}, robotStyle(robotStyleId).name)),
+      h('div', { class: 'styles' }, ROBOT_STYLES.map((style) => h('button', { type: 'button', class: 'style-btn', title: style.name, 'aria-label': style.name, 'aria-pressed': String(style.id === robotStyleId), onclick: () => setRobotStyle(style.id) }, robotPreview(style))))),
+    h('div', { class: 'setting', style: 'margin-top:12px' },
+      h('div', { class: 'setting-head' }, h('span', {}, 'Accessory'), h('small', {}, robotAccessory(robotAccessoryId).name)),
+      h('div', { class: 'styles' }, ROBOT_ACCESSORIES.map((item) => h('button', { type: 'button', class: 'style-btn', title: item.name, 'aria-label': item.name, 'aria-pressed': String(item.id === robotAccessoryId), onclick: () => setRobotAccessory(item.id) }, robotPreview(robotStyle(robotStyleId), item.id))))),
+    h('div', { class: 'setting', style: 'margin-top:12px' },
+      h('div', { class: 'setting-head' }, h('span', {}, 'Body colour'), h('small', {}, 'saved in this browser')),
       h('div', { class: 'swatches' }, ROBOT_COLORS.map(([name, hex]) => h('button', { type: 'button', class: 'swatch', title: name, 'aria-label': name, 'aria-pressed': String(hex === robotColor), style: 'background:' + hex + ';color:' + hex, onclick: () => setRobotColor(hex) }))),
       h('div', { class: 'custom' },
         h('label', { for: 'robot-color' }, 'Custom'),
         h('input', { id: 'robot-color', type: 'color', value: robotColor, oninput: (e) => setRobotColor(e.currentTarget.value, false), onchange: (e) => setRobotColor(e.currentTarget.value) }),
         h('code', {}, robotColor),
-        h('button', { type: 'button', class: 'back', style: 'padding:0;margin-left:auto', onclick: () => setRobotColor(ROBOT_COLORS[0][1]) }, icon('rotate-left'), 'reset')))] }),
+        h('button', { type: 'button', class: 'back', style: 'padding:0;margin-left:auto', onclick: () => setRobotColor(ROBOT_COLORS[0][1]) }, icon('rotate-left'), 'reset'))),
+    h('div', { class: 'setting', style: 'margin-top:12px' },
+      h('div', { class: 'setting-head' }, h('span', {}, 'Accent colour'), h('small', {}, robotAccent)),
+      h('div', { class: 'swatches' },
+        h('button', { type: 'button', class: 'swatch', title: 'auto', 'aria-label': 'auto accent', 'aria-pressed': String(robotAccent === 'auto'), style: 'color:' + robotColor + ';background:linear-gradient(135deg,' + robotColor + ' 50%,color-mix(in srgb, ' + robotColor + ' 60%, #000) 50%)', onclick: () => setRobotAccent('auto') }),
+        ROBOT_ACCENTS.map(([name, hex]) => h('button', { type: 'button', class: 'swatch', title: name, 'aria-label': name + ' accent', 'aria-pressed': String(hex === robotAccent), style: 'background:' + hex + ';color:' + hex, onclick: () => setRobotAccent(hex) })))),
+    h('div', { class: 'setting', style: 'margin-top:12px' },
+      h('div', { class: 'setting-head' }, h('span', {}, 'Finish')),
+      h('div', { class: 'seg' }, ROBOT_FINISHES.map((finish) => h('button', { type: 'button', 'aria-pressed': String(finish === robotFinish), onclick: () => setRobotFinish(finish) }, finish))))] }),
 };
 
 // Robot colour: a per-agent browser preference. Storage can be unavailable, so
@@ -489,6 +530,112 @@ function setRobotColor(hex, rerender = true) {
   paintRobot(robotColor);
   if (rerender) openDrawer('settings', true); else document.querySelector('.custom code')?.replaceChildren(robotColor);
 }
+
+// Robot styles: pixel maps drawn as voxels. H body, D darker body, E eye
+// (blinks), M mouth, G status glow, a status light, s stem, A arm (swings),
+// L leg. Rows in one map share a width.
+const ROBOT_STYLES = [
+  { id: 'classic', name: 'classic', rows: ['.....a.....', '.....s.....', '.HHHHHHHHH.', '.HHEHHHEHH.', '.HHEHHHEHH.', 'AHHHHHHHHHA', '.HHHHHHHHH.', '..LL...LL..'] },
+  { id: 'visor', name: 'visor', rows: ['....a.a....', '....s.s....', '..HHHHHHH..', '..HGGGGGH..', '..HHHHHHH..', '.ADDDDDDDA.', '..DDDDDDD..', '..L.....L..'] },
+  { id: 'round', name: 'round', rows: ['.....a.....', '...HHHHH...', '..HHHHHHH..', '.HHEEHEEHH.', '.HHEEHEEHH.', '.HHHMMMHHH.', '..HHHHHHH..', '...L...L...'] },
+  { id: 'tank', name: 'tank', rows: ['.....a.....', '...HHHHH...', '...HEHEH...', '...HHHHH...', '.AHHHHHHHA.', '.DDDDDDDDD.', 'DLDLDLDLDLD'] },
+  { id: 'slim', name: 'slim', rows: ['....a....', '....s....', '..HHHHH..', '..HEHEH..', '..HHHHH..', '...HHH...', '.AHHHHHA.', '..HHHHH..', '..L...L..'] },
+  { id: 'crab', name: 'crab', rows: ['.A.......A.', '.AA.....AA.', '..HHHHHHH..', '.HHEHHHEHH.', 'HHHHHHHHHHH', '.HHHHHHHHH.', '.L.L...L.L.'] },
+  { id: 'cyclops', name: 'cyclops', rows: ['.....a.....', '.....s.....', '..HHHHHHH..', '..HHEEEHH..', '..HHEEEHH..', '..HHHHHHH..', '.AHDDDDDHA.', '...L...L...'] },
+  { id: 'ghost', name: 'ghost', rows: ['...HHHHH...', '..HHHHHHH..', '.HHEHHHEHH.', '.HHEHHHEHH.', '.HHHHHHHHH.', 'AHHHMMMHHHA', '.HHHHHHHHH.', '.H.H.H.H.H.'] },
+  { id: 'cat', name: 'cat', rows: ['.H.......H.', '.HH.....HH.', '.HHHHHHHHH.', '.HHEHHHEHH.', '.HHHHGHHHH.', '.HHHHHHHHH.', '..AHHHHHA..', '..L.....L..'] },
+  { id: 'tv', name: 'retro tv', rows: ['...a...a...', '...s...s...', '.HHHHHHHHH.', '.HGGGGGGGH.', '.HGEGGGEGH.', '.HGGGGGGGH.', '.HHHHHHHHH.', '..L.....L..'] },
+  { id: 'owl', name: 'owl', rows: ['.H.......H.', '.HHHHHHHHH.', '.HEEHHHEEH.', '.HEEHHHEEH.', '.HHHHGHHHH.', 'AHHHHHHHHHA', '.HHHHHHHHH.', '..L.....L..'] },
+  { id: 'frog', name: 'frog', rows: ['.EE.....EE.', '.HHH...HHH.', '.HHHHHHHHH.', '.HMMMMMMMH.', '.HHHHHHHHH.', 'AHHHHHHHHHA', '.LL.....LL.'] },
+  { id: 'knight', name: 'knight', rows: ['....DDD....', '....DDD....', '..HHHHHHH..', '..HEEEEEH..', '..HHHHHHH..', '.AHDDDDDHA.', '..DDDDDDD..', '..L.....L..'] },
+  { id: 'bunny', name: 'bunny', rows: ['..H.....H..', '..H.....H..', '..H.....H..', '.HHHHHHHHH.', '.HHEHHHEHH.', '.HHHHGHHHH.', '.HHHHHHHHH.', '..AHHHHHA..', '..L.....L..'] },
+  { id: 'alien', name: 'alien', rows: ['..a.....a..', '...s...s...', '..HHHHHHH..', '.HHHHHHHHH.', '.HEEHHHEEH.', '.HEEHHHEEH.', '..HHHMHHH..', '...AHHHA...', '....L.L....'] },
+  { id: 'drone', name: 'drone', rows: ['DDDD...DDDD', '..s.....s..', '..HHHHHHH..', '.HHEHHHEHH.', '.HHHHGHHHH.', '...DDDDD...', '....L.L....'] },
+  { id: 'pirate', name: 'pirate', rows: ['..DDDDDDD..', '.DDDDDDDDD.', '.HHHHHHHHH.', '.HDDHHHEHH.', '.HHHHHHHHH.', '.HHMMMMMHH.', 'AHHHHHHHHHA', '..L.....L..'] },
+  { id: 'snowman', name: 'snowman', rows: ['....DDD....', '...DDDDD...', '...HEHEH...', '...HHHHH...', '..AHHHHHA..', '..HHHGHHH..', '..HHHHHHH..', '...L...L...'] },
+  { id: 'spider', name: 'spider', rows: ['....a.a....', '..HHHHHHH..', '.HHEHEHEHH.', 'LHHHHHHHHHL', '.LHHHHHHHL.', 'L.L.....L.L'] },
+  { id: 'chibi', name: 'chibi', rows: ['....a....', '..HHHHH..', '.HHHHHHH.', '.HEHHHEH.', '.HHHMHHH.', '..AHHHA..', '..L...L..'] },
+];
+const robotStyle = (id) => ROBOT_STYLES.find((style) => style.id === id) ?? ROBOT_STYLES[0];
+const robotStyleKey = () => 'inoai.robotStyle.' + view.data.profile.agentInstanceId;
+const readRobotStyle = () => { try { return robotStyle(localStorage.getItem(robotStyleKey())).id; } catch { /* storage unavailable */ } return ROBOT_STYLES[0].id; };
+let robotStyleId = readRobotStyle();
+let shapeRobot = () => {};
+function setRobotStyle(id) {
+  robotStyleId = robotStyle(id).id;
+  try { localStorage.setItem(robotStyleKey(), robotStyleId); } catch { /* storage unavailable */ }
+  shapeRobot(robotStyleId);
+  openDrawer('settings', true);
+}
+function robotPreview(style, accessoryId = robotAccessoryId) {
+  const light = STATE_CSS[view.data.profile.status] ?? 'var(--slate)';
+  const accent = robotAccent === 'auto' ? 'color-mix(in srgb, ' + robotColor + ' 60%, #000)' : robotAccent;
+  const fill = { H: robotColor, s: robotColor, A: robotColor, L: robotColor, D: accent, E: '#050608', M: '#050608', G: light, a: light, ...ACCESSORY_COLORS };
+  const rows = robotGrid(style, accessoryId).rows;
+  return h('span', { class: 'mini', style: 'grid-template-columns:repeat(' + rows[0].length + ',1fr)', 'aria-hidden': 'true' },
+    rows.flatMap((row) => [...row].map((ch) => h('i', { style: fill[ch] ? 'background:' + fill[ch] : '' }))));
+}
+
+// Accessories: pixel overlays stamped onto a style. 'top' sits on the head and
+// replaces its antenna, 'float' hovers above the robot, and 'face' and 'chest'
+// sit in front of the body. Accessory letters are fixed colours.
+const ACCESSORY_COLORS = { Y: '#f2c66d', K: '#3d4658', W: '#e7edf4', R: '#f47d79', B: '#7cc4ff', P: '#f0a6ca', V: '#a78bfa', N: '#59e3b1' };
+const ROBOT_ACCESSORIES = [
+  { id: 'none', name: 'none', anchor: 'top', rows: [] },
+  { id: 'crown', name: 'crown', anchor: 'top', rows: ['Y.Y.Y', 'YYYYY'] },
+  { id: 'party', name: 'party hat', anchor: 'top', rows: ['..Y..', '..P..', '.PVP.', 'PVPVP'] },
+  { id: 'tophat', name: 'top hat', anchor: 'top', rows: ['.KKK.', '.KKK.', '.RRR.', 'KKKKK'] },
+  { id: 'cap', name: 'cap', anchor: 'top', rows: ['.BBB...', 'BBBBBBB'] },
+  { id: 'beanie', name: 'beanie', anchor: 'top', rows: ['..R..', '.WWW.', 'WWWWW'] },
+  { id: 'flower', name: 'flower', anchor: 'top', rows: ['.P.', 'PYP', '.P.', '.N.'] },
+  { id: 'halo', name: 'halo', anchor: 'float', rows: ['.YYYYY.', 'Y.....Y', '.YYYYY.'] },
+  { id: 'shades', name: 'shades', anchor: 'face', rows: ['KKKKKKK'] },
+  { id: 'bowtie', name: 'bow tie', anchor: 'chest', rows: ['R.R', 'RRR', 'R.R'] },
+];
+const robotAccessory = (id) => ROBOT_ACCESSORIES.find((item) => item.id === id) ?? ROBOT_ACCESSORIES[0];
+// The style's rows with the accessory stamped in. 'under' keeps the body letter
+// beneath each face or chest overlay cell, so the scene can layer the two.
+function robotGrid(style, accessoryId) {
+  const item = robotAccessory(accessoryId), width = style.rows[0].length;
+  const blank = () => Array(width).fill('.');
+  let rows = style.rows.map((row) => [...row]);
+  let headTop = rows.findIndex((row) => row.some((ch) => 'HDEGM'.includes(ch)));
+  if (item.anchor === 'top' && item.rows.length) {
+    rows = rows.map((row, y) => (y < headTop ? row.map((ch) => (ch === 'a' || ch === 's' ? '.' : ch)) : row));
+    const missing = item.rows.length - headTop;
+    if (missing > 0) { rows = [...Array.from({ length: missing }, blank), ...rows]; headTop += missing; }
+  }
+  if (item.anchor === 'float') { rows = [...Array.from({ length: item.rows.length + 1 }, blank), ...rows]; headTop += item.rows.length + 1; }
+  const under = rows.map(blank);
+  const stamp = (top, overlay) => item.rows.forEach((line, j) => [...line].forEach((ch, i) => {
+    const x = Math.floor((width - line.length) / 2) + i, y = top + j;
+    if (ch === '.' || x < 0 || x >= width || y < 0 || y >= rows.length) return;
+    if (overlay) under[y][x] = rows[y][x];
+    rows[y][x] = ch;
+  }));
+  if (item.anchor === 'top') stamp(headTop - item.rows.length, false);
+  else if (item.anchor === 'float') stamp(0, false);
+  else if (item.anchor === 'face') { const eyeRow = rows.findIndex((row) => row.includes('E')); stamp(eyeRow >= 0 ? eyeRow : headTop + 1, true); }
+  else {
+    const lastBody = rows.length - 1 - [...rows].reverse().findIndex((row) => row.some((ch) => ch === 'H' || ch === 'D'));
+    stamp(Math.max(headTop + 1, lastBody - item.rows.length + 1), true);
+  }
+  while (rows.length > 1 && rows[0].every((ch) => ch === '.')) { rows.shift(); under.shift(); }
+  return { rows: rows.map((row) => row.join('')), under };
+}
+
+// Accessory, accent colour, and finish: per-agent browser preferences.
+const prefKey = (name) => 'inoai.' + name + '.' + view.data.profile.agentInstanceId;
+const readPref = (name, valid, fallback) => { try { const value = localStorage.getItem(prefKey(name)); if (value !== null && valid(value)) return value; } catch { /* storage unavailable */ } return fallback; };
+const writePref = (name, value) => { try { localStorage.setItem(prefKey(name), value); } catch { /* storage unavailable */ } };
+const ROBOT_ACCENTS = [['ink', '#1c2433'], ['white', '#e7edf4'], ...ROBOT_COLORS];
+const ROBOT_FINISHES = ['matte', 'shiny', 'glow', 'wire'];
+let robotAccessoryId = readPref('robotAccessory', (value) => ROBOT_ACCESSORIES.some((item) => item.id === value), 'none');
+let robotAccent = readPref('robotAccent', (value) => value === 'auto' || /^#[0-9a-f]{6}$/i.test(value), 'auto');
+let robotFinish = readPref('robotFinish', (value) => ROBOT_FINISHES.includes(value), 'matte');
+function setRobotAccessory(id) { robotAccessoryId = robotAccessory(id).id; writePref('robotAccessory', robotAccessoryId); shapeRobot(robotStyleId); openDrawer('settings', true); }
+function setRobotAccent(value) { robotAccent = value; writePref('robotAccent', value); paintRobot(robotColor); openDrawer('settings', true); }
+function setRobotFinish(value) { robotFinish = value; writePref('robotFinish', value); paintRobot(robotColor); openDrawer('settings', true); }
 const drawer = document.getElementById('drawer'), rail = document.getElementById('d-rail');
 let openSection = null, drawerShiftPx = 0;
 Object.keys(SECTIONS).forEach((key) => rail.append(h('button', { type: 'button', 'aria-label': key, title: key, style: 'color:' + CSS[key], onclick: () => openDrawer(key) }, icon(key))));
@@ -610,36 +757,67 @@ function startScene() {
   const failureHead = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 16), basic(0xffd0ce)); tilt.add(failureHead);
   hitBand(tilt, 2.05, 2.45, 0, Math.PI * 2, { section: 'failures', tip: () => view.m.failedReplies24h + ' failed replies · 24h' });
 
-  tilt.add(arc(1.75, 0.008, Math.PI * 2, COLORS.violet, 0.25));
+  tilt.add(arc(1.75, 0.008, Math.PI * 2, COLORS.pink, 0.25));
   const orbitGroup = new THREE.Group(); tilt.add(orbitGroup);
-  hitBand(tilt, 1.55, 1.95, 0, Math.PI * 2, { section: 'activity', tip: () => view.m.activeSessions + ' active sessions' });
+  hitBand(tilt, 1.55, 1.95, 0, Math.PI * 2, { section: 'skills', tip: () => view.data.skills.length + ' skills' });
 
   const statusRing = arc(1.3, 0.012, Math.PI * 2, COLORS.slate, 0.8); tilt.add(statusRing);
 
-  // Pixel robot in the core, built from voxels. The antenna light shows status.
-  const ROBOT = ['.....a.....', '.....s.....', '.HHHHHHHHH.', '.HHEHHHEHH.', '.HHEHHHEHH.', 'AHHHHHHHHHA', '.HHHHHHHHH.', '..LL...LL..'];
-  const cell = 0.13, robot = new THREE.Group(); tilt.add(robot);
+  // Pixel robot in the core, built from voxels in the selected style. Status
+  // lights and glow cells share the antenna material, which shows status.
+  // robotBody holds the voxels and turns on its own; robot anchors the labels.
+  const robot = new THREE.Group(), robotBody = new THREE.Group(); robot.add(robotBody); tilt.add(robot);
   scene.add(new THREE.AmbientLight(0xffffff, 0.75));
   const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(-2, 3, 6); scene.add(sun);
-  const voxel = new THREE.BoxGeometry(cell * 0.96, cell * 0.96, cell * 1.6);
-  const eyeVoxel = new THREE.BoxGeometry(cell * 0.9, cell * 0.96, cell * 0.5);
-  const bodyMat = new THREE.MeshLambertMaterial({ color: robotColor }), eyeMat = basic(0x050608), antennaMat = basic(COLORS.slate);
-  paintRobot = (hex) => bodyMat.color.set(hex);
-  const eyes = [], arms = [];
-  let antenna = null;
-  ROBOT.forEach((row, y) => [...row].forEach((ch, x) => {
-    if (ch === '.') return;
-    const at = (mesh, z = 0) => { mesh.position.set((x - 5) * cell, (3.5 - y) * cell, z); robot.add(mesh); return mesh; };
-    if (ch === 'a') { antenna = at(new THREE.Mesh(new THREE.SphereGeometry(cell * 0.6, 16, 16), antennaMat)); return; }
-    const body = at(new THREE.Mesh(voxel, bodyMat));
-    if (ch === 'E') eyes.push(at(new THREE.Mesh(eyeVoxel, eyeMat), cell * 0.8));
-    if (ch === 'A') arms.push(body);
-  }));
+  const bodyMat = new THREE.MeshPhongMaterial(), accentMat = new THREE.MeshPhongMaterial(), eyeMat = basic(0x050608), antennaMat = basic(COLORS.slate);
+  const accessoryMats = {};
+  const accessoryMat = (ch) => (accessoryMats[ch] ??= new THREE.MeshPhongMaterial({ color: ACCESSORY_COLORS[ch], shininess: 40 }));
+  paintRobot = (hex) => {
+    bodyMat.color.set(hex);
+    if (robotAccent === 'auto') accentMat.color.set(hex).multiplyScalar(0.6); else accentMat.color.set(robotAccent);
+    for (const mat of [bodyMat, accentMat]) {
+      mat.wireframe = robotFinish === 'wire';
+      mat.shininess = robotFinish === 'shiny' ? 40 : 0;
+      mat.specular.setScalar(robotFinish === 'shiny' ? 0.18 : 0);
+      mat.emissive.copy(mat.color).multiplyScalar(robotFinish === 'glow' ? 0.45 : 0);
+    }
+  };
+  paintRobot(robotColor);
+  let eyes = [], arms = [], antennas = [];
+  shapeRobot = (id) => {
+    robotBody.traverse((part) => part.geometry?.dispose());
+    robotBody.clear();
+    eyes = []; arms = []; antennas = [];
+    const { rows, under } = robotGrid(robotStyle(id), robotAccessoryId), cols = rows[0].length;
+    const cell = Math.min(0.13, 1.45 / cols, 1.05 / rows.length);
+    const voxel = new THREE.BoxGeometry(cell * 0.96, cell * 0.96, cell * 1.6);
+    const eyeVoxel = new THREE.BoxGeometry(cell * 0.9, cell * 0.96, cell * 0.5);
+    const bulb = new THREE.SphereGeometry(cell * 0.6, 16, 16);
+    const bodyFor = (ch) => (ch === 'D' ? accentMat : ch === 'G' ? antennaMat : bodyMat);
+    rows.forEach((row, y) => [...row].forEach((ch, x) => {
+      if (ch === '.') return;
+      const at = (mesh, z = 0) => { mesh.position.set((x - (cols - 1) / 2) * cell, ((rows.length - 1) / 2 - y) * cell, z); robotBody.add(mesh); return mesh; };
+      if (ch === 'a') { antennas.push(at(new THREE.Mesh(bulb, antennaMat))); return; }
+      if (ACCESSORY_COLORS[ch]) {
+        const below = under[y][x];
+        if (below === '.') { at(new THREE.Mesh(voxel, accessoryMat(ch))); return; }
+        at(new THREE.Mesh(voxel, bodyFor(below)));
+        at(new THREE.Mesh(eyeVoxel, accessoryMat(ch)), cell * 0.95);
+        return;
+      }
+      const body = at(new THREE.Mesh(voxel, bodyFor(ch)));
+      if (ch === 'E' || ch === 'M') { const face = at(new THREE.Mesh(eyeVoxel, eyeMat), cell * 0.8); if (ch === 'E') eyes.push(face); }
+      if (ch === 'A') { body.userData.baseY = body.position.y; arms.push(body); }
+    }));
+    Object.assign(robot.userData, { halfHeight: rows.length * cell / 2, halfWidth: cols * cell / 2, cell });
+  };
+  shapeRobot(robotStyleId);
   const coreHit = new THREE.Mesh(new THREE.CircleGeometry(1.3, 48), hitMat);
   coreHit.userData = { section: 'profile', tip: () => 'agent profile' }; tilt.add(coreHit); hits.push(coreHit);
 
   const satellites = [
-    { key: 'conversations', x: -3.3, color: COLORS.sky, word: 'messages', frac: (v) => v.completedFrac, value: (v) => v.m.messages30d },
+    { key: 'tasks', x: -3.3, color: COLORS.amber, word: 'tasks', value: (v) => v.activeTasks.length, segmented: true,
+      tip: (v) => v.activeTasks.length + ' active tasks · ' + v.activeTasks.filter((x) => x.taskType === 'recurring').length + ' recurring' },
     { key: 'memory', x: 0, color: COLORS.violet, word: 'memory', frac: (v) => v.reviewedFrac, value: (v) => v.data.memories.length },
     { key: 'skills', x: 3.3, color: COLORS.pink, word: 'skills', value: (v) => v.data.skills.length, segmented: true },
   ].map((sat) => {
@@ -648,7 +826,7 @@ function startScene() {
     const spin = ticks(0.9, 36, 0.05, sat.color, 0.35); group.add(spin);
     const fill = sat.segmented ? new THREE.Group() : arc(0.72, 0.045, 0.001, sat.color); group.add(fill);
     const hit = new THREE.Mesh(new THREE.CircleGeometry(1.05, 32), hitMat);
-    hit.userData = { section: sat.key, sat: group, tip: () => sat.key }; group.add(hit); hits.push(hit);
+    hit.userData = { section: sat.key, sat: group, tip: () => (sat.tip ? sat.tip(view) : sat.key) }; group.add(hit); hits.push(hit);
     return { ...sat, group, spin, fill };
   });
 
@@ -660,23 +838,32 @@ function startScene() {
   }
 
   // Rebuild the parts whose shape depends on the data.
-  let orbiters = [];
+  let orbiters = [], orbitAngle = 0, lastFrameT = 0;
   function applyView(v) {
     v.hours.forEach((hour, i) => healthSegs[i].material.color.setHex(STATE_COLOR[hour.state]));
     statusRing.material.color.setHex(STATUS_COLOR[v.data.profile.status] ?? COLORS.slate);
     antennaMat.color.setHex(STATUS_COLOR[v.data.profile.status] ?? COLORS.slate);
+    // One orbiting light per enabled skill; each is its own hover and click target.
+    for (const old of orbiters) hits.splice(hits.indexOf(old), 1);
+    orbitGroup.traverse((part) => part.geometry?.dispose());
     orbitGroup.clear();
-    const sessionCount = Math.min(v.m.activeSessions, 24);
-    orbiters = Array.from({ length: sessionCount }, (_, i) => {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 16), basic(COLORS.violet));
-      s.userData = { phase: (i / sessionCount) * Math.PI * 2, speed: 0.35 + (i % 5) * 0.07 }; orbitGroup.add(s); return s;
+    const skillIds = v.data.skills.slice(0, 24);
+    orbiters = skillIds.map((skill, i) => {
+      // An invisible, larger sphere is the hit target; the visible light sits inside it.
+      const s = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), hitMat);
+      s.add(new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 16), basic(COLORS.pink)));
+      s.userData = { phase: (i / skillIds.length) * Math.PI * 2, section: 'skills', skill, tip: () => skill };
+      orbitGroup.add(s); hits.push(s); return s;
     });
-    const skills = satellites[2], count = v.data.skills.length;
-    skills.fill.clear();
-    if (count) {
-      const sStep = (Math.PI * 2) / count, sGap = Math.min(0.12, sStep * 0.3);
-      for (let i = 0; i < count; i++) { const p = arc(0.72, 0.045, sStep - sGap, skills.color); placeCW(p, i * sStep + sGap / 2, sStep - sGap); skills.fill.add(p); }
-    }
+    // Segmented rings: one segment per active task (sky one-time, amber recurring) and per skill.
+    const segment = (sat, colors) => {
+      sat.fill.traverse((part) => part.geometry?.dispose());
+      sat.fill.clear();
+      const sStep = (Math.PI * 2) / Math.max(1, colors.length), sGap = Math.min(0.12, sStep * 0.3);
+      colors.forEach((color, i) => { const p = arc(0.72, 0.045, sStep - sGap, color); placeCW(p, i * sStep + sGap / 2, sStep - sGap); sat.fill.add(p); });
+    };
+    segment(satellites[0], v.activeTasks.map((x) => (x.taskType === 'recurring' ? COLORS.amber : COLORS.sky)));
+    segment(satellites[2], v.data.skills.map(() => satellites[2].color));
     labels.name.textContent = v.name;
   }
 
@@ -701,21 +888,25 @@ function startScene() {
   const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2(9, 9), parallax = new THREE.Vector2();
   const tooltip = document.getElementById('tooltip');
   let hovered = null;
+  // Hover tooltips only make sense for a mouse; touch taps open the drawer.
+  let mousePointer = true;
+  addEventListener('pointerdown', (e) => { mousePointer = e.pointerType === 'mouse'; });
   addEventListener('pointermove', (e) => {
+    mousePointer = e.pointerType === 'mouse';
     pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
     parallax.copy(pointer);
     tooltip.style.left = e.clientX + 'px'; tooltip.style.top = e.clientY + 'px';
   });
   renderer.domElement.addEventListener('click', (e) => {
     pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); pick();
-    if (hovered) openDrawer(hovered.section); else closeDrawer();
+    if (hovered?.skill) showSkill(hovered.skill, 'SKILL.md'); else if (hovered) openDrawer(hovered.section); else closeDrawer();
   });
   function pick() {
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster.intersectObjects(hits, false)[0];
     hovered = hit ? hit.object.userData : null;
     renderer.domElement.style.cursor = hovered ? 'pointer' : 'default';
-    tooltip.classList.toggle('on', !!hovered);
+    tooltip.classList.toggle('on', !!hovered && mousePointer);
     if (hovered) tooltip.textContent = hovered.tip();
   }
 
@@ -735,6 +926,31 @@ function startScene() {
   const ease = (t) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
   const timer = new THREE.Clock();
   let hop = 0;
+
+  // Reactions from the data: mood (sleep when stopped, worried when the latest
+  // heartbeat was not healthy), faster motion while a turn is processing, a turn
+  // when new messages arrive, a sweat drop on failure spikes, and a short badge
+  // when a skill is used.
+  const reaction = { mood: 'happy', sweat: false, working: false, turnStart: null, badge: null, messages: null, skills: null };
+  const drop = new THREE.Mesh(new THREE.SphereGeometry(0.085, 14, 14), basic(COLORS.sky)); robot.add(drop);
+  const badgeLight = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 16), basic(COLORS.pink)); robot.add(badgeLight);
+  const zzz = h('div', { class: 'label zzz', 'aria-hidden': 'true' }, h('i', {}, 'z'), h('i', {}, 'z'), h('i', {}, 'z')); labelsEl.append(zzz);
+  const badgeLabel = h('div', { class: 'label badge' }); labelsEl.append(badgeLabel);
+  function react(v) {
+    const known = v.hours.filter((hour) => hour.state !== 'unknown');
+    const latest = known[known.length - 1]?.state;
+    reaction.mood = v.data.profile.status === 'stopped' ? 'sleep' : latest && latest !== 'healthy' ? 'worried' : 'happy';
+    reaction.sweat = v.m.failedReplies24h >= 3 || v.failureFrac >= 0.15;
+    reaction.working = v.data.messages.some((x) => x.state === 'processing' && Date.now() - Date.parse(x.createdAt) < 30 * 60_000);
+    const skills = v.data.insights?.['24h']?.skills ?? [];
+    if (reaction.messages !== null && v.m.messages24h > reaction.messages && !reduceMotion) reaction.turnStart = timer.getElapsedTime();
+    const fresh = reaction.skills && skills.find((s) => s.count > (reaction.skills.get(s.skill) ?? 0));
+    if (fresh) reaction.badge = { skill: fresh.skill, start: timer.getElapsedTime() };
+    reaction.messages = v.m.messages24h;
+    reaction.skills = new Map(skills.map((s) => [s.skill, s.count]));
+  }
+  react(view);
+  listeners.push(react);
   const one = new THREE.Vector3(1, 1, 1), big = new THREE.Vector3(1.1, 1.1, 1.1);
   function frame() {
     const t = reduceMotion ? 10 : timer.getElapsedTime();
@@ -762,17 +978,46 @@ function startScene() {
       s.group.position.y = -3.95 + Math.sin(spin * 0.8 + i) * 0.04;
       s.label.querySelector('b').textContent = Math.round(shown.satValues[i]);
     });
-    orbiters.forEach((o) => { const a = o.userData.phase - spin * o.userData.speed; o.position.set(Math.cos(a) * 1.75, Math.sin(a) * 1.75, 0); });
+    // Skill lights orbit slowly and pause while one is hovered, so it is easy to click.
+    if (!hovered?.skill) orbitAngle += Math.max(0, t - lastFrameT) * 0.25;
+    lastFrameT = t;
+    orbiters.forEach((o) => {
+      const a = o.userData.phase - orbitAngle;
+      o.position.set(Math.cos(a) * 1.75, Math.sin(a) * 1.75, 0);
+      const lit = reaction.badge?.skill === o.userData.skill || hovered === o.userData;
+      o.scale.setScalar(lit ? 1.6 + 0.3 * Math.sin(spin * 8) : 1);
+    });
     statusRing.material.opacity = 0.45 + 0.4 * (0.5 + 0.5 * Math.sin(spin * 2.2));
     statusRing.scale.setScalar(1 + 0.015 * Math.sin(spin * 2.2));
     hop += ((hovered?.section === 'profile' ? 0.08 : 0) - hop) * 0.15;
-    robot.position.y = Math.sin(spin * 1.6) * 0.035 + hop;
+    const busy = reaction.working ? 2.6 : 1;
+    robot.position.y = Math.sin(spin * 1.6 * busy) * (reaction.working ? 0.05 : 0.035) + hop;
     robot.rotation.y += ((parallax.x * 0.35) - robot.rotation.y) * 0.08;
     robot.rotation.x += ((-parallax.y * 0.3) - robot.rotation.x) * 0.08;
+    const now = reduceMotion ? timer.getElapsedTime() : t;
+    const turn = reaction.turnStart === null ? 1 : Math.min(1, (now - reaction.turnStart) / 0.9);
+    if (turn >= 1) reaction.turnStart = null;
+    robotBody.rotation.y = ease(turn) * Math.PI * 2;
     const blink = !reduceMotion && t % 4.2 < 0.13 ? 0.12 : 1;
-    eyes.forEach((eye) => { eye.scale.y = blink; });
-    arms.forEach((arm, i) => { arm.position.y = -1.5 * cell + Math.sin(spin * 3 + i * Math.PI) * 0.018; });
-    antenna.scale.setScalar(1 + 0.18 * Math.sin(spin * 3.2));
+    eyes.forEach((eye) => {
+      eye.scale.y = reaction.mood === 'sleep' ? 0.12 : blink;
+      eye.rotation.z = reaction.mood === 'worried' ? -Math.sign(eye.position.x) * 0.45 : 0;
+    });
+    arms.forEach((arm, i) => { arm.position.y = arm.userData.baseY + Math.sin(spin * 3 * busy + i * Math.PI) * (reaction.working ? 0.03 : 0.018); });
+    const { halfWidth, halfHeight, cell: robotCell } = robot.userData;
+    const fall = reduceMotion ? 0.3 : (t % 1.6) / 1.6;
+    drop.visible = reaction.sweat && reaction.mood !== 'sleep';
+    drop.position.set(halfWidth * 0.75, halfHeight * (0.7 - fall * 0.8), robotCell * 1.2);
+    drop.scale.setScalar(1 - fall * 0.5);
+    const badgeAge = reaction.badge ? now - reaction.badge.start : Infinity;
+    if (badgeAge > 6) reaction.badge = null;
+    badgeLight.visible = badgeAge <= 6;
+    badgeLight.position.set(0, -halfHeight * 0.25, robotCell * 1.4);
+    badgeLight.scale.setScalar(1 + 0.3 * Math.sin(now * 8));
+    if (reaction.badge) badgeLabel.textContent = reaction.badge.skill;
+    badgeLabel.style.opacity = badgeAge <= 6 ? '1' : '0';
+    zzz.style.opacity = reaction.mood === 'sleep' ? '1' : '0';
+    antennas.forEach((light) => light.scale.setScalar(1 + 0.18 * Math.sin(spin * 3.2)));
     outerTicks.rotation.z = -spin * 0.03;
     stars.rotation.z = spin * 0.004;
     tilt.rotation.x += ((-0.22 - parallax.y * 0.12) - tilt.rotation.x) * 0.05;
@@ -783,8 +1028,10 @@ function startScene() {
     labels.core.querySelector('b').textContent = view.healthPct === null ? '—' : Math.round(shown.health) + '%';
     labels.activity.querySelector('b').textContent = Math.round(shown.messages);
     labels.failure.querySelector('b').textContent = Math.round(shown.failed);
-    place(labels.core, robot, [0, 0.82, 0]);
-    place(labels.name, robot, [0, -0.78, 0]);
+    place(labels.core, robot, [0, robot.userData.halfHeight + 0.3, 0]);
+    place(labels.name, robot, [0, -robot.userData.halfHeight - 0.26, 0]);
+    place(zzz, robot, [halfWidth * 0.8, halfHeight + 0.05, 0]);
+    place(badgeLabel, robot, [halfWidth + 0.45, -halfHeight * 0.25, 0]);
     place(labels.activity, tilt, tipPoint(2.7, shown.activity, 1.5));
     place(labels.failure, tilt, tipPoint(2.25, Math.max(0.004, shown.failure), -0.42));
     satellites.forEach((s) => place(s.label, s.group));

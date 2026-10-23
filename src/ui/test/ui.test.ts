@@ -38,12 +38,25 @@ test("local UI binds to loopback and serves the dark ring console", async () => 
     assert.match(html, /three@0\.160\.0/);
     assert.match(html, /cdn-uicons\.flaticon\.com\/2\.6\.0\/uicons-regular-rounded/);
     assert.match(html, /fetch\('\/api\/ui-data'/);
-    for (const section of ["profile", "health", "activity", "failures", "conversations", "memory", "skills"]) assert.match(html, new RegExp(`${section}: \\(v\\) =>`));
+    for (const section of ["profile", "health", "activity", "failures", "tasks", "conversations", "memory", "skills"]) assert.match(html, new RegExp(`${section}: \\(v\\) =>`));
     assert.match(html, /settings: \(\) =>/);
     assert.match(html, /inoai\.robotColor\./);
     assert.match(html, /aria-label="Close details"/);
     assert.equal(html.includes("Fixture-driven preview"), false);
     assert.match(html, /Anomaly event log/);
+    const styles = [...html.matchAll(/\{ id: '([a-z]+)', name: '[a-z ]+', rows: \[([^\]]+)\] \}/g)];
+    assert.equal(styles.length, 20, "twenty robot styles");
+    const accessories = [...html.matchAll(/\{ id: '([a-z]+)', name: '[a-z ]+', anchor: '(top|float|face|chest)', rows: \[([^\]]*)\] \}/g)];
+    assert.equal(accessories.length, 10, "ten accessories including none");
+    for (const [, id, , rows] of accessories.filter(([, id]) => id !== "none")) {
+      const map = rows.split(", ").map((row) => row.slice(1, -1));
+      assert.ok(map.every((row) => row.length === map[0]!.length && /^[.YKWRBPVN]+$/.test(row)), `accessory ${id} rows`);
+    }
+    for (const finish of ["matte", "shiny", "glow", "wire"]) assert.match(html, new RegExp(`'${finish}'`));
+    for (const [, id, rows] of styles) {
+      const map = rows.split(", ").map((row) => row.slice(1, -1));
+      assert.ok(map.every((row) => row.length === map[0]!.length && /^[.HDEMGsaAL]+$/.test(row)), `robot style ${id} rows`);
+    }
     assert.match(html, /No anomalies in the last 24 hours/);
     // Activity: a 24h / 7d / 30d window switch and seven charts replace the message list.
     assert.match(html, /const INSIGHT_WINDOWS = \['24h', '7d', '30d'\];/);
@@ -81,6 +94,35 @@ test("UI data lists enabled skill files with redacted text and no binary content
     assert.deepEqual(skill?.files.map((file) => file.path), ["SKILL.md", "assets/logo.bin", "skill.yaml"]);
     assert.match(skill?.files[0]?.text ?? "", /TOKEN=\[redacted\]/);
     assert.equal(skill?.files[1]?.text, null);
+    assert.equal(JSON.stringify(data).includes("do-not-return"), false);
+  } finally {
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
+test("UI data lists tasks with run counts and redacted goals", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-tasks-test-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".robin-xai-test");
+  const database = openDatabase(home);
+  database.prepare("INSERT INTO users (transport, workspace_id, external_user_id) VALUES ('discord', 'w', 'owner')").run();
+  for (const id of [1, 2, 3]) database.prepare("INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id, agent_provider, agent_session_id, project_path) VALUES (1, 'discord', 'w', 'p', ?, ?, 'codex', ?, ?)").run(`c${id}`, `e${id}`, `s${id}`, deploymentDirectory);
+  const task = database.prepare("INSERT INTO tasks (goal, task_type, interval_seconds, state, conversation_id, session_id, next_due_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  task.run("Summarize CI TOKEN=do-not-return", "recurring", 43200, "active", "c1", 1, 2_000_000_000);
+  task.run("One-off report", "one_time", null, "completed", "c2", 2, null);
+  task.run("Deleted task", "one_time", null, "cancelled", "c3", 3, null);
+  database.prepare("UPDATE tasks SET deleted_at = unixepoch(), deleted_by = 'owner' WHERE goal = 'Deleted task'").run();
+  const run = database.prepare("INSERT INTO task_runs (task_id, state, started_at, completed_at) VALUES (?, ?, ?, ?)");
+  run.run(1, "completed", 100, 110);
+  run.run(1, "failed", 200, 210);
+  run.run(1, "completed", 300, 310);
+  database.prepare("UPDATE task_runs SET deleted_at = unixepoch(), deleted_by = 'owner' WHERE started_at = 300").run();
+  database.close();
+  try {
+    const data = await loadUiData(home);
+    assert.deepEqual(data.tasks.map((x) => x.goal).sort(), ["One-off report", "Summarize CI TOKEN=[redacted]"]);
+    const recurring = data.tasks.find((x) => x.taskType === "recurring");
+    assert.equal(recurring?.intervalSeconds, 43200);
+    assert.deepEqual(recurring?.runs, { completed: 1, failed: 1, lastState: "failed", lastAt: new Date(200_000).toISOString() });
     assert.equal(JSON.stringify(data).includes("do-not-return"), false);
   } finally {
     await rm(deploymentDirectory, { recursive: true, force: true });
