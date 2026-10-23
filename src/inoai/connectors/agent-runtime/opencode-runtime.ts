@@ -11,8 +11,11 @@ import type { AgentRuntime, RuntimeEvent } from "../../agent-runtime/ports.js";
 // "verified": this process saw the OpenCode session exist (a Turn with it succeeded, or the existence check passed).
 type SessionState = { projectPath: string; instructions: string; opencodeId?: string; verified: boolean; orphaned: boolean };
 type ActiveTurn = { child?: ChildProcess; exited?: Promise<void>; cancelRequested?: boolean };
-type StreamEvent = { type?: string; sessionID?: unknown; part?: { text?: unknown; state?: { status?: unknown; error?: unknown } }; error?: { type?: unknown } };
-type Attempt = { spawnFailed: boolean; timedOut: boolean; authentication: boolean; usage: boolean; errored: boolean; mismatched: boolean; exitCode: number | null; texts: string[]; denials: number };
+type StreamEvent = { type?: string; sessionID?: unknown; part?: { text?: unknown; state?: { status?: unknown; error?: unknown }; tokens?: unknown; cost?: unknown }; error?: { type?: unknown } };
+// Token counts and cost summed over a Turn's step_finish events; cost is kept only when every step reported one.
+type Spend = { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; cost?: number };
+// spend: undefined until the first step_finish, null once any step's token counts are missing or malformed.
+type Attempt = { spawnFailed: boolean; timedOut: boolean; authentication: boolean; usage: boolean; errored: boolean; mismatched: boolean; exitCode: number | null; texts: string[]; denials: number; spend?: Spend | null };
 
 // Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
 export type OpenCodePermissionDenialListener = (sessionId: string, count: number) => void;
@@ -121,6 +124,7 @@ export class OpenCodeRuntime implements AgentRuntime {
       if (attempt.exitCode === 0 && !attempt.errored && !attempt.mismatched && !attempt.timedOut && session.opencodeId && answer.trim()) {
         // Only a Turn that succeeded proves the session; a failed first Turn's ID is checked before its first resume.
         session.verified = true;
+        if (attempt.spend) yield usageEvent(attempt.spend);
         yield { type: "answer", text: answer };
         return;
       }
@@ -224,6 +228,7 @@ export class OpenCodeRuntime implements AgentRuntime {
         // Only the final step is the answer; text from earlier tool-call steps is interim narration.
         if (event.type === "step_start") outcome.texts = [];
         else if (event.type === "text" && typeof event.part?.text === "string") outcome.texts.push(event.part.text);
+        else if (event.type === "step_finish" && outcome.spend !== null) outcome.spend = addStep(outcome.spend, event.part);
         else if (event.type === "error") {
           outcome.errored = true;
           const kind = typeof event.error?.type === "string" ? event.error.type : "";
@@ -250,6 +255,28 @@ export class OpenCodeRuntime implements AgentRuntime {
     }
     await exited;
   }
+}
+
+// OpenCode 2.0.26 reports each step's own usage: input excludes cache reads and writes, and output excludes
+// reasoning. The shared meaning counts cache writes as input and reasoning as output, as the Claude adapter does.
+function addStep(total: Spend | undefined, part: StreamEvent["part"]): Spend | null {
+  const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+  const field = (value: unknown, key: string): unknown => typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+  const tokens = part?.tokens;
+  const counts = [field(tokens, "input"), field(tokens, "output"), field(tokens, "reasoning"), field(field(tokens, "cache"), "read"), field(field(tokens, "cache"), "write")].map(count);
+  if (counts.some((value) => value === undefined)) return null;
+  const [input, output, reasoning, cacheRead, cacheWrite] = counts as number[];
+  const cost = typeof part?.cost === "number" && Number.isFinite(part.cost) && part.cost >= 0 ? part.cost : undefined;
+  return {
+    input: (total?.input ?? 0) + input, output: (total?.output ?? 0) + output, reasoning: (total?.reasoning ?? 0) + reasoning,
+    cacheRead: (total?.cacheRead ?? 0) + cacheRead, cacheWrite: (total?.cacheWrite ?? 0) + cacheWrite,
+    cost: cost === undefined || (total && total.cost === undefined) ? undefined : (total?.cost ?? 0) + cost,
+  };
+}
+
+function usageEvent(spend: Spend): RuntimeEvent {
+  return { type: "usage", inputTokens: spend.input + spend.cacheWrite, outputTokens: spend.output + spend.reasoning, cachedInputTokens: spend.cacheRead,
+    reasoningTokens: spend.reasoning, ...(spend.cost === undefined ? {} : { costUsd: spend.cost }) };
 }
 
 // The persona travels with every Turn because OpenCode 2.0.22 ignores configured instruction files.

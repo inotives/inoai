@@ -604,3 +604,43 @@ test("a throwing denial listener never changes the Turn outcome, and no rejectio
     assert.deepEqual(reported, [["ses_fake0000000000000000000000", 1]]);
   } finally { await fake.cleanup(); }
 });
+
+const usageStepFinish = (input: number, output: number, reasoning: number, read: number, write: number, cost?: number) => ({ type: "step_finish", sessionID: "$SID",
+  part: { type: "step-finish", reason: "stop", ...(cost === undefined ? {} : { cost }), tokens: { input, output, reasoning, cache: { read, write } } } });
+
+test("step_finish usage is summed into one usage event before the answer, with cache writes as input and reasoning as output", async () => {
+  const fake = await fakeCli([
+    { lines: [stepStart, text("Checking."), usageStepFinish(100, 20, 5, 1000, 50, 0.01), stepStart, text("Done."), usageStepFinish(30, 10, 0, 1200, 0, 0.005)] },
+    { lines: [stepStart, text("No cost."), usageStepFinish(7, 3, 1, 0, 0)] },
+  ]);
+  try {
+    const runtime = new OpenCodeRuntime({ executable: fake.executable });
+    const id = await runtime.createSession(fake.dir, "personality");
+    const events = await collect(runtime.runTurn(id, "question"));
+    assert.equal(events.length, 3);
+    assert.deepEqual(events[0], { type: "session", id: "ses_fake0000000000000000000000" });
+    const usage = events[1] as Extract<RuntimeEvent, { type: "usage" }>;
+    assert.deepEqual({ ...usage, costUsd: undefined }, { type: "usage", inputTokens: 180, outputTokens: 35, cachedInputTokens: 2200, reasoningTokens: 5, costUsd: undefined });
+    assert.ok(Math.abs(usage.costUsd! - 0.015) < 1e-12);
+    assert.deepEqual(events[2], { type: "answer", text: "Done." });
+    assert.deepEqual(await collect(runtime.runTurn("ses_fake0000000000000000000000", "next")), [
+      { type: "usage", inputTokens: 7, outputTokens: 4, cachedInputTokens: 0, reasoningTokens: 1 }, { type: "answer", text: "No cost." }]);
+  } finally { await fake.cleanup(); }
+});
+
+test("a Turn without valid step_finish usage answers with no usage event, and usage never changes a failure", async () => {
+  const malformed = { type: "step_finish", sessionID: "$SID", part: { type: "step-finish", reason: "stop", cost: 0.1, tokens: { input: "1", output: 1, reasoning: 0, cache: { read: 0, write: 0 } } } };
+  const fake = await fakeCli([
+    { lines: [stepStart, text("plain"), toolStepFinish] },
+    { lines: [stepStart, text("partial"), usageStepFinish(1, 1, 0, 0, 0, 0.1), malformed] },
+    { lines: [stepStart, text("half"), usageStepFinish(1, 1, 0, 0, 0, 0.1), errorEvent("provider.rate-limit")], exit: 1 },
+  ]);
+  try {
+    const runtime = new OpenCodeRuntime({ executable: fake.executable });
+    const id = await runtime.createSession(fake.dir, "personality");
+    const sid = "ses_fake0000000000000000000000";
+    assert.deepEqual(await collect(runtime.runTurn(id, "question")), [{ type: "session", id: sid }, { type: "answer", text: "plain" }]);
+    assert.deepEqual(await collect(runtime.runTurn(sid, "next")), [{ type: "answer", text: "partial" }]);
+    assert.equal((await failure(runtime.runTurn(sid, "again"))).kind, "usage");
+  } finally { await fake.cleanup(); }
+});
