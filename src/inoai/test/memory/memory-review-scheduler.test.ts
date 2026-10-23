@@ -103,11 +103,13 @@ function scheduler(database: DatabaseSync, runtime: AgentRuntime, clock: Schedul
   return new MemoryReviewScheduler(sqliteStore(database), runtime, { reviewTime: "06:00", maxChars: 20_000, clock });
 }
 
-async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 200; i++) {
+async function until(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (check()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
+  if (check()) return;
   throw new Error("Condition did not become true");
 }
 

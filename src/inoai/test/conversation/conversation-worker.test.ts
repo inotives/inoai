@@ -56,11 +56,13 @@ function incoming(id: string, conversationId: string, parentConversationId: stri
     botUserId: "inoai", authorIsBot: false };
 }
 
-async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 100; i++) {
+async function until(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (check()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
+  if (check()) return;
   throw new Error("Condition did not become true");
 }
 

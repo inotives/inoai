@@ -2,10 +2,10 @@
 id: BL-0003
 title: Flaky conversation-worker thread controls test
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T07:15:05Z
 source: T-0002 reviewer handoff
-promoted_to: null
+promoted_to: IP-0002
 ---
 
 # BL-0003: Flaky conversation-worker thread controls test
@@ -38,3 +38,4 @@ promoted_to: null
 
 - [2026-10-23] IP-0002 T-0003 found the same pattern in `task-controls.test.ts`: its `until` helper used a fixed `setImmediate` turn budget and became flaky under full-suite load (2 of 12 runs). T-0003 made that one helper deadline-based (5 ms polling, 5-second deadline); 14 of 14 runs then passed. Other turn-limited helpers remain, for example `task-run-executor.test.ts:18` (200 turns). A shared deadline-based helper would cover this item too. Source: T-0003 reviewer handoffs 2 and 3.
 - [2026-10-23] IP-0002 T-0006 reviewer saw `transport wakes one global FIFO worker; duplicates do not run twice` (`conversation-worker.test.js:67`) fail once in 6 runs with the tick-bounded `until` at `conversation-worker.test.ts:59` (100 iterations). IP-0002 made the helpers in `task-controls.test.ts` and `task-run-executor.test.ts` deadline-based; `conversation-worker.test.ts` remains. Source: T-0006 reviewer handoff 2.
+- [2026-10-23] Promoted into IP-0002 as T-0007 (owner chose "Fix the remaining helpers" during IP-0002 acceptance).

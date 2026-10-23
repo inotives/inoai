@@ -60,6 +60,16 @@ class FakeClient extends EventEmitter {
   async destroy(): Promise<void> { this.destroyed = true; }
 }
 
+async function until(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  if (check()) return;
+  throw new Error("Condition did not become true");
+}
+
 test("Discord gateway lifecycle and message mapping use a fake client", async () => {
   const fake = new FakeClient();
   const transport = new DiscordTransport("", fake as unknown as Client);
@@ -135,11 +145,11 @@ test("native inoai interaction is deferred privately and routed without a messag
     editReply: async (options: unknown) => { replies.push(options); },
   });
   fake.emit(Events.InteractionCreate, interaction("thread", "inoai"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await until(() => replies.length === 2);
   assert.deepEqual(controls, ["status:thread:owner:true"]);
   assert.deepEqual(replies, [{ flags: MessageFlags.Ephemeral }, { content: "ready", allowedMentions: { parse: [] } }]);
   fake.emit(Events.InteractionCreate, interaction("other-thread", "other-bot"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await until(() => replies.length === 4);
   assert.deepEqual(controls, ["status:thread:owner:true", "status:other-thread:owner:false"]);
   assert.deepEqual(replies.slice(2), [{ flags: MessageFlags.Ephemeral }, { content: "ready", allowedMentions: { parse: [] } }]);
   await transport.stop();
@@ -164,7 +174,7 @@ test("Discord Task command maps options and disables mentions in its private rep
     deferReply: async (value: unknown) => { replies.push(value); },
     editReply: async (value: unknown) => { replies.push(value); },
   });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await until(() => replies.length === 2);
   assert.deepEqual(controls, [{ command: "task-create", goal: "Write a report", type: "recurring", interval: 172800, channel: "channel" }]);
   assert.deepEqual(replies, [{ flags: MessageFlags.Ephemeral }, { content: "<@everyone> Task created", allowedMentions: { parse: [] } }]);
   await transport.stop();
@@ -350,7 +360,7 @@ test("owned thread messages queue once without a mention and keep cross-agent me
       });
 
       fake.emit(Events.MessageCreate, incoming("initial", "channel", null, owner, new Map([["inoai", ownBot]])));
-      await new Promise((resolve) => setImmediate(resolve));
+      await until(() => listMessages(instance.database, (instance.database.prepare("SELECT id FROM sessions").get() as { id: number } | undefined)?.id ?? -1).length === 1);
       fake.emit(Events.MessageCreate, incoming("reply", "thread", "channel"));
       fake.emit(Events.MessageCreate, incoming("reply", "thread", "channel"));
       fake.emit(Events.MessageCreate, incoming("cross-agent", "thread", "channel", owner, new Map([["other-bot", otherBot]])));

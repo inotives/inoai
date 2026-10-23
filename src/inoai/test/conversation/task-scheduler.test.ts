@@ -25,11 +25,13 @@ function fakeClock(initial: number) {
   return { clock, now: () => now, set(value: number) { now = value; }, tick() { for (const timer of timers) timer(); } };
 }
 
-async function until(check: () => Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 200; i++) {
+async function until(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (await check()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
+  if (await check()) return;
   throw new Error("Condition did not become true");
 }
 
