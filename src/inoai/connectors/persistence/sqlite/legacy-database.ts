@@ -205,6 +205,34 @@ CREATE TABLE IF NOT EXISTS task_runs (
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_task_run ON task_runs(state)
   WHERE state = 'processing' AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS task_runs_by_task ON task_runs(task_id, id) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS task_proposals (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  transport TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('create', 'edit', 'run', 'pause', 'resume', 'cancel')),
+  task_id INTEGER REFERENCES tasks(id),
+  spec_json TEXT CHECK (spec_json IS NULL OR json_valid(spec_json)),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'confirmed', 'cancelled', 'expired', 'failed')),
+  expires_at INTEGER NOT NULL,
+  card_message_id TEXT,
+  resolved_at INTEGER,
+  result_task_id INTEGER REFERENCES tasks(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((kind = 'create' AND task_id IS NULL) OR (kind != 'create' AND task_id IS NOT NULL)),
+  CHECK ((kind IN ('create', 'edit') AND spec_json IS NOT NULL) OR (kind NOT IN ('create', 'edit') AND spec_json IS NULL)),
+  CHECK ((state = 'pending' AND resolved_at IS NULL) OR (state != 'pending' AND resolved_at IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_pending_task_proposal_per_conversation ON task_proposals(transport, workspace_id, conversation_id)
+  WHERE state = 'pending' AND deleted_at IS NULL;
 `;
 
 export class UnsafeDatabasePathError extends Error {
@@ -305,6 +333,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     recoverStaleWork(database);
     recoverTaskRuns(database);
     recoverLegacyApprovals(database);
+    expireOverdueTaskProposals(database, Math.floor(Date.now() / 1000), "system");
     return database;
   } catch (error) {
     database.close();
@@ -497,6 +526,26 @@ export type TaskRunRecord = AuditColumns & {
   failure_detail: string | null;
   artifact_paths: string[];
 };
+
+export type TaskProposalKind = "create" | "edit" | "run" | "pause" | "resume" | "cancel";
+export type TaskProposalRecord = AuditColumns & {
+  id: number;
+  session_id: number;
+  transport: string;
+  workspace_id: string;
+  conversation_id: string;
+  kind: TaskProposalKind;
+  task_id: number | null;
+  spec_json: string | null;
+  state: "pending" | "confirmed" | "cancelled" | "expired" | "failed";
+  expires_at: number;
+  card_message_id: string | null;
+  resolved_at: number | null;
+  result_task_id: number | null;
+};
+export type NewTaskProposal = Pick<TaskProposalRecord, "session_id" | "transport" | "workspace_id" | "conversation_id"
+  | "kind" | "task_id" | "spec_json" | "expires_at">;
+export type TaskProposalOutcome = "confirmed" | "cancelled" | "failed";
 
 export type NewTask = Pick<TaskRecord, "goal" | "task_type" | "conversation_id" | "session_id">
   & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor" | "title" | "output_spec" | "timezone"
@@ -722,6 +771,70 @@ export function cancelTask(database: DatabaseSync, taskId: number, now: number, 
     database.exec("ROLLBACK");
     throw error;
   }
+}
+
+export function getTaskProposal(database: DatabaseSync, id: number): TaskProposalRecord | undefined {
+  return activeRow<TaskProposalRecord>(database, "SELECT * FROM task_proposals WHERE id=? AND deleted_at IS NULL", id);
+}
+
+/** Stores a pending proposal and expires any earlier pending proposal in the same conversation, in one transaction. */
+export function createTaskProposal(database: DatabaseSync, proposal: NewTaskProposal, now: number, actor = "discord:owner"): TaskProposalRecord {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    if (!database.prepare(`SELECT 1 FROM sessions WHERE id=? AND transport=? AND workspace_id=? AND conversation_id=?
+      AND state='active' AND deleted_at IS NULL`).get(proposal.session_id, proposal.transport, proposal.workspace_id, proposal.conversation_id)) {
+      throw new Error("Task proposal Session is not active in its Conversation");
+    }
+    database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by='system'
+      WHERE transport=? AND workspace_id=? AND conversation_id=? AND state='pending' AND deleted_at IS NULL`)
+      .run(now, now, proposal.transport, proposal.workspace_id, proposal.conversation_id);
+    const result = database.prepare(`INSERT INTO task_proposals (session_id,transport,workspace_id,conversation_id,kind,task_id,spec_json,
+      expires_at,created_at,created_by,updated_at,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(proposal.session_id, proposal.transport,
+      proposal.workspace_id, proposal.conversation_id, proposal.kind, proposal.task_id, proposal.spec_json, proposal.expires_at, now, actor, now, actor);
+    const row = getTaskProposal(database, Number(result.lastInsertRowid))!;
+    database.exec("COMMIT");
+    return row;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function setTaskProposalCardMessage(database: DatabaseSync, id: number, cardMessageId: string, now: number, actor = "transport:discord"): boolean {
+  return database.prepare(`UPDATE task_proposals SET card_message_id=?,updated_at=?,updated_by=?
+    WHERE id=? AND state='pending' AND deleted_at IS NULL`).run(cardMessageId, now, actor, id).changes === 1;
+}
+
+/**
+ * Resolves a pending, unexpired proposal exactly once. A later call changes nothing and
+ * reports the current state. An overdue pending proposal becomes `expired` instead.
+ */
+export function resolveTaskProposal(database: DatabaseSync, id: number, outcome: TaskProposalOutcome, now: number,
+  actor = "discord:owner", resultTaskId: number | null = null): { resolved: boolean; proposal: TaskProposalRecord | undefined } {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const resolved = database.prepare(`UPDATE task_proposals SET state=?,resolved_at=?,result_task_id=?,updated_at=?,updated_by=?
+      WHERE id=? AND state='pending' AND expires_at>? AND deleted_at IS NULL`)
+      .run(outcome, now, outcome === "confirmed" ? resultTaskId : null, now, actor, id, now).changes === 1;
+    if (!resolved) database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by='system'
+      WHERE id=? AND state='pending' AND expires_at<=? AND deleted_at IS NULL`).run(now, now, id, now);
+    const proposal = getTaskProposal(database, id);
+    database.exec("COMMIT");
+    return { resolved, proposal };
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function expireOverdueTaskProposals(database: DatabaseSync, now: number, actor = "system"): number {
+  return Number(database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by=?
+    WHERE state='pending' AND expires_at<=? AND deleted_at IS NULL`).run(now, now, actor, now).changes);
+}
+
+export function expireSessionTaskProposals(database: DatabaseSync, sessionId: number, now: number, actor = "system"): number {
+  return Number(database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by=?
+    WHERE session_id=? AND state='pending' AND deleted_at IS NULL`).run(now, now, actor, sessionId).changes);
 }
 
 export function recoverLegacyApprovals(database: DatabaseSync): void {

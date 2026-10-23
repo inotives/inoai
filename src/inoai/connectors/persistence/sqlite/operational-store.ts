@@ -10,10 +10,11 @@ import {
   failRemainingResponseChunks, failResponseChunk, getSession, listEvents, listMemories, listMessages,
   listPendingResponseChunks, markRuntimeStarted, messagesForMemoryReview, recoverStaleWork, rebindAgentSession,
   resetSession, softDeleteMemory, upsertUser, legacyApprovalNotices, claimLegacyApprovalNotice, resolveLegacyApprovalNotice,
+  createTaskProposal, expireOverdueTaskProposals, expireSessionTaskProposals, getTaskProposal, resolveTaskProposal, setTaskProposalCardMessage,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
-import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord } from "./legacy-database.js";
+import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord } from "./legacy-database.js";
 
 export interface TaskOperationsStore {
   createTask(task: NewTask, actor?: string): Promise<TaskRecord>;
@@ -29,6 +30,12 @@ export interface TaskOperationsStore {
   cancelTask(taskId: number, now: number, actor?: string): Promise<boolean>;
   bindTaskConversation(taskId: number, binding: { conversationId: string; parentConversationId: string; initiatingExternalMessageId: string }, now: number, actor?: string): Promise<void>;
   recoverTaskRuns(actor?: string, now?: number): Promise<void>;
+  createTaskProposal(proposal: NewTaskProposal, now: number, actor?: string): Promise<TaskProposalRecord>;
+  getTaskProposal(id: number): Promise<TaskProposalRecord | undefined>;
+  setTaskProposalCardMessage(id: number, cardMessageId: string, now: number, actor?: string): Promise<boolean>;
+  resolveTaskProposal(id: number, outcome: TaskProposalOutcome, now: number, actor?: string, resultTaskId?: number | null): Promise<{ resolved: boolean; proposal: TaskProposalRecord | undefined }>;
+  expireOverdueTaskProposals(now: number, actor?: string): Promise<number>;
+  expireSessionTaskProposals(sessionId: number, now: number, actor?: string): Promise<number>;
 }
 
 export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore {
@@ -58,6 +65,12 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async cancelTask(taskId, now, actor) { return cancelTask(database, taskId, now, actor); },
     async bindTaskConversation(taskId, binding, now, actor) { bindTaskConversation(database, taskId, binding, now, actor); },
     async recoverTaskRuns(actor, now) { recoverTaskRuns(database, actor, now); },
+    async createTaskProposal(proposal, now, actor) { return createTaskProposal(database, proposal, now, actor); },
+    async getTaskProposal(id) { return getTaskProposal(database, id); },
+    async setTaskProposalCardMessage(id, cardMessageId, now, actor) { return setTaskProposalCardMessage(database, id, cardMessageId, now, actor); },
+    async resolveTaskProposal(id, outcome, now, actor, resultTaskId) { return resolveTaskProposal(database, id, outcome, now, actor, resultTaskId); },
+    async expireOverdueTaskProposals(now, actor) { return expireOverdueTaskProposals(database, now, actor); },
+    async expireSessionTaskProposals(sessionId, now, actor) { return expireSessionTaskProposals(database, sessionId, now, actor); },
     async claimLegacyApprovalNotice(id) { return claimLegacyApprovalNotice(database, id); },
     async resolveLegacyApprovalNotice(id, messageId) { resolveLegacyApprovalNotice(database, id, messageId); },
     async recoverStaleWork(actor = "startup-recovery") {
