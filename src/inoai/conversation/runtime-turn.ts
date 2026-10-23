@@ -32,10 +32,10 @@ function failureKind(error: unknown): { reason: RuntimeFailure["kind"]; replaySa
   return { reason: "uncertain", replaySafe: false };
 }
 
-type Usage = Omit<Extract<RuntimeEvent, { type: "usage" }>, "type">;
+export type Usage = Omit<Extract<RuntimeEvent, { type: "usage" }>, "type">;
 const usageKeys = [["inputTokens", "input"], ["outputTokens", "output"], ["cachedInputTokens", "cached"], ["reasoningTokens", "reasoning"], ["costUsd", "cost_usd"]] as const;
 
-function addUsage(total: Usage, event: Usage): void {
+export function addUsage(total: Usage, event: Usage): void {
   for (const [field] of usageKeys) {
     const value = event[field];
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || (field !== "costUsd" && !Number.isInteger(value))) continue;
@@ -43,7 +43,7 @@ function addUsage(total: Usage, event: Usage): void {
   }
 }
 
-async function recordUsage(database: RuntimeTurnStore, sessionId: number, messageId: number | null, usage: Usage): Promise<void> {
+export async function recordUsage(database: Pick<RuntimeTurnStore, "createEvent" | "getSession">, sessionId: number, messageId: number | null, usage: Usage): Promise<void> {
   const parts = usageKeys.flatMap(([field, key]) => {
     const value = usage[field];
     return value === undefined ? [] : [`${key}=${field === "costUsd" ? Number(value.toFixed(6)) : value}`];
