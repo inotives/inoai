@@ -6,6 +6,7 @@ import type { TaskOperationsStore } from "../connectors/persistence/sqlite/opera
 import type { OperationalStore } from "../persistence/operational-store.js";
 import type { ChatTransport } from "../transport/ports.js";
 import { resumeAgentSession, startAgentSession } from "./agent-session.js";
+import { addUsage, recordUsage, type Usage } from "./runtime-turn.js";
 import type { ConversationWorker } from "./conversation-worker.js";
 
 type Store = OperationalStore & TaskOperationsStore;
@@ -105,12 +106,18 @@ export class TaskRunExecutor {
         `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Reply with a concise completion summary.`,
       ].join("\n\n");
       let answer: string | undefined;
-      for await (const event of this.runtime.runTurn(active.sessionId, prompt)) {
-        if (event.type === "answer") answer = event.text;
-        if (event.type === "session") {
-          await this.store.rebindAgentSession(session.id, active.sessionId, event.id, `runtime:${session.agent_provider}`);
-          active.sessionId = event.id;
+      const usage: Usage = {};
+      try {
+        for await (const event of this.runtime.runTurn(active.sessionId, prompt)) {
+          if (event.type === "answer") answer = event.text;
+          if (event.type === "usage") addUsage(usage, event);
+          if (event.type === "session") {
+            await this.store.rebindAgentSession(session.id, active.sessionId, event.id, `runtime:${session.agent_provider}`);
+            active.sessionId = event.id;
+          }
         }
+      } finally {
+        await recordUsage(this.store, session.id, null, usage);
       }
       if (active.cancelled) return;
       if (answer === undefined) throw new Error("Task Run returned no answer");

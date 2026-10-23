@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ test("UI options default to port 8989 and accept a selected runtime", () => {
   assert.throws(() => parseUiOptions(["--port", "0"]), /Usage/);
 });
 
-test("local UI binds to loopback and serves the dark tab shell", async () => {
+test("local UI binds to loopback and serves the dark ring console", async () => {
   const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-test-"));
   await bootstrapRuntimeHome(deploymentDirectory, ".robin-xai-test");
   const ui = await launchUi(deploymentDirectory, ".robin-xai-test", 0);
@@ -34,23 +34,55 @@ test("local UI binds to loopback and serves the dark tab shell", async () => {
       response.on("error", reject);
       response.end();
     });
-    for (const tab of ["Overview", "Conversations", "Memory"]) assert.match(html, new RegExp(`>${tab}<`));
-    assert.equal(html.includes(">Sessions<"), false);
-    assert.equal(html.includes(">Events<"), false);
-    assert.equal(html.includes(">Health<"), false);
-    for (const field of ["ID", "Workspace", "Transport / direction", "State", "Created at", "Updated at"]) assert.match(html, new RegExp(`>${field}<`));
-    assert.match(html, /Created at from/);
-    assert.match(html, /Created at to/);
-    assert.match(html, /agent\.md/);
-    assert.match(html, /Skills &amp; tools/);
-    for (const field of ["Origin", "Memory review", "Memory created at from", "Memory created at to"]) assert.match(html, new RegExp(field));
-    assert.ok(html.indexOf('id="overview-panel"') < html.indexOf('id="conversations-panel"'));
-    assert.ok(html.indexOf('id="conversations-panel"') < html.indexOf('<table class="activity message-table"'));
     assert.match(html, /data-theme="dark"/);
-    assert.match(html, /Fixture-driven preview/);
+    assert.match(html, /three@0\.160\.0/);
+    assert.match(html, /cdn-uicons\.flaticon\.com\/2\.6\.0\/uicons-regular-rounded/);
+    assert.match(html, /fetch\('\/api\/ui-data'/);
+    for (const section of ["profile", "health", "activity", "failures", "conversations", "memory", "skills"]) assert.match(html, new RegExp(`${section}: \\(v\\) =>`));
+    assert.match(html, /settings: \(\) =>/);
+    assert.match(html, /inoai\.robotColor\./);
+    assert.match(html, /aria-label="Close details"/);
+    assert.equal(html.includes("Fixture-driven preview"), false);
+    assert.match(html, /Anomaly event log/);
+    assert.match(html, /No anomalies in the last 24 hours/);
+    // Activity: a 24h / 7d / 30d window switch and seven charts replace the message list.
+    assert.match(html, /const INSIGHT_WINDOWS = \['24h', '7d', '30d'\];/);
+    assert.match(html, /'aria-label': 'Chart window'/);
+    for (const [key, title] of [["tokens", "Token usage"], ["conversation-types", "Conversation types"], ["task-runs", "Task runs"], ["volume", "Message volume"], ["reply-time", "Reply time"], ["failures", "Failures by cause"], ["skills", "Skill calls"]]) {
+      assert.ok(html.includes(`chartCard('${key}', '${title}'`), `chart ${key} is rendered`);
+    }
+    assert.match(html, /createElementNS\(SVG_NS/);
+    assert.match(html, /'no data yet'/);
+    assert.equal(html.includes("recent.map(messageItem)"), false);
+    const pageScript = html.split('<script type="module">')[1]?.split("</script>")[0] ?? "";
+    assert.doesNotThrow(() => new Function(`return async () => {${pageScript}}`), "page script must parse");
     assert.equal(html.includes(".env"), false);
   } finally {
     await new Promise<void>((resolve) => ui.server.close(() => resolve()));
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
+test("UI data lists enabled skill files with redacted text and no binary content", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-skill-test-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".robin-xai-test");
+  const skillDirectory = join(home.skillsDirectory, "demo-skill");
+  await mkdir(join(skillDirectory, "assets"), { recursive: true });
+  await writeFile(join(skillDirectory, "SKILL.md"), "---\ndescription: Demo\n---\n# Demo\nTOKEN=do-not-return\n", "utf8");
+  await writeFile(join(skillDirectory, "skill.yaml"), "id: demo-skill\n", "utf8");
+  await writeFile(join(skillDirectory, "assets", "logo.bin"), Buffer.from([0, 1, 2]));
+  await writeFile(home.skillsEnabledFile, JSON.stringify({ version: 1, skills: [{ id: "demo-skill", version: "1.0.0", hash: "a".repeat(64), approved_by: "owner", approved_at: "2026-10-01T00:00:00Z", capabilities: { filesystem: "read-only", network: false, "process/command": false, external_mutation: false } }] }), "utf8");
+  openDatabase(home).close();
+  try {
+    const data = await loadUiData(home);
+    assert.deepEqual(data.skills, ["demo-skill"]);
+    const skill = data.skillDetails[0];
+    assert.equal(skill?.capabilities.filesystem, "read-only");
+    assert.deepEqual(skill?.files.map((file) => file.path), ["SKILL.md", "assets/logo.bin", "skill.yaml"]);
+    assert.match(skill?.files[0]?.text ?? "", /TOKEN=\[redacted\]/);
+    assert.equal(skill?.files[1]?.text, null);
+    assert.equal(JSON.stringify(data).includes("do-not-return"), false);
+  } finally {
     await rm(deploymentDirectory, { recursive: true, force: true });
   }
 });

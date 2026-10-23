@@ -203,3 +203,100 @@ test("queued chat prevents a manual Task Run claim", async () => {
     } finally { await instance.release(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+async function withUsageTask(name: string, run: (context: { store: OperationalStore & TaskOperationsStore;
+  instance: Awaited<ReturnType<typeof start>>; sessionId: number; taskId: number }) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), `inoai-task-usage-${name}-`));
+  try {
+    await writeFile((await bootstrapRuntimeHome(directory)).envFile, env);
+    const instance = await start(directory);
+    try {
+      const store = instance.store as OperationalStore & TaskOperationsStore;
+      const session = await store.createSession({ user_id: instance.owner.id, transport: "discord", workspace_id: "guild",
+        parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "starter",
+        agent_provider: "codex", agent_session_id: "pending:task:thread", project_path: directory });
+      const task = await store.createTask({ goal: "Report", task_type: "recurring", interval_seconds: 3600,
+        conversation_id: "thread", session_id: session.id });
+      await run({ store, instance, sessionId: session.id, taskId: task.id });
+    } finally { await instance.release(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+function usageRuntime(turns: RuntimeEvent[][], failOn?: number): AgentRuntime {
+  let count = 0;
+  return {
+    displayName: "fake", loginHint: "none", createSession: async () => "runtime-session",
+    resumeSession: async () => {}, cancel: async () => {}, health: () => ({ state: "ready" }), close: async () => {},
+    async *runTurn(): AsyncIterable<RuntimeEvent> {
+      const turn = count++;
+      for (const event of turns[turn] ?? []) yield event;
+      if (turn === failOn) throw new Error("turn failed");
+    },
+  };
+}
+
+async function finishRun(store: OperationalStore & TaskOperationsStore, runner: TaskRunExecutor, taskId: number, index: number): Promise<string> {
+  assert.equal(await runner.start(taskId), "started");
+  let state: string | undefined;
+  await until(async () => { state = (await store.listTaskRuns(taskId))[index]?.state; return state === "completed" || state === "failed"; });
+  await runner.stop();
+  return state!;
+}
+
+const usageEvents = async (store: OperationalStore, sessionId: number) => (await store.listEvents(sessionId))
+  .filter((event) => event.event_type === "runtime_usage")
+  .map((event) => ({ detail: event.detail, actor: event.created_by, message_id: event.message_id }));
+
+test("Task Run sums usage into one runtime_usage event and skips runs without usage", async () => {
+  await withUsageTask("sum", async ({ store, instance, sessionId, taskId }) => {
+    const sent: string[] = [];
+    const runtime = usageRuntime([
+      [{ type: "usage", inputTokens: 100, outputTokens: 20, costUsd: 0.001 },
+        { type: "usage", inputTokens: 50, cachedInputTokens: 10, reasoningTokens: -1, costUsd: 0.0005 },
+        { type: "answer", text: "Done" }],
+      [{ type: "usage", inputTokens: Number.NaN }, { type: "answer", text: "Done again" }],
+    ]);
+    const runner = new TaskRunExecutor(store, runtime, instance.runtimeHome,
+      { sendMessage: async (_id: string, text: string) => { sent.push(text); return "sent"; } }, { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "completed");
+    const expected = [{ detail: "input=150; output=20; cached=10; cost_usd=0.0015; provider=codex", actor: "runtime", message_id: null }];
+    assert.deepEqual(await usageEvents(store, sessionId), expected);
+    assert.equal(await finishRun(store, runner, taskId, 1), "completed");
+    assert.deepEqual(await usageEvents(store, sessionId), expected);
+    assert.match(sent.join("\n"), /run #1 completed[\s\S]*run #2 completed/);
+  });
+});
+
+test("failed Task Run still records reported usage and still fails", async () => {
+  await withUsageTask("failed", async ({ store, instance, sessionId, taskId }) => {
+    const sent: string[] = [];
+    const runtime = usageRuntime([[{ type: "usage", inputTokens: 7, outputTokens: 3 }]], 0);
+    const runner = new TaskRunExecutor(store, runtime, instance.runtimeHome,
+      { sendMessage: async (_id: string, text: string) => { sent.push(text); return "sent"; } }, { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "failed");
+    assert.deepEqual(await usageEvents(store, sessionId), [{ detail: "input=7; output=3; provider=codex", actor: "runtime", message_id: null }]);
+    assert.match(sent.join("\n"), /run #1 failed/);
+  });
+});
+
+test("failing runtime_usage write does not change the Task Run outcome", async () => {
+  await withUsageTask("write-failure", async ({ store, instance, sessionId, taskId }) => {
+    const failing = new Proxy(store, { get(target, property) {
+      if (property === "createEvent") {
+        return async (event: { event_type: string }, actor?: string) => {
+          if (event.event_type === "runtime_usage") throw new Error("disk full");
+          return target.createEvent(event as Parameters<typeof target.createEvent>[0], actor);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const sent: string[] = [];
+    const runtime = usageRuntime([[{ type: "usage", inputTokens: 5 }, { type: "answer", text: "Done" }]]);
+    const runner = new TaskRunExecutor(failing, runtime, instance.runtimeHome,
+      { sendMessage: async (_id: string, text: string) => { sent.push(text); return "sent"; } }, { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "completed");
+    assert.deepEqual(await usageEvents(store, sessionId), []);
+    assert.match(sent.join("\n"), /run #1 completed/);
+  });
+});

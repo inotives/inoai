@@ -126,6 +126,52 @@ test("streams text deltas as progress, yields one answer, and resumes the same s
   }
 });
 
+test("yields one usage event before the answer from the result's usage and cost", async () => {
+  const project = await mkdtemp(join(tmpdir(), "inoai-claude-project-"));
+  const usage = { input_tokens: 12, cache_creation_input_tokens: 300, cache_read_input_tokens: 4000, output_tokens: 56, server_tool_use: { web_search_requests: 0 } };
+  const fake = await fakeCli([
+    { lines: [init, delta("Hi"), { ...success("Hi"), usage, total_cost_usd: 0.0123 }] },
+    { lines: [init, { ...success("Again"), usage, total_cost_usd: 0.0456 }] },
+  ]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable });
+    const id = await runtime.createSession(project, "Personality");
+    assert.deepEqual(await collect(runtime.runTurn(id, "hello")), [
+      { type: "progress", text: "Hi" },
+      { type: "usage", inputTokens: 312, outputTokens: 56, cachedInputTokens: 4000, costUsd: 0.0123 },
+      { type: "answer", text: "Hi" },
+    ]);
+    // A resumed session's total_cost_usd includes earlier Turns, so only tokens are reported.
+    assert.deepEqual(await collect(runtime.runTurn(id, "again")), [
+      { type: "usage", inputTokens: 312, outputTokens: 56, cachedInputTokens: 4000 },
+      { type: "answer", text: "Again" },
+    ]);
+  } finally {
+    await fake.cleanup();
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("a result with missing or malformed usage completes with no usage event", async () => {
+  const project = await mkdtemp(join(tmpdir(), "inoai-claude-project-"));
+  const fake = await fakeCli([
+    { lines: [init, success("Plain")] },
+    { lines: [init, { ...success("Odd"), usage: "bad", total_cost_usd: "0.1" }] },
+    { lines: [init, { ...success("Bad"), usage: { input_tokens: -1, output_tokens: 1.5, cache_read_input_tokens: null }, total_cost_usd: -2 }] },
+  ]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable });
+    // Each Turn starts a new session, so a valid total_cost_usd would be reported.
+    for (const text of ["Plain", "Odd", "Bad"]) {
+      const id = await runtime.createSession(project, "Personality");
+      assert.deepEqual(await collect(runtime.runTurn(id, text)), [{ type: "answer", text }]);
+    }
+  } finally {
+    await fake.cleanup();
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("passes the model as one --model= argv element only when configured", async () => {
   const fake = await fakeCli([{ lines: [init, success("ok")] }]);
   try {

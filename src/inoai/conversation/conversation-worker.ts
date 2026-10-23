@@ -191,13 +191,17 @@ export class ConversationWorker {
         ? await startAgentSession(this.database, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
       let prompt = await composeTurnPrompt(this.database, message);
-      const skillInstructions = await loadSelectedSkill(this.home, { prompt: message.body });
-      if (skillInstructions) prompt += skillInstructions;
-      if (skillInstructions) {
-        const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
-        if (selected) {
-          const scripts = await prepareSkillScripts(this.home, session.project_path, { skillId: selected.id });
-          if (scripts.length) prompt += scripts.map(skillExecutionInstructions).join("\n");
+      const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
+      const skillInstructions = selected ? await loadSelectedSkill(this.home, { skillId: selected.id }) : undefined;
+      if (selected && skillInstructions) {
+        prompt += skillInstructions;
+        const scripts = await prepareSkillScripts(this.home, session.project_path, { skillId: selected.id });
+        if (scripts.length) prompt += scripts.map(skillExecutionInstructions).join("\n");
+        try {
+          await this.database.createEvent({ session_id: session.id, message_id: message.id,
+            event_type: "skill_selected", detail: `skill=${selected.id}; version=${selected.version}` }, "conversation-worker");
+        } catch {
+          // Skill selection recording is best effort and never fails the turn.
         }
       }
       if (this.stopping || cancellation.signal.aborted || !await this.database.markRuntimeStarted(message.id)) {

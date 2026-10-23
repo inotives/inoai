@@ -19,6 +19,7 @@ type StreamEvent = {
   event?: { type?: string; delta?: { type?: string; text?: unknown } };
   rate_limit_info?: { status?: string };
   is_error?: boolean; result?: unknown; terminal_reason?: string; errors?: unknown; permission_denials?: unknown;
+  usage?: unknown; total_cost_usd?: unknown;
 };
 type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: boolean; authentication: boolean; usage: boolean; spawnFailed: boolean; timedOut: boolean; mismatched: boolean; deniedEvents: number };
 
@@ -109,6 +110,7 @@ export class ClaudeRuntime implements AgentRuntime {
     const active: ActiveTurn = {};
     this.active.set(sessionId, active);
     try {
+      const newSession = session.state === "new";
       const attempt = yield* this.attempt(sessionId, session, prompt, active);
       const { result } = attempt;
       // The CLI already denied these prompts; reporting them never changes the Turn's own outcome.
@@ -122,6 +124,8 @@ export class ClaudeRuntime implements AgentRuntime {
       if (attempt.mismatched) throw new RuntimeFailure("uncertain");
       // Classify from the final result event, not the exit code: SIGINT exits 0 and a login error can report "success".
       if (result?.is_error === false && result.subtype === "success" && typeof result.result === "string") {
+        const usage = usageEvent(result, newSession);
+        if (usage) yield usage;
         yield { type: "answer", text: result.result };
         return;
       }
@@ -371,6 +375,24 @@ function reportsMemoryPaths(value: unknown): boolean {
 function hasToolUse(content: unknown): boolean {
   return Array.isArray(content) && content.some((block) => typeof block === "object" && block !== null
     && typeof (block as { type?: unknown }).type === "string" && (block as { type: string }).type.endsWith("tool_use"));
+}
+
+// Claude Code counts a call's input as input_tokens + cache_creation_input_tokens + cache_read_input_tokens;
+// cache reads are reported apart as cachedInputTokens. total_cost_usd is cumulative across a resumed
+// session's transcript, so it is kept only for a Turn that started a new session.
+function usageEvent(result: StreamEvent, newSession: boolean): RuntimeEvent | undefined {
+  const usage = typeof result.usage === "object" && result.usage !== null ? result.usage as Record<string, unknown> : {};
+  const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+  const input = count(usage.input_tokens);
+  const cost = result.total_cost_usd;
+  const values = {
+    inputTokens: input === undefined ? undefined : input + (count(usage.cache_creation_input_tokens) ?? 0),
+    outputTokens: count(usage.output_tokens),
+    cachedInputTokens: count(usage.cache_read_input_tokens),
+    costUsd: newSession && typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : undefined,
+  };
+  const reported = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
+  return Object.keys(reported).length ? { type: "usage", ...reported } : undefined;
 }
 
 function notFound(result: StreamEvent | undefined): boolean {

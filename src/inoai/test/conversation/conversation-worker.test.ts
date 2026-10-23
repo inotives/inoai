@@ -695,3 +695,70 @@ test("selected Discord skill exposes validated script paths to the runtime promp
     await rm(source, { recursive: true, force: true });
   }
 });
+
+async function runSkillTurn(body: string, failSkillEvent = false) {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-worker-skill-event-"));
+  const source = await mkdtemp(join(tmpdir(), "inoai-worker-skill-event-source-"));
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, env);
+    const packageDirectory = join(source, "local-helper");
+    await (await import("node:fs/promises")).mkdir(packageDirectory, { recursive: true });
+    await writeFile(join(packageDirectory, "skill.yaml"), "id: local-helper\nversion: 1.2.3\ncapabilities:\n  filesystem: workspace\n  network: none\n  process/command: none\n  external_mutation: false\n");
+    await writeFile(join(packageDirectory, "SKILL.md"), "# local-helper\nUse the local helper.\n");
+    await installSkillPackage(home, packageDirectory);
+    await enableSkill(home, "local-helper", "owner");
+    const database = openDatabase(home);
+    const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: "Owner", role: "owner", state: "active" })!;
+    const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "first", agent_provider: "codex", agent_session_id: "codex-session", project_path: directory });
+    const { message } = archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "first", external_author_id: "owner", user_id: user.id, direction: "user", body, reply_to_external_message_id: null, in_reply_to_message_id: null });
+    let prompt = "";
+    const runtime: AgentRuntime = {
+      displayName: "Codex", loginHint: "codex login",
+      async createSession() { throw new Error("Unexpected create"); }, async resumeSession() {},
+      async *runTurn(_sessionId, receivedPrompt) { prompt = receivedPrompt; yield { type: "answer" as const, text: "ok" }; },
+      async cancel() {}, health() { return { state: "ready" }; }, async close() {},
+    };
+    const base = sqliteStore(database);
+    const store = failSkillEvent ? { ...base, async createEvent(input: Parameters<typeof base.createEvent>[0], actor?: string) {
+      if (input.event_type === "skill_selected") throw new Error("event write failed");
+      return base.createEvent(input, actor);
+    } } : base;
+    const worker = new ConversationWorker(store, home, runtime, "codex");
+    try { worker.wake(); await worker.idle(); }
+    finally { await worker.stop(); }
+    const events = database.prepare("SELECT id, session_id, message_id, event_type, detail, created_by FROM events WHERE event_type IN ('skill_selected', 'runtime_attempt') ORDER BY id").all() as Array<Record<string, unknown>>;
+    const state = listMessages(database, session.id).find((row) => row.direction === "user")?.state;
+    database.close();
+    return { prompt, events, state, sessionId: session.id, messageId: message!.id };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+  }
+}
+
+test("a selected skill writes one skill_selected event before the runtime turn", async () => {
+  const result = await runSkillTurn("use local-helper");
+  assert.equal(result.state, "completed");
+  assert.equal(result.prompt.match(/\[Enabled skill: local-helper\]/g)?.length, 1);
+  assert.match(result.prompt, /Use the local helper\./);
+  const skillEvents = result.events.filter((event) => event.event_type === "skill_selected");
+  assert.equal(skillEvents.length, 1);
+  assert.deepEqual({ ...skillEvents[0], id: undefined }, { id: undefined, session_id: result.sessionId, message_id: result.messageId,
+    event_type: "skill_selected", detail: "skill=local-helper; version=1.2.3", created_by: "conversation-worker" });
+  assert.equal(result.events[0]?.event_type, "skill_selected", "skill_selected precedes runtime_attempt");
+});
+
+test("a message that selects no skill writes no skill_selected event", async () => {
+  const result = await runSkillTurn("hello there");
+  assert.equal(result.state, "completed");
+  assert.doesNotMatch(result.prompt, /\[Enabled skill:/);
+  assert.equal(result.events.filter((event) => event.event_type === "skill_selected").length, 0);
+});
+
+test("a failed skill_selected write does not fail the turn or change the prompt", async () => {
+  const result = await runSkillTurn("use local-helper", true);
+  assert.equal(result.state, "completed");
+  assert.equal(result.prompt.match(/\[Enabled skill: local-helper\]/g)?.length, 1);
+  assert.equal(result.events.filter((event) => event.event_type === "skill_selected").length, 0);
+});

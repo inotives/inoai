@@ -187,3 +187,62 @@ test("structured Codex auth and usage failures are classified without exposing r
     await assert.rejects(result, (error: unknown) => error instanceof Error && error.message === expected);
   }
 });
+
+function tokenUsage(threadId: string, turnId: string, total: number[], last: number[]) {
+  const counts = ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens]: number[]) =>
+    ({ totalTokens: inputTokens! + outputTokens!, inputTokens, cachedInputTokens, cacheWriteInputTokens: 0, outputTokens, reasoningOutputTokens });
+  return { threadId, turnId, tokenUsage: { total: counts(total), last: counts(last), modelContextWindow: 258400 } };
+}
+
+async function turnEvents(fake: FakeServer, runtime: CodexRuntime, turnId: string, notices: Array<[string, unknown]>) {
+  const events = [];
+  const iterator = runtime.runTurn("real-thread", "question")[Symbol.asyncIterator]();
+  const first = iterator.next();
+  for (const [method, params] of notices) fake.emit(method, params);
+  fake.emit("turn/completed", { threadId: "real-thread", turn: { id: turnId, status: "completed" } });
+  for (let next = await first; !next.done; next = await iterator.next()) events.push(next.value);
+  return events;
+}
+
+test("reports each turn's token usage from thread totals and ignores other threads and turns", async () => {
+  const fake = new FakeServer();
+  const runtime = new CodexRuntime(fake.client());
+  await runtime.createSession("/project", "personality");
+  assert.deepEqual(await turnEvents(fake, runtime, "turn-1", [
+    ["thread/tokenUsage/updated", tokenUsage("other-thread", "turn-1", [900, 0, 90, 9], [900, 0, 90, 9])],
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-0", [800, 0, 80, 8], [800, 0, 80, 8])],
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-1", [1000, 600, 50, 10], [1000, 600, 50, 10])],
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-1", [1000, 600, 50, 10], [1000, 600, 50, 10])],
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-1", [2200, 1500, 80, 15], [1200, 900, 30, 5])],
+    ["item/completed", { threadId: "real-thread", turnId: "turn-1", item: { type: "agentMessage", text: "done" } }],
+  ]), [
+    { type: "usage", inputTokens: 700, cachedInputTokens: 1500, outputTokens: 80, reasoningTokens: 15 },
+    { type: "answer", text: "done" },
+  ]);
+  assert.deepEqual(await turnEvents(fake, runtime, "turn-2", [
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-2", [3500, 2600, 120, 20], [1300, 1100, 40, 5])],
+  ]), [
+    { type: "usage", inputTokens: 200, cachedInputTokens: 1100, outputTokens: 40, reasoningTokens: 5 },
+    { type: "answer", text: "" },
+  ]);
+});
+
+test("a turn without reliable token usage completes with no usage event", async () => {
+  const fake = new FakeServer();
+  const runtime = new CodexRuntime(fake.client());
+  await runtime.createSession("/project", "personality");
+  assert.deepEqual(await turnEvents(fake, runtime, "turn-1", []), [{ type: "answer", text: "" }]);
+  assert.deepEqual(await turnEvents(fake, runtime, "turn-2", [
+    ["thread/tokenUsage/updated", { threadId: "real-thread", turnId: "turn-2", tokenUsage: { total: { inputTokens: "many" } } }],
+  ]), [{ type: "answer", text: "" }]);
+
+  // A resumed thread has no total seen before its first Turn in this process.
+  const resumed = new CodexRuntime(fake.client());
+  await resumed.resumeSession("real-thread", "/project", "personality");
+  assert.deepEqual(await turnEvents(fake, resumed, "turn-3", [
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-3", [5000, 4000, 100, 10], [1000, 800, 20, 2])],
+  ]), [{ type: "answer", text: "" }]);
+  assert.deepEqual(await turnEvents(fake, resumed, "turn-4", [
+    ["thread/tokenUsage/updated", tokenUsage("real-thread", "turn-4", [6000, 4500, 130, 12], [1000, 500, 30, 2])],
+  ]), [{ type: "usage", inputTokens: 500, cachedInputTokens: 500, outputTokens: 30, reasoningTokens: 2 }, { type: "answer", text: "" }]);
+});

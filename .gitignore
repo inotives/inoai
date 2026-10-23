@@ -3,7 +3,9 @@
 /.env
 /.inoai-connect*/
 /.robin-*/
-/trinary-workspace/
+/trinary-workspace/*
+!/trinary-workspace/backlog/
 /.agent-rig.backup-*/
 /dist/
 /node_modules/
+/demo-test/
