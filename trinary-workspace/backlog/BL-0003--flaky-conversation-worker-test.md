@@ -1,0 +1,35 @@
+---
+id: BL-0003
+title: Flaky conversation-worker thread controls test
+type: bug
+status: open
+created_at: 2026-10-23T07:15:05Z
+source: T-0002 reviewer handoff
+promoted_to: null
+---
+
+# BL-0003: Flaky conversation-worker thread controls test
+
+## Description
+
+`conversation-worker.test.js:127` ("thread controls authorize the owner…") timed out once in a full `npm test` run and passed on reruns.
+
+## Reproduction
+
+- Steps to reproduce: run `npm test` repeatedly on `feat/activity-insights`.
+- Expected: the test always passes.
+- Actual: occasional `until` condition timeout under full-suite load; 5 isolated reruns passed 15/15.
+
+## Context and evidence
+
+- T-0002 reviewer handoff, Checks run.
+
+## Discussion
+
+- [2026-10-23] Captured from T-0002 follow-ups.
+
+## Open questions
+
+- None
+- [2026-10-23] A second test in the same file, "validated cross-session overlap keeps Session FIFO and falls back globally after uncertainty", failed once under a full `npm test` run during T-0006 and passed on 5 reruns (T-0006 worker handoff).
+- [2026-10-23] During T-0009, one full `npm test` run had 2 unidentified failures; the next two full runs passed (358/0). Capture the failing names on the next occurrence.
