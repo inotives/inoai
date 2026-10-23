@@ -8,6 +8,7 @@ import { bootstrapRuntimeHome } from "../../../agent-instance/runtime-home.js";
 import type { Configuration } from "../../../agent-instance/config.js";
 import { openDatabase } from "../../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../../connectors/persistence/sqlite/operational-store.js";
+import { toTaskColumns, validateTaskSpec, type TaskSpec } from "../../../tasks/schedule.js";
 
 async function fixture(t: test.TestContext) {
   const deployment = await mkdtemp(join(tmpdir(), "inoai-task-store-"));
@@ -119,4 +120,65 @@ test("opening an older SQLite home adds Task tables without changing existing ro
   } finally {
     migrated.close();
   }
+});
+
+const scheduleColumns = ["title", "output_spec", "timezone", "schedule_kind", "schedule_time", "schedule_days", "ends_at", "max_runs"];
+
+test("opening a home without Task schedule columns adds them idempotently and keeps legacy Tasks unchanged", async (t) => {
+  const { home, database, session } = await fixture(t);
+  for (const column of scheduleColumns) database.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
+  database.prepare(`INSERT INTO tasks (goal,task_type,interval_seconds,conversation_id,session_id,next_due_at,message_cursor,created_by,updated_by)
+    VALUES ('legacy report','recurring',7200,'thread',?,5000,3,'legacy','legacy')`).run(session.id);
+  const before = { ...(database.prepare("SELECT * FROM tasks").get() as Record<string, unknown>) };
+  database.close();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const migrated = openDatabase(home);
+    try {
+      const columns = (migrated.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string; type: string; notnull: number }>);
+      for (const name of scheduleColumns) {
+        const column = columns.find((candidate) => candidate.name === name);
+        assert.ok(column, name);
+        assert.equal(column.notnull, 0);
+        assert.equal(column.type, name === "ends_at" || name === "max_runs" ? "INTEGER" : "TEXT");
+      }
+      const after = migrated.prepare("SELECT * FROM tasks").get() as Record<string, unknown>;
+      assert.deepEqual(Object.fromEntries(Object.keys(before).map((key) => [key, after[key]])), before);
+      for (const name of scheduleColumns) assert.equal(after[name], null);
+    } finally {
+      migrated.close();
+    }
+  }
+});
+
+test("createTask persists schedule columns from toTaskColumns within the existing CHECK constraints", async (t) => {
+  const { store, database, home, session: ownerSession } = await fixture(t);
+  const now = Math.floor(Date.now() / 1000);
+  const schedules = [
+    { kind: "once" }, { kind: "once", at: now + 3600 }, { kind: "interval", hours: 4 }, { kind: "daily", time: "09:00" },
+    { kind: "days", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, { kind: "weekly", time: "18:30", day: "sun" },
+  ];
+  for (const [index, schedule] of schedules.entries()) {
+    const result = validateTaskSpec({ title: `Task ${index}`, instruction: "Summarize failing CI", expectedOutput: "A short list",
+      schedule, timezone: "Asia/Singapore", maxRuns: schedule.kind === "once" ? undefined : 5 }, now);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const columns = toTaskColumns((result as { spec: TaskSpec }).spec, now);
+    const session = await store.createSession({
+      user_id: ownerSession.user_id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
+      conversation_id: `pending:ui:${index}`, initiating_external_message_id: `starter-${index}`, agent_provider: "codex",
+      agent_session_id: `agent-session-${index}`, project_path: home.directory,
+    }, "session:test");
+    const task = await store.createTask({ ...columns, conversation_id: session.conversation_id, session_id: session.id }, "ui:owner");
+    for (const [key, value] of Object.entries(columns)) assert.equal(task[key as keyof typeof task], value, `${schedule.kind}.${key}`);
+    assert.equal(task.created_by, "ui:owner");
+  }
+  assert.equal((database.prepare("SELECT COUNT(*) AS count FROM tasks").get() as { count: number }).count, schedules.length);
+});
+
+test("createTask keeps rejecting a due time on legacy one-time Tasks", async (t) => {
+  const { store, session } = await fixture(t);
+  await assert.rejects(store.createTask({ goal: "once", task_type: "one_time", next_due_at: 100,
+    conversation_id: "thread", session_id: session.id }), /One-time Task cannot have a schedule/);
+  await assert.rejects(store.createTask({ goal: "once", task_type: "one_time", interval_seconds: 3600, schedule_kind: "once",
+    conversation_id: "thread", session_id: session.id }), /One-time Task cannot have a schedule/);
 });

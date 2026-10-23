@@ -268,6 +268,25 @@ function migrateMessages(database: DatabaseSync): void {
   if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("Message migration broke a foreign key");
 }
 
+const taskScheduleColumns = [
+  ["title", "TEXT"], ["output_spec", "TEXT"], ["timezone", "TEXT"], ["schedule_kind", "TEXT"],
+  ["schedule_time", "TEXT"], ["schedule_days", "TEXT"], ["ends_at", "INTEGER"], ["max_runs", "INTEGER"],
+] as const;
+
+function migrateTasks(database: DatabaseSync): void {
+  const existing = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
+  const missing = taskScheduleColumns.filter(([name]) => !existing.has(name));
+  if (missing.length === 0) return;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const [name, type] of missing) database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function openDatabase(home: RuntimeHome): DatabaseSync {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
@@ -281,6 +300,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
     database.exec(initialSchema);
     migrateMessages(database);
+    migrateTasks(database);
     recoverStaleWork(database);
     recoverTaskRuns(database);
     recoverLegacyApprovals(database);
@@ -457,6 +477,14 @@ export type TaskRecord = AuditColumns & {
   session_id: number;
   next_due_at: number | null;
   message_cursor: number;
+  title: string | null;
+  output_spec: string | null;
+  timezone: string | null;
+  schedule_kind: "once" | "interval" | "daily" | "days" | "weekly" | null;
+  schedule_time: string | null;
+  schedule_days: string | null;
+  ends_at: number | null;
+  max_runs: number | null;
 };
 
 export type TaskRunRecord = AuditColumns & {
@@ -470,7 +498,8 @@ export type TaskRunRecord = AuditColumns & {
 };
 
 export type NewTask = Pick<TaskRecord, "goal" | "task_type" | "conversation_id" | "session_id">
-  & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor">>;
+  & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor" | "title" | "output_spec" | "timezone"
+    | "schedule_kind" | "schedule_time" | "schedule_days" | "ends_at" | "max_runs">>;
 
 export type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
 export type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
@@ -527,11 +556,14 @@ function taskRun(row: TaskRunRow): TaskRunRecord {
 export function createTask(database: DatabaseSync, task: NewTask, actor = "system"): TaskRecord {
   if (!task.goal.trim()) throw new RangeError("Task goal is required");
   if (task.task_type === "recurring" && (!Number.isSafeInteger(task.interval_seconds) || task.interval_seconds! <= 0 || task.interval_seconds! % 3600 !== 0)) throw new RangeError("Recurring Task interval must be whole hours");
-  if (task.task_type === "one_time" && (task.interval_seconds != null || task.next_due_at != null)) throw new RangeError("One-time Task cannot have a schedule");
+  if (task.task_type === "one_time" && (task.interval_seconds != null || (task.schedule_kind == null && task.next_due_at != null))) throw new RangeError("One-time Task cannot have a schedule");
   if (!database.prepare("SELECT 1 FROM sessions WHERE id=? AND conversation_id=? AND state='active' AND deleted_at IS NULL").get(task.session_id, task.conversation_id)) throw new Error("Task Session is not active in its Conversation");
   const nextDueAt = task.next_due_at ?? (task.task_type === "recurring" ? Math.floor(Date.now() / 1000) + task.interval_seconds! : null);
-  const result = database.prepare(`INSERT INTO tasks (goal,task_type,interval_seconds,state,conversation_id,session_id,next_due_at,message_cursor,created_by,updated_by)
-    VALUES (?,?,?,'active',?,?,?,?,?,?)`).run(task.goal.trim(), task.task_type, task.interval_seconds ?? null, task.conversation_id, task.session_id, nextDueAt, task.message_cursor ?? 0, actor, actor);
+  const result = database.prepare(`INSERT INTO tasks (goal,task_type,interval_seconds,state,conversation_id,session_id,next_due_at,message_cursor,
+    title,output_spec,timezone,schedule_kind,schedule_time,schedule_days,ends_at,max_runs,created_by,updated_by)
+    VALUES (?,?,?,'active',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(task.goal.trim(), task.task_type, task.interval_seconds ?? null, task.conversation_id, task.session_id, nextDueAt, task.message_cursor ?? 0,
+    task.title ?? null, task.output_spec ?? null, task.timezone ?? null, task.schedule_kind ?? null, task.schedule_time ?? null,
+    task.schedule_days ?? null, task.ends_at ?? null, task.max_runs ?? null, actor, actor);
   return activeRow<TaskRecord>(database, "SELECT * FROM tasks WHERE id=? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
 }
 
