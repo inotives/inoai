@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import type { Configuration } from "../../../agent-instance/config.js";
 import { inspectRuntimeHomeLock, resolveRuntimeHome, type RuntimeHome } from "../../../agent-instance/runtime-home.js";
+import { nextRunAt, taskSpecFromRow } from "../../../tasks/schedule.js";
 
 export const databaseBusyTimeoutMs = 5_000;
 
@@ -268,6 +269,25 @@ function migrateMessages(database: DatabaseSync): void {
   if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("Message migration broke a foreign key");
 }
 
+const taskScheduleColumns = [
+  ["title", "TEXT"], ["output_spec", "TEXT"], ["timezone", "TEXT"], ["schedule_kind", "TEXT"],
+  ["schedule_time", "TEXT"], ["schedule_days", "TEXT"], ["ends_at", "INTEGER"], ["max_runs", "INTEGER"],
+] as const;
+
+function migrateTasks(database: DatabaseSync): void {
+  const existing = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
+  const missing = taskScheduleColumns.filter(([name]) => !existing.has(name));
+  if (missing.length === 0) return;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const [name, type] of missing) database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function openDatabase(home: RuntimeHome): DatabaseSync {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
@@ -281,6 +301,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     database.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${databaseBusyTimeoutMs};`);
     database.exec(initialSchema);
     migrateMessages(database);
+    migrateTasks(database);
     recoverStaleWork(database);
     recoverTaskRuns(database);
     recoverLegacyApprovals(database);
@@ -457,6 +478,14 @@ export type TaskRecord = AuditColumns & {
   session_id: number;
   next_due_at: number | null;
   message_cursor: number;
+  title: string | null;
+  output_spec: string | null;
+  timezone: string | null;
+  schedule_kind: "once" | "interval" | "daily" | "days" | "weekly" | null;
+  schedule_time: string | null;
+  schedule_days: string | null;
+  ends_at: number | null;
+  max_runs: number | null;
 };
 
 export type TaskRunRecord = AuditColumns & {
@@ -470,7 +499,8 @@ export type TaskRunRecord = AuditColumns & {
 };
 
 export type NewTask = Pick<TaskRecord, "goal" | "task_type" | "conversation_id" | "session_id">
-  & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor">>;
+  & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor" | "title" | "output_spec" | "timezone"
+    | "schedule_kind" | "schedule_time" | "schedule_days" | "ends_at" | "max_runs">>;
 
 export type NewUser = Omit<UserRecord, keyof AuditColumns | "id">;
 export type NewSession = Omit<SessionRecord, keyof AuditColumns | "id" | "ended_at" | "state"> & { state?: SessionRecord["state"] };
@@ -509,13 +539,33 @@ export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recover
     database.prepare(`UPDATE task_runs SET state='failed', failure_detail='Interrupted by restart', completed_at=?, updated_at=?, updated_by=?
       WHERE state='processing' AND deleted_at IS NULL`).run(now, now, actor);
     const updateTask = database.prepare(`UPDATE tasks SET next_due_at=?+interval_seconds, updated_at=?, updated_by=?
-      WHERE id=? AND task_type='recurring' AND state IN ('active','paused') AND deleted_at IS NULL`);
-    for (const { task_id } of stale) updateTask.run(now, now, actor, task_id);
+      WHERE id=? AND task_type='recurring' AND schedule_kind IS NULL AND state IN ('active','paused') AND deleted_at IS NULL`);
+    for (const { task_id } of stale) {
+      updateTask.run(now, now, actor, task_id);
+      advanceScheduledTask(database, task_id, now, actor);
+    }
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * Sets the next run of a scheduled task (`schedule_kind` set) after a run ends, or
+ * completes the task when its stop condition is reached. Runs that ended as
+ * completed or failed count toward `max_runs`. Legacy tasks are left unchanged.
+ * Call inside the caller's transaction.
+ */
+function advanceScheduledTask(database: DatabaseSync, taskId: number, now: number, actor: string): void {
+  const task = getTask(database, taskId);
+  if (!task || task.schedule_kind == null || (task.state !== "active" && task.state !== "paused")) return;
+  const { runs } = database.prepare(`SELECT COUNT(*) AS runs FROM task_runs
+    WHERE task_id=? AND state IN ('completed','failed') AND deleted_at IS NULL`).get(taskId) as { runs: number };
+  const spec = taskSpecFromRow(task);
+  const next = spec ? nextRunAt(spec, now, runs) : null;
+  database.prepare("UPDATE tasks SET next_due_at=?,state=?,updated_at=?,updated_by=? WHERE id=?")
+    .run(next, next === null ? "completed" : task.state, now, actor, taskId);
 }
 
 type TaskRunRow = Omit<TaskRunRecord, "artifact_paths"> & { artifact_paths_json: string };
@@ -527,11 +577,14 @@ function taskRun(row: TaskRunRow): TaskRunRecord {
 export function createTask(database: DatabaseSync, task: NewTask, actor = "system"): TaskRecord {
   if (!task.goal.trim()) throw new RangeError("Task goal is required");
   if (task.task_type === "recurring" && (!Number.isSafeInteger(task.interval_seconds) || task.interval_seconds! <= 0 || task.interval_seconds! % 3600 !== 0)) throw new RangeError("Recurring Task interval must be whole hours");
-  if (task.task_type === "one_time" && (task.interval_seconds != null || task.next_due_at != null)) throw new RangeError("One-time Task cannot have a schedule");
+  if (task.task_type === "one_time" && (task.interval_seconds != null || (task.schedule_kind == null && task.next_due_at != null))) throw new RangeError("One-time Task cannot have a schedule");
   if (!database.prepare("SELECT 1 FROM sessions WHERE id=? AND conversation_id=? AND state='active' AND deleted_at IS NULL").get(task.session_id, task.conversation_id)) throw new Error("Task Session is not active in its Conversation");
   const nextDueAt = task.next_due_at ?? (task.task_type === "recurring" ? Math.floor(Date.now() / 1000) + task.interval_seconds! : null);
-  const result = database.prepare(`INSERT INTO tasks (goal,task_type,interval_seconds,state,conversation_id,session_id,next_due_at,message_cursor,created_by,updated_by)
-    VALUES (?,?,?,'active',?,?,?,?,?,?)`).run(task.goal.trim(), task.task_type, task.interval_seconds ?? null, task.conversation_id, task.session_id, nextDueAt, task.message_cursor ?? 0, actor, actor);
+  const result = database.prepare(`INSERT INTO tasks (goal,task_type,interval_seconds,state,conversation_id,session_id,next_due_at,message_cursor,
+    title,output_spec,timezone,schedule_kind,schedule_time,schedule_days,ends_at,max_runs,created_by,updated_by)
+    VALUES (?,?,?,'active',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(task.goal.trim(), task.task_type, task.interval_seconds ?? null, task.conversation_id, task.session_id, nextDueAt, task.message_cursor ?? 0,
+    task.title ?? null, task.output_spec ?? null, task.timezone ?? null, task.schedule_kind ?? null, task.schedule_time ?? null,
+    task.schedule_days ?? null, task.ends_at ?? null, task.max_runs ?? null, actor, actor);
   return activeRow<TaskRecord>(database, "SELECT * FROM tasks WHERE id=? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
 }
 
@@ -584,7 +637,10 @@ export function completeTaskRun(database: DatabaseSync, runId: number, messageCu
     if (changed.changes !== 1) throw new Error("Task Run changed before completion");
     database.prepare(`UPDATE tasks SET message_cursor=?,next_due_at=CASE WHEN task_type='recurring' THEN ?+interval_seconds ELSE NULL END,
       state=CASE WHEN task_type='one_time' AND state='active' THEN 'completed' ELSE state END,updated_at=?,updated_by=?
-      WHERE id=? AND deleted_at IS NULL AND state IN ('active','paused')`).run(messageCursor, now, now, actor, current.task_id);
+      WHERE id=? AND deleted_at IS NULL AND state IN ('active','paused') AND schedule_kind IS NULL`).run(messageCursor, now, now, actor, current.task_id);
+    database.prepare(`UPDATE tasks SET message_cursor=? WHERE id=? AND deleted_at IS NULL AND state IN ('active','paused') AND schedule_kind IS NOT NULL`)
+      .run(messageCursor, current.task_id);
+    advanceScheduledTask(database, current.task_id, now, actor);
     const row = database.prepare("SELECT * FROM task_runs WHERE id=?").get(runId) as TaskRunRow;
     database.exec("COMMIT");
     return taskRun(row);
@@ -602,7 +658,9 @@ export function failTaskRun(database: DatabaseSync, runId: number, detail: strin
       WHERE id=? AND state='processing' AND deleted_at IS NULL`).run(safeDetail || "Task run failed", now, now, actor, runId);
     if (changed.changes === 1) {
       database.prepare(`UPDATE tasks SET next_due_at=CASE WHEN task_type='recurring' THEN ?+interval_seconds ELSE NULL END,updated_at=?,updated_by=?
-        WHERE id=(SELECT task_id FROM task_runs WHERE id=?) AND state IN ('active','paused') AND deleted_at IS NULL`).run(now, now, actor, runId);
+        WHERE id=(SELECT task_id FROM task_runs WHERE id=?) AND state IN ('active','paused') AND schedule_kind IS NULL AND deleted_at IS NULL`).run(now, now, actor, runId);
+      const { task_id } = database.prepare("SELECT task_id FROM task_runs WHERE id=?").get(runId) as { task_id: number };
+      advanceScheduledTask(database, task_id, now, actor);
     }
     database.exec("COMMIT");
     return changed.changes === 1;
@@ -616,8 +674,40 @@ export function pauseTask(database: DatabaseSync, taskId: number, actor = "user:
   return database.prepare("UPDATE tasks SET state='paused',updated_at=unixepoch(),updated_by=? WHERE id=? AND state='active' AND deleted_at IS NULL").run(actor, taskId).changes === 1;
 }
 
-export function resumeTask(database: DatabaseSync, taskId: number, actor = "user:owner"): boolean {
-  return database.prepare("UPDATE tasks SET state='active',updated_at=unixepoch(),updated_by=? WHERE id=? AND state='paused' AND deleted_at IS NULL").run(actor, taskId).changes === 1;
+/** Resumes a paused task. A scheduled task (`schedule_kind` set) gets its next run calculated from `now`. */
+export function resumeTask(database: DatabaseSync, taskId: number, actor = "user:owner", now = Math.floor(Date.now() / 1000)): boolean {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const changed = database.prepare("UPDATE tasks SET state='active',updated_at=unixepoch(),updated_by=? WHERE id=? AND state='paused' AND deleted_at IS NULL").run(actor, taskId).changes === 1;
+    if (changed) advanceScheduledTask(database, taskId, now, actor);
+    database.exec("COMMIT");
+    return changed;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** Moves a UI-created Task and its Session from a `pending:ui:` placeholder to a new thread in one transaction. */
+export function bindTaskConversation(database: DatabaseSync, taskId: number, binding: {
+  conversationId: string; parentConversationId: string; initiatingExternalMessageId: string;
+}, now: number, actor = "task-runtime"): void {
+  if (!binding.conversationId || binding.conversationId.startsWith("pending:")) throw new Error("Invalid Task conversation ID");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const task = getTask(database, taskId);
+    if (!task || !task.conversation_id.startsWith("pending:ui:")) throw new Error("Task conversation is not pending");
+    const session = database.prepare(`UPDATE sessions SET conversation_id=?,parent_conversation_id=?,initiating_external_message_id=?,
+      updated_at=?,updated_by=? WHERE id=? AND conversation_id=? AND state='active' AND deleted_at IS NULL`)
+      .run(binding.conversationId, binding.parentConversationId, binding.initiatingExternalMessageId, now, actor, task.session_id, task.conversation_id);
+    const changed = database.prepare("UPDATE tasks SET conversation_id=?,updated_at=?,updated_by=? WHERE id=? AND conversation_id=? AND deleted_at IS NULL")
+      .run(binding.conversationId, now, actor, taskId, task.conversation_id);
+    if (session.changes !== 1 || changed.changes !== 1) throw new Error("Task conversation changed before binding");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function cancelTask(database: DatabaseSync, taskId: number, now: number, actor = "user:owner"): boolean {

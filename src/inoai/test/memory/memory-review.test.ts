@@ -90,6 +90,16 @@ test("PostgreSQL review adapter fails closed before commit on unsafe recap and s
   assert.deepEqual(await reviewSessionWithStore(stale, staleRuntime, 1, { maxChars: 20_000 }), { state: "failed", reason: "stale_range" });
 });
 
+async function until(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  if (check()) return;
+  throw new Error("Condition did not become true");
+}
+
 async function withArchive(fn: (archive: Awaited<ReturnType<typeof seedArchive>>) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "inoai-memory-review-"));
   try {
@@ -397,7 +407,7 @@ test("an abort cancels the runtime call and leaves no partial writes", async () 
       signal?.addEventListener("abort", () => reject(new RuntimeFailure("cancelled", true)), { once: true });
     }));
     const pending = reviewSession(database, runtime, session.id, { maxChars: 20_000, signal: controller.signal });
-    while (!prompts.length) await new Promise((resolve) => setImmediate(resolve));
+    await until(() => prompts.length > 0);
     controller.abort();
     assert.deepEqual(await pending, { state: "failed", reason: "cancelled" });
     assert.equal(signals[0], controller.signal);

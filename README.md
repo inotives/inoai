@@ -63,7 +63,7 @@ my-project/
 ├── .inoai-connect-opencode/   # OpenCode CLI adapter (Phase 5b)
 ```
 
-On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process writes each runtime-home database; the UI and read-only tools may inspect it. Stop the core before using local commands that write Memory or the allowlist. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
+On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process writes each runtime-home database; the UI and read-only tools may inspect it. The UI may also create, edit, and control Tasks through short-lived writes (ADR 0026). Stop the core before using local commands that write Memory or the allowlist. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
 
 The local `inoai.lock` is a `0600` JSON record containing the owning process
 PID, its macOS process start time, and a release token. If startup finds an
@@ -129,7 +129,7 @@ npm start
 
 Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it never starts conversations. The older `DISCORD_ALLOWED_CHANNEL_ID` key is no longer accepted; update existing local runtime-home `.env` files before starting this version. The bot needs access to the status channel and to every channel where you start conversations, including permission to create threads.
 
-`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
+`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
 
 The runtime-home profile is provider-neutral Markdown. It must contain the
 required identity, mission and scope, personality and communication, operating
@@ -318,9 +318,44 @@ The configured owner can create a Task in any accessible guild text channel or a
 
 Messages you send in a Task thread are saved as guidance for its next run. They do not start ordinary chat Turns or change a run already in progress. Each run makes one Agent Runtime iteration. Only one Task Run starts at a time per Agent Instance, and queued chat takes priority. If chat arrives during a Task Run, that run finishes before chat; chat then runs before another Task Run. A Task Run also waits for an active Memory Review to settle.
 
-The in-process scheduler checks for due recurring Tasks at startup and about once per minute; the external Heartbeat Supervisor remains health-only. After downtime it runs an overdue Task once, without replaying missed intervals. The next due time is one interval after a run completes or fails. A failed or restart-interrupted run is recorded as failed and never retried automatically; use `run` for a manual retry. Pausing prevents new runs while letting an active run finish. Resuming restores its existing due time. Cancelling ends the Task and stops its active run.
+The in-process scheduler checks for due Tasks at startup and about once per minute; the external Heartbeat Supervisor remains health-only. After downtime it runs an overdue Task once, without replaying missed intervals. A failed or restart-interrupted run is recorded as failed and never retried automatically; use `run` for a manual retry. Pausing prevents new runs while letting an active run finish. For a Task created with `/inoai task create`, the next due time is one interval after a run completes or fails, and resuming restores its existing due time. A Task with a UI schedule follows the rules in [Tasks in the UI](#tasks-in-the-ui); resuming it, also with `/inoai task resume`, recalculates its next run from now. `/inoai task cancel` ends the Task and stops its active run.
 
 For requested files, the agent is directed to write under the selected runtime home's `results/<task-id>/<run-id>/`. Each run gets a new directory, so earlier output remains. inoai posts the run summary and relative file paths in the Task thread and uploads a copy of each produced file to Discord. If an upload fails, the local file remains and the thread receives its relative path. Keep these files in your runtime-home backup plan; SQLite stores the paths and run history, not the file contents.
+
+A completed or failed run also gets `results/<task-id>/<run-id>/result.md`, written by inoai, once its run folder exists. It holds the run times and state, the instruction, the expected output, the full answer or a safe failure reason, and the list of other files in the run folder. It stays local: inoai does not upload it to Discord. A run that fails before its run folder exists, a run failed by restart recovery, and a cancelled run have no `result.md`.
+
+### Tasks in the UI
+
+Talk to the agent in Discord once before creating tasks from the UI. A UI-created Task copies its user, workspace, and agent provider from the most recent owner session; without one, the UI refuses to create a Task.
+
+Open the local UI with `npm start -- ui` (add `--connect-dir .inoai-connect-<name>` for another runtime home), then open the Tasks drawer:
+
+- **New task** opens a form with a title (required, up to 100 characters), an instruction (required), an optional expected output, a schedule, and a time zone. The time zone defaults to the browser's zone. A preview shows the next three runs; the server checks the schedule again when you save.
+- **Edit** changes the title, instruction, expected output, and schedule of an active or paused Task. It is not available while a run is in progress.
+- **Run now** makes an active Task due now; the scheduler starts it within about a minute. It counts toward the run limit. For a daily, selected-days, or weekly Task it is an extra run: the next scheduled time still runs, even a few minutes later. For an every-N-hours Task, the next run is N hours after the Run now run ends. For a once-at-a-time Task, Run now replaces the scheduled time: it is the Task's one run, and the Task then completes.
+- **Pause** stops new runs; a run in progress finishes. **Resume** recalculates the next run from now. A Task created with `/inoai task create` keeps its existing due time.
+- **Cancel** asks for confirmation, then stops all future runs. A run in progress finishes. Unlike `/inoai task cancel`, the UI does not stop the active run.
+- Completed and cancelled Tasks are read-only. Nothing is deleted.
+- Each Task shows its newest 20 runs. Select a run to read its `result.md`.
+
+Schedule kinds, all in the Task's time zone:
+
+| Kind | Runs |
+| --- | --- |
+| Once, now | At the next scheduler check. |
+| Once, at a time | At the chosen time. |
+| Every N hours | N whole hours (at least 1) after creation, then N hours after each run ends. |
+| Daily | Every day at `HH:MM`. |
+| Selected days | At `HH:MM` on the chosen weekdays. |
+| Weekly | At `HH:MM` on one weekday. |
+
+Repeating kinds accept an optional stop date ("Until") and an optional run limit. When either is reached, the Task becomes completed. Failed runs count toward the run limit, and the Task moves to its next scheduled time; a failed one-time Task ends completed. On a daylight saving change, a skipped local time runs at the first valid time after the gap, and a repeated local time runs once.
+
+The UI writes only Tasks. It never reads `.env`, and it hides credential-shaped text. If a field shows hidden values, re-enter that text before you save an edit; the form refuses to save the hidden placeholder. Changes made while the agent is stopped take effect when it next starts. The UI does not create or upgrade the database; start the agent once first.
+
+A UI-created Task has no Discord thread unless you set the optional `DISCORD_TASK_CHANNEL_ID` in the runtime home's `.env` to a channel ID (digits only). When it is set, the first run creates a thread named after the Task title in that channel and later run reports go there. The bot needs permission to post and create threads in it. Do not use the `DISCORD_STATUS_CHANNEL_ID` channel: inoai ignores messages in threads of the status channel, so Task thread guidance would be dropped.
+
+A UI-created Task keeps the agent provider it copied when it was created. After any `AGENT_PROVIDER` change, its runs fail with "Task Agent Session unavailable"; talking to the agent does not fix that Task. A Task created after the change but before a new owner session exists also copies the old provider and fails the same way. To fix both cases, talk to the agent in Discord under the new provider, then create the Task again.
 
 ## Heartbeat Supervisor
 

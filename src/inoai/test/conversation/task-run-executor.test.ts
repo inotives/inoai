@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,11 +15,13 @@ const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNE
   "DISCORD_STATUS_CHANNEL_ID=status", "CHAT_PROVIDER=discord", "AGENT_PROVIDER=codex",
   "MEMORY_REVIEW_TIME=06:00", "MEMORY_REVIEW_MAX_CHARS=20000", "AGENT_INSTANCE_ID=agent-test"].join("\n");
 
-async function until(check: () => Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 200; i++) {
+async function until(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (await check()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
+  if (await check()) return;
   throw new Error("Condition did not become true");
 }
 
@@ -69,7 +71,7 @@ test("manual Task Run claims once, uses its thread cursor, and keeps unique uplo
       await runner.stop();
       assert.equal((await store.getTask(task.id))?.message_cursor, steering.message.id);
       assert.match(prompts[0]!, /Use Markdown/);
-      assert.deepEqual((await store.listTaskRuns(task.id))[0]?.artifact_paths, [`results/${task.id}/1/report.md`]);
+      assert.deepEqual((await store.listTaskRuns(task.id))[0]?.artifact_paths, [`results/${task.id}/1/report.md`, `results/${task.id}/1/result.md`]);
       assert.equal(uploads.length, 1);
       assert.equal(uploads[0], join(instance.runtimeHome.directory, "results", String(task.id), "1", "report.md"));
       assert.match(sent.join("\n"), /results\/1\/1\/report.md/);
@@ -298,5 +300,185 @@ test("failing runtime_usage write does not change the Task Run outcome", async (
     assert.equal(await finishRun(store, runner, taskId, 0), "completed");
     assert.deepEqual(await usageEvents(store, sessionId), []);
     assert.match(sent.join("\n"), /run #1 completed/);
+  });
+});
+
+async function withUiTask(name: string, run: (context: { store: OperationalStore & TaskOperationsStore;
+  instance: Awaited<ReturnType<typeof start>>; sessionId: number; taskId: number; directory: string }) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), `inoai-task-ui-${name}-`));
+  try {
+    await writeFile((await bootstrapRuntimeHome(directory)).envFile, env);
+    const instance = await start(directory);
+    try {
+      const store = instance.store as OperationalStore & TaskOperationsStore;
+      // The UI server (T-0004) writes this placeholder Session and Task; build them directly here.
+      const session = await store.createSession({ user_id: instance.owner.id, transport: "discord", workspace_id: "guild",
+        parent_conversation_id: "pending:ui", conversation_id: "pending:ui:abc", initiating_external_message_id: "pending:ui:abc",
+        agent_provider: "codex", agent_session_id: "pending:task:ui-abc", project_path: directory }, "ui:owner");
+      const task = await store.createTask({ goal: "Summarize failing CI", task_type: "one_time", conversation_id: "pending:ui:abc",
+        session_id: session.id, title: `CI summary ${"x".repeat(120)}`, output_spec: "A Markdown list" }, "ui:owner");
+      await run({ store, instance, sessionId: session.id, taskId: task.id, directory });
+    } finally { await instance.release(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+function recordingTransport(calls: string[], options: { failThread?: boolean } = {}) {
+  return {
+    sendMessage: async (id: string, text: string) => { calls.push(`send ${id} ${text}`); return `starter-${calls.length}`; },
+    uploadFile: async (id: string, _path: string, name: string) => { calls.push(`upload ${id} ${name}`); return "uploaded"; },
+    createConversation: async (parent: string, starter: string, name: string) => {
+      calls.push(`create ${parent} ${starter} ${name}`);
+      if (options.failThread) throw new Error("Missing Permissions token=private");
+      return "ui-thread";
+    },
+    deleteConversation: async (id: string) => { calls.push(`delete-thread ${id}`); },
+    deleteMessage: async (channel: string, id: string) => { calls.push(`delete-message ${channel} ${id}`); },
+  };
+}
+
+function writingRuntime(prompts: string[], answer: string, failFirst = false): AgentRuntime {
+  return {
+    displayName: "fake", loginHint: "none", createSession: async () => "runtime-session",
+    resumeSession: async () => {}, cancel: async () => {}, health: () => ({ state: "ready" }), close: async () => {},
+    async *runTurn(_id: string, prompt: string): AsyncIterable<RuntimeEvent> {
+      prompts.push(prompt);
+      if (failFirst && prompts.length === 1) throw new Error("secret=private-provider-detail");
+      const output = prompt.match(/Save only requested files inside (.+?)\. Do not overwrite/)?.[1];
+      assert.ok(output);
+      await writeFile(join(output, "report.md"), "report");
+      yield { type: "answer", text: answer };
+    },
+  };
+}
+
+test("result.md holds the full answer and run metadata for completed and failed runs", async () => {
+  await withUiTask("result", async ({ store, instance, taskId }) => {
+    const prompts: string[] = [];
+    const calls: string[] = [];
+    const answer = `Full answer start ${"y".repeat(3000)} end`;
+    let clock = 1_800_000_000;
+    const runner = new TaskRunExecutor(store, writingRuntime(prompts, answer, true), instance.runtimeHome,
+      recordingTransport(calls), { reserveTaskRun: async () => () => {} }, "codex", { now: () => clock++ });
+    assert.equal(await finishRun(store, runner, taskId, 0), "failed");
+    const failed = await readFile(join(instance.runtimeHome.directory, "results", String(taskId), "1", "result.md"), "utf8");
+    assert.match(failed, /^# CI summary x+\n/);
+    assert.match(failed, /- Task: #1\n- Run: #1\n- State: failed\n/);
+    assert.match(failed, new RegExp(`- Started: ${new Date(1_800_000_000_000).toISOString()}`));
+    assert.match(failed, /- Ended: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z/);
+    assert.match(failed, /## Instruction\n\nSummarize failing CI\n/);
+    assert.match(failed, /## Expected output\n\nA Markdown list\n/);
+    assert.match(failed, /## Failure\n\nTask Run failed; check local logs\n/);
+    assert.match(failed, /## Files\n\nNo other files\./);
+    assert.doesNotMatch(failed, /private-provider-detail/);
+
+    assert.equal(await finishRun(store, runner, taskId, 1), "completed");
+    assert.match(prompts[1]!, /^Task title: CI summary x+\n\nTask goal: Summarize failing CI\n\nExpected output: A Markdown list\n\nNo new Task thread messages\./);
+    const completed = await readFile(join(instance.runtimeHome.directory, "results", String(taskId), "2", "result.md"), "utf8");
+    assert.match(completed, /- Run: #2\n- State: completed\n/);
+    assert.ok(completed.includes(`## Answer\n\n${answer}\n`));
+    assert.match(completed, /## Files\n\n- `results\/1\/2\/report\.md`\n$/);
+    assert.deepEqual((await store.listTaskRuns(taskId))[1]?.artifact_paths, ["results/1/2/report.md", "results/1/2/result.md"]);
+  });
+});
+
+test("result.md refuses a symlink planted by the runtime", async () => {
+  await withUiTask("symlink", async ({ store, instance, taskId, directory }) => {
+    const outside = join(directory, "outside.md");
+    await writeFile(outside, "untouched");
+    const runtime: AgentRuntime = { ...writingRuntime([], "Done"),
+      async *runTurn(_id: string, prompt: string): AsyncIterable<RuntimeEvent> {
+        const output = prompt.match(/Save only requested files inside (.+?)\. Do not overwrite/)?.[1];
+        assert.ok(output);
+        await symlink(outside, join(output, "result.md"));
+        yield { type: "answer", text: "Done" };
+      } };
+    const runner = new TaskRunExecutor(store, runtime, instance.runtimeHome, recordingTransport([]),
+      { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "failed");
+    assert.equal(await readFile(outside, "utf8"), "untouched");
+  });
+});
+
+test("result.md refuses a hard link planted by the runtime", async () => {
+  await withUiTask("hardlink", async ({ store, instance, taskId, directory }) => {
+    const outside = join(directory, "outside.md");
+    await writeFile(outside, "untouched");
+    const runtime: AgentRuntime = { ...writingRuntime([], "Done"),
+      async *runTurn(_id: string, prompt: string): AsyncIterable<RuntimeEvent> {
+        const output = prompt.match(/Save only requested files inside (.+?)\. Do not overwrite/)?.[1];
+        assert.ok(output);
+        await link(outside, join(output, "result.md"));
+        yield { type: "answer", text: "Done" };
+      } };
+    const runner = new TaskRunExecutor(store, runtime, instance.runtimeHome, recordingTransport([]),
+      { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "failed");
+    assert.equal(await readFile(outside, "utf8"), "untouched");
+  });
+});
+
+test("UI-created Task without a task channel runs with zero transport calls", async () => {
+  await withUiTask("threadless", async ({ store, instance, taskId }) => {
+    const calls: string[] = [];
+    const runner = new TaskRunExecutor(store, writingRuntime([], "Done"), instance.runtimeHome,
+      recordingTransport(calls), { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "completed");
+    assert.deepEqual(calls, []);
+    assert.equal((await store.getTask(taskId))?.conversation_id, "pending:ui:abc");
+    assert.equal((await store.getTask(taskId))?.state, "completed");
+  });
+});
+
+test("task channel: first run opens one thread and binds both ids; later runs reuse it", async () => {
+  await withUiTask("channel", async ({ store, instance, sessionId, taskId }) => {
+    const calls: string[] = [];
+    const runner = new TaskRunExecutor(store, writingRuntime([], "Done", true), instance.runtimeHome,
+      recordingTransport(calls), { reserveTaskRun: async () => () => {} }, "codex", { taskChannelId: "123" });
+    assert.equal(await finishRun(store, runner, taskId, 0), "failed");
+    const name = `CI summary ${"x".repeat(120)}`.slice(0, 100);
+    assert.deepEqual(calls.slice(0, 2), ["send 123 inoai Task thread", `create 123 starter-1 ${name}`]);
+    assert.match(calls[2]!, /^send ui-thread Task #1 run #1 failed\./);
+    assert.equal((await store.getTask(taskId))?.conversation_id, "ui-thread");
+    const session = await store.getSession(sessionId);
+    assert.deepEqual([session?.conversation_id, session?.parent_conversation_id, session?.initiating_external_message_id],
+      ["ui-thread", "123", "starter-1"]);
+
+    assert.equal(await finishRun(store, runner, taskId, 1), "completed");
+    assert.equal(calls.filter((call) => call.startsWith("create ")).length, 1);
+    assert.deepEqual(calls.slice(3), ["send ui-thread Task #1 run #2 completed.\nDone\nFiles: results/1/2/report.md",
+      "upload ui-thread results/1/2/report.md"]);
+  });
+});
+
+test("task channel: thread creation failure continues thread-less and records a safe event", async () => {
+  await withUiTask("thread-failure", async ({ store, instance, sessionId, taskId }) => {
+    const calls: string[] = [];
+    const runner = new TaskRunExecutor(store, writingRuntime([], "Done"), instance.runtimeHome,
+      recordingTransport(calls, { failThread: true }), { reserveTaskRun: async () => () => {} }, "codex", { taskChannelId: "123" });
+    assert.equal(await finishRun(store, runner, taskId, 0), "completed");
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2], "delete-message 123 starter-1");
+    assert.equal((await store.getTask(taskId))?.conversation_id, "pending:ui:abc");
+    assert.equal((await store.getSession(sessionId))?.conversation_id, "pending:ui:abc");
+    const events = (await store.listEvents(sessionId)).filter((event) => event.event_type === "task_thread_failed");
+    assert.deepEqual(events.map((event) => event.detail), ["task=1; run=1"]);
+    assert.ok((await readFile(join(instance.runtimeHome.directory, "results", "1", "1", "result.md"), "utf8")).includes("## Answer\n\nDone\n"));
+  });
+});
+
+test("shutdown during a run writes a failed result.md", async () => {
+  await withUiTask("shutdown", async ({ store, instance, sessionId, taskId }) => {
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => { finish = resolve; });
+    const runtime: AgentRuntime = { ...writingRuntime([], "Done"), cancel: async () => { finish(); },
+      async *runTurn(): AsyncIterable<RuntimeEvent> { await blocked; yield { type: "answer", text: "Too late" }; } };
+    const runner = new TaskRunExecutor(store, runtime, instance.runtimeHome, recordingTransport([]),
+      { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await runner.start(taskId), "started");
+    await until(async () => (await store.getSession(sessionId))?.agent_session_id === "runtime-session");
+    await runner.stop();
+    assert.equal((await store.listTaskRuns(taskId))[0]?.state, "failed");
+    const result = await readFile(join(instance.runtimeHome.directory, "results", "1", "1", "result.md"), "utf8");
+    assert.match(result, /- State: failed\n[\s\S]*## Failure\n\nInterrupted by shutdown\n/);
   });
 });

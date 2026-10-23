@@ -1,12 +1,26 @@
 import { DatabaseSync } from "node:sqlite";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, open, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { join, sep } from "node:path";
 import { inspectRuntimeHomeLock, type RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import { validateEnabledSkills, type EnabledSkillsDocument } from "../../inoai/skills/skill-manifest.js";
+import { describeSchedule, taskSpecFromRow } from "../../inoai/tasks/schedule.js";
 
 type UiMessage = { id: number; workspaceId: string; transport: string; direction: string; state: string; body: string; createdAt: string; updatedAt: string };
 type UiSkillFile = { path: string; size: number; text: string | null };
-type UiTask = { id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: string; createdAt: string; runs: { completed: number; failed: number; lastState: string | null; lastAt: string } };
+export type UiTask = {
+  id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: string; createdAt: string;
+  title: string | null; outputSpec: string | null; timezone: string | null; scheduleKind: string | null; scheduleTime: string | null;
+  scheduleDays: string | null; endsAt: string; maxRuns: number | null; updatedAt: string; scheduleLabel: string | null;
+  /** Spec fields whose text was redacted for display: "title", "instruction", "expectedOutput". */
+  redactedFields: string[];
+  runs: { completed: number; failed: number; lastState: string | null; lastAt: string };
+};
+/** One Task Run with its result.md text. `result` is null when the file is missing, too large, or unsafe; `resultNote` says why. */
+export type UiTaskRun = {
+  id: number; taskId: number; state: string; startedAt: string; completedAt: string; failureDetail: string | null;
+  result: string | null; resultNote: string | null;
+};
 type UiSkill = { id: string; version: string; approvedAt: string; capabilities: Record<string, string | boolean>; files: UiSkillFile[] };
 type UiMemory = { id: number; origin: string; state: string; body: string; review: { id: number; state: string; recap: string | null } | null; createdAt: string; updatedAt: string };
 
@@ -17,6 +31,7 @@ export type UiData = {
   skills: string[];
   skillDetails: UiSkill[];
   tasks: UiTask[];
+  taskRuns: UiTaskRun[];
   tools: string[];
   health: Array<{ eventType: string; detail: string | null; createdAt: string }>;
   messages: UiMessage[];
@@ -245,6 +260,112 @@ function loadInsightWindow(database: DatabaseSync, nowSeconds: number, bucket: "
   };
 }
 
+const scheduleColumns = ["title", "output_spec", "timezone", "schedule_kind", "schedule_time", "schedule_days", "ends_at", "max_runs"] as const;
+type TaskRow = { id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: number | null; createdAt: number; updatedAt: number;
+  title: string | null; output_spec: string | null; timezone: string | null; schedule_kind: string | null; schedule_time: string | null; schedule_days: string | null;
+  ends_at: number | null; max_runs: number | null; completed: number; failed: number; lastState: string | null; lastAt: number | null };
+
+/**
+ * Reads non-deleted tasks, newest first, or one task when `id` is given.
+ * A home whose tasks table predates the schedule columns reads them as null.
+ */
+export function readTasks(database: DatabaseSync, id?: number): UiTask[] {
+  const existing = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
+  const schedule = scheduleColumns.map((name) => existing.has(name) ? `t.${name}` : `NULL AS ${name}`).join(", ");
+  const rows = database.prepare(`SELECT t.id, t.goal, t.task_type AS taskType, t.state, t.interval_seconds AS intervalSeconds, t.next_due_at AS nextDueAt,
+      t.created_at AS createdAt, t.updated_at AS updatedAt, ${schedule},
+      (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'completed' AND r.deleted_at IS NULL) AS completed,
+      (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'failed' AND r.deleted_at IS NULL) AS failed,
+      (SELECT r.state FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastState,
+      (SELECT r.started_at FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastAt
+    FROM tasks t WHERE t.deleted_at IS NULL${id === undefined ? "" : " AND t.id = ?"} ORDER BY t.created_at DESC, t.id DESC LIMIT 200`)
+    .all(...(id === undefined ? [] : [id])) as TaskRow[];
+  return rows.map((row) => {
+    const spec = taskSpecFromRow({ goal: row.goal, title: row.title, output_spec: row.output_spec, interval_seconds: row.intervalSeconds,
+      next_due_at: row.nextDueAt, timezone: row.timezone, schedule_kind: row.schedule_kind, schedule_time: row.schedule_time,
+      schedule_days: row.schedule_days, ends_at: row.ends_at, max_runs: row.max_runs });
+    return {
+    id: row.id, goal: redact(row.goal), taskType: row.taskType, state: row.state, intervalSeconds: row.intervalSeconds,
+    nextDueAt: timestamp(row.nextDueAt), createdAt: timestamp(row.createdAt),
+    title: row.title === null ? null : redact(row.title), outputSpec: row.output_spec === null ? null : redact(row.output_spec),
+    timezone: row.timezone, scheduleKind: row.schedule_kind, scheduleTime: row.schedule_time, scheduleDays: row.schedule_days,
+    endsAt: timestamp(row.ends_at), maxRuns: row.max_runs, updatedAt: timestamp(row.updatedAt),
+    scheduleLabel: spec ? redact(describeSchedule(spec)) : null,
+    redactedFields: ([["title", row.title], ["instruction", row.goal], ["expectedOutput", row.output_spec]] as const)
+      .filter(([, value]) => value !== null && redact(value) !== value).map(([name]) => name),
+    runs: { completed: Number(row.completed), failed: Number(row.failed), lastState: row.lastState, lastAt: timestamp(row.lastAt) },
+    };
+  });
+}
+
+const RUNS_PER_TASK = 20;
+const RESULT_TEXT_LIMIT = 64 * 1024;
+// Caps the result text in one UI data response. Newer tasks are read first.
+const RESULT_TOTAL_LIMIT = 4 * 1024 * 1024;
+
+type RunRow = { id: number; taskId: number; state: string; startedAt: number; completedAt: number | null; failureDetail: string | null };
+
+/** Reads the newest runs of each listed task, newest first. */
+function readTaskRuns(database: DatabaseSync, taskIds: number[]): RunRow[] {
+  if (!taskIds.length) return [];
+  return database.prepare(`SELECT id, taskId, state, startedAt, completedAt, failureDetail FROM (
+      SELECT r.id, r.task_id AS taskId, r.state, r.started_at AS startedAt, r.completed_at AS completedAt, r.failure_detail AS failureDetail,
+        ROW_NUMBER() OVER (PARTITION BY r.task_id ORDER BY r.started_at DESC, r.id DESC) AS position
+      FROM task_runs r WHERE r.deleted_at IS NULL AND r.task_id IN (${taskIds.map(() => "?").join(",")}))
+    WHERE position <= ? ORDER BY startedAt DESC, id DESC`).all(...taskIds, RUNS_PER_TASK) as RunRow[];
+}
+
+type ResultFile = { text: string | null; note: string | null; bytes: number };
+
+// Reads results/<task>/<run>/result.md. Every folder on the path must be a real
+// directory inside results/, and the file is opened with O_NOFOLLOW, so a
+// symlink is refused. Files over 64 KB are not read.
+async function readResultFile(home: RuntimeHome, taskId: number, runId: number, budget: number): Promise<ResultFile> {
+  const results = join(home.directory, "results");
+  const folders = [results, join(results, String(taskId)), join(results, String(taskId), String(runId))];
+  try {
+    for (const folder of folders) {
+      const info = await lstat(folder);
+      if (info.isSymbolicLink() || !info.isDirectory()) return { text: null, note: "result.md is unavailable", bytes: 0 };
+    }
+    if (!(await realpath(folders[2]!)).startsWith(`${await realpath(results)}${sep}`)) return { text: null, note: "result.md is unavailable", bytes: 0 };
+  } catch {
+    return { text: null, note: "No result.md", bytes: 0 };
+  }
+  let handle;
+  try {
+    handle = await open(join(folders[2]!, "result.md"), constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    return { text: null, note: (error as NodeJS.ErrnoException).code === "ENOENT" ? "No result.md" : "result.md is unavailable", bytes: 0 };
+  }
+  try {
+    const info = await handle.stat();
+    // A hard link could point at a file outside results/, such as the runtime home's env file.
+    if (!info.isFile() || info.nlink !== 1) return { text: null, note: "result.md is unavailable", bytes: 0 };
+    if (info.size > RESULT_TEXT_LIMIT) return { text: null, note: "result.md is larger than 64 KB", bytes: 0 };
+    if (info.size > budget) return { text: null, note: "result.md not loaded: too many results in one view", bytes: 0 };
+    const buffer = Buffer.alloc(info.size);
+    const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
+    const content = buffer.subarray(0, bytesRead);
+    if (content.includes(0)) return { text: null, note: "result.md is not text", bytes: 0 };
+    return { text: redact(content.toString("utf8")), note: null, bytes: bytesRead };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function loadTaskRuns(home: RuntimeHome, rows: RunRow[]): Promise<UiTaskRun[]> {
+  let budget = RESULT_TOTAL_LIMIT;
+  const runs: UiTaskRun[] = [];
+  for (const row of rows) {
+    const file = row.state === "processing" ? { text: null, note: "Run in progress", bytes: 0 } : await readResultFile(home, row.taskId, row.id, budget);
+    budget -= file.bytes;
+    runs.push({ id: row.id, taskId: row.taskId, state: row.state, startedAt: timestamp(row.startedAt), completedAt: timestamp(row.completedAt),
+      failureDetail: row.failureDetail === null ? null : redact(row.failureDetail), result: file.text, resultNote: file.note });
+  }
+  return runs;
+}
+
 export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<UiData> {
   const [agentMarkdown, skillDetails, lockState] = await Promise.all([
     readFile(home.agentFile, "utf8").then(redact),
@@ -264,16 +385,12 @@ export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<U
     const metrics = { messages24h, messages30d: countMessages(nowSeconds - 30 * 86_400, false), failedReplies24h: countMessages(nowSeconds - 86_400, true), failedReplies30d: countMessages(nowSeconds - 30 * 86_400, true), activeSessions, messagesPerSession: activeSessions ? Number((messages24h / activeSessions).toFixed(1)) : 0 };
     const insights = { "24h": loadInsightWindow(database, nowSeconds, "hour", 24), "7d": loadInsightWindow(database, nowSeconds, "day", 7), "30d": loadInsightWindow(database, nowSeconds, "day", 30) };
     const memories = (database.prepare("SELECT m.id, m.origin, m.state, m.body, m.created_at AS createdAt, m.updated_at AS updatedAt, r.id AS reviewId, r.state AS reviewState, r.recap AS reviewRecap FROM memories m LEFT JOIN memory_reviews r ON r.id = m.review_id AND r.deleted_at IS NULL WHERE m.deleted_at IS NULL ORDER BY m.created_at DESC LIMIT 500").all() as Array<UiMemory & { createdAt: number; updatedAt: number; reviewId: number | null; reviewState: string | null; reviewRecap: string | null }>).map((row) => ({ id: row.id, origin: row.origin, state: row.state, body: redact(row.body), review: row.reviewId === null ? null : { id: row.reviewId, state: row.reviewState!, recap: row.reviewRecap === null ? null : redact(row.reviewRecap) }, createdAt: timestamp(row.createdAt), updatedAt: timestamp(row.updatedAt) }));
-    const tasks = (database.prepare(`SELECT t.id, t.goal, t.task_type AS taskType, t.state, t.interval_seconds AS intervalSeconds, t.next_due_at AS nextDueAt, t.created_at AS createdAt,
-        (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'completed' AND r.deleted_at IS NULL) AS completed,
-        (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.state = 'failed' AND r.deleted_at IS NULL) AS failed,
-        (SELECT r.state FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastState,
-        (SELECT r.started_at FROM task_runs r WHERE r.task_id = t.id AND r.deleted_at IS NULL ORDER BY r.started_at DESC, r.id DESC LIMIT 1) AS lastAt
-      FROM tasks t WHERE t.deleted_at IS NULL ORDER BY t.created_at DESC, t.id DESC LIMIT 200`).all() as Array<{ id: number; goal: string; taskType: string; state: string; intervalSeconds: number | null; nextDueAt: number | null; createdAt: number; completed: number; failed: number; lastState: string | null; lastAt: number | null }>)
-      .map((row) => ({ id: row.id, goal: redact(row.goal), taskType: row.taskType, state: row.state, intervalSeconds: row.intervalSeconds, nextDueAt: timestamp(row.nextDueAt), createdAt: timestamp(row.createdAt), runs: { completed: Number(row.completed), failed: Number(row.failed), lastState: row.lastState, lastAt: timestamp(row.lastAt) } }));
+    const tasks = readTasks(database);
+    const runRows = readTaskRuns(database, tasks.map((task) => task.id));
     const health = (database.prepare("SELECT event_type AS eventType, detail, created_at AS createdAt FROM events WHERE event_type LIKE 'heartbeat%' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 24").all() as Array<{ eventType: string; detail: string | null; createdAt: number }>).map((row) => ({ eventType: row.eventType, detail: row.detail === null ? null : redact(row.detail), createdAt: timestamp(row.createdAt) }));
     const status = lockState === "live" ? "running" : lockState === "missing" || lockState === "stale" ? "stopped" : "unknown";
-    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, tools: [], health, messages, memories, insights };
+    const taskRuns = await loadTaskRuns(home, runRows);
+    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, taskRuns, tools: [], health, messages, memories, insights };
   } finally {
     database.close();
   }

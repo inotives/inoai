@@ -712,7 +712,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   const taskRunner = new TaskRunExecutor(instance.store! as OperationalStore & TaskOperationsStore,
     runtime, instance.runtimeHome, transport, worker, instance.configuration.agentProvider,
     { now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000),
-      pauseReview: () => scheduler.pauseForTask() });
+      pauseReview: () => scheduler.pauseForTask(), taskChannelId: instance.configuration.discordTaskChannelId });
   const taskScheduler = new TaskScheduler(instance.store! as TaskOperationsStore, taskRunner,
     supplied.schedulerClock, () => console.error("Task scheduler failed; due Tasks stay queued"));
   taskRunner.onSettled(() => { void taskScheduler.poke(); });

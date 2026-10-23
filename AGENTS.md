@@ -25,7 +25,7 @@ task. Follow the skill's task cycle and human acceptance gate.
 - Read `docs/sqlite-schema.md` before changing persistence.
 - Read `CONTEXT.md` for domain terms and `docs/archived/plan-review.md` for accepted historical decisions; check the current ADRs for authoritative decisions.
 - For the Agent Tasks phase, read the approved feature and task READMEs in `trinary-workspace/` before changing code.
-- For SPA UI decisions, also read `docs/archived/spa-agent-ui-phase-plan.md` and `docs/adr/0021-health-timeline-history.md`.
+- For SPA UI decisions, also read `docs/archived/spa-agent-ui-phase-plan.md`, `docs/adr/0021-health-timeline-history.md`, and `docs/adr/0026-ui-writes-tasks-directly.md`.
 - Do not start live SPA data-bound tasks until the fixture-driven prototype has
   explicit human approval in its task handoff.
 
@@ -38,11 +38,11 @@ status, dependencies, or canonical handoff files.
 
 ## Architecture
 
-- The portable core and local read-only SPA UI are separate applications.
+- The portable core and the local SPA UI are separate applications.
 - A deployment folder contains the core executable, sibling SPA UI bundle, and one or more ignored `.inoai-connect*` runtime homes.
 - Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, SQLite archive, Memory, approvals, and lock file.
 - Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), and OpenCode (Phase 5b) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
-- The SPA UI reads only the selected runtime home's SQLite file through its local read-only data boundary. It must never read `.env` or expose credentials.
+- The SPA UI reads the selected runtime home's SQLite file and Task `result.md` files. Its only writes are Task create, edit, run now, pause, resume, and cancel, through short-lived SQLite connections (ADR 0026). Everything else is read-only. It must never read `.env` or expose credentials.
 
 ### Live SQLite maintenance
 
@@ -50,7 +50,7 @@ status, dependencies, or canonical handoff files.
 - The Runtime Home Lock remains held by the runtime. Do not stop or restart it, remove or alter its lock, or edit its SQLite files directly to run these commands.
 - SQLite allows one writer at a time. A maintenance write can wait up to the 5-second busy timeout; if it returns the retryable busy error, retry the command. The CLI does not queue the operation indefinitely.
 - Allowlist changes affect later authorization checks. Memory changes affect later prompt composition only; they do not change an already-composed or in-flight Turn. `memory list` is read-only.
-- This support does not extend to other database-writing commands, UI writes, or IPC. The SPA UI remains read-only. Stopped and fresh homes retain their normal startup behavior.
+- This support does not extend to other database-writing commands or IPC. The SPA UI writes only Tasks (ADR 0026); all other UI data remains read-only. Stopped and fresh homes retain their normal startup behavior.
 
 ## Technical English
 
@@ -122,4 +122,4 @@ This file is repository guidance, not an agent persona. The core copies a defaul
 
 ## V1 boundaries
 
-V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. The SPA UI is local-only and read-only in its initial phase. The Agent Tasks phase is active. Defer remote UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
+V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. The SPA UI is local-only and writes only Tasks (ADR 0026). The Agent Tasks phase is active. Defer remote UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.

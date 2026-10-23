@@ -25,11 +25,13 @@ function fakeClock(initial: number) {
   return { clock, now: () => now, set(value: number) { now = value; }, tick() { for (const timer of timers) timer(); } };
 }
 
-async function until(check: () => Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 200; i++) {
+async function until(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (await check()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
+  if (await check()) return;
   throw new Error("Condition did not become true");
 }
 
@@ -241,5 +243,36 @@ test("a Task waits for an in-flight Memory Review and holds later reviews until 
     await memory.stop();
     assert.equal(overlap, false);
     assert.deepEqual(order.slice(0, 3), ["review-start", "review-stop", "task-start"]);
+  });
+});
+
+test("a due one-time scheduled Task runs once and completes while a legacy one-time Task still waits", async () => {
+  await withStore(async ({ home, store, owner, task }) => {
+    const time = fakeClock(200_000);
+    const legacy = await task("one_time");
+    const session = await store.createSession({ user_id: owner.id, transport: "discord", workspace_id: "guild",
+      parent_conversation_id: "channel", conversation_id: "pending:ui:once", initiating_external_message_id: "start-once",
+      agent_provider: "codex", agent_session_id: "pending:once", project_path: home.directory });
+    const once = await store.createTask({ goal: "Run once", task_type: "one_time", schedule_kind: "once",
+      next_due_at: 150_000, timezone: "UTC", conversation_id: session.conversation_id, session_id: session.id });
+    let turns = 0;
+    const runtime: AgentRuntime = { displayName: "fake", loginHint: "none",
+      createSession: async () => `session-${++turns}`, resumeSession: async () => {}, cancel: async () => {},
+      health: () => ({ state: "ready" }), close: async () => {},
+      async *runTurn(): AsyncIterable<RuntimeEvent> { yield { type: "answer", text: "Done" }; } };
+    const runner = new TaskRunExecutor(store, runtime, home, { sendMessage: async () => "sent" },
+      { reserveTaskRun: async () => () => {} }, "codex", { now: time.now });
+    const scheduler = new TaskScheduler(store, runner, time.clock);
+    runner.onSettled(() => { void scheduler.poke(); });
+    scheduler.start();
+    await until(async () => (await store.getTask(once.id))?.state === "completed");
+    assert.equal((await store.listTaskRuns(once.id)).length, 1);
+    assert.equal((await store.getTask(once.id))?.next_due_at, null);
+    time.set(300_000); time.tick(); await scheduler.poke();
+    assert.equal((await store.listTaskRuns(once.id)).length, 1);
+    assert.equal((await store.listTaskRuns(legacy.task.id)).length, 0);
+    assert.equal((await store.getTask(legacy.task.id))?.state, "active");
+    assert.equal(turns, 1);
+    await scheduler.stop(); await runner.stop();
   });
 });

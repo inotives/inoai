@@ -57,6 +57,16 @@ class FakeDiscord {
 
 async function tick(): Promise<void> { await new Promise<void>((resolve) => setImmediate(resolve)); }
 
+async function until(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  if (check()) return;
+  throw new Error("Condition did not become true");
+}
+
 test("unsupported Codex approvals fail closed without leaking arbitrary literals", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-approval-"));
   try {
@@ -73,8 +83,10 @@ test("unsupported Codex approvals fail closed without leaking arbitrary literals
       bindAgentSession(database, session.id, await runtime.createSession(directory, "instructions"));
       const iterator = runtime.runTurn("thread-1", "question")[Symbol.asyncIterator]();
       const waiting = iterator.next();
-      await tick();
+      await until(() => fake.sent.some((entry) => entry.method === "turn/start"));
       const token = "sk-proj-abcdef";
+      const notices = () => (database.prepare("SELECT COUNT(*) AS count FROM messages WHERE direction = 'agent'").get() as { count: number }).count;
+      let expectedNotices = 0;
       for (const [id, method, detail] of [
         ["rpc-command", "item/commandExecution/requestApproval", { command: `echo ${token}`, cwd: directory }],
         ["rpc-file", "item/fileChange/requestApproval", { grantRoot: `${directory}/${token}` }],
@@ -82,7 +94,8 @@ test("unsupported Codex approvals fail closed without leaking arbitrary literals
         ["rpc-unknown", "item/commandExecution/requestApproval", {}],
       ] as const) {
         fake.reply({ id, method, params: { threadId: "thread-1", turnId: "turn-1", itemId: id, ...detail, reason: token } });
-        await tick();
+        expectedNotices += 1;
+        await until(() => fake.sent.some((entry) => entry.id === id) && notices() === expectedNotices);
         assert.deepEqual(fake.sent.find((entry) => entry.id === id), { id, result: { decision: "decline" } });
       }
       for (const [id, method, params, result] of [
@@ -91,7 +104,8 @@ test("unsupported Codex approvals fail closed without leaking arbitrary literals
         ["rpc-exec", "execCommandApproval", { conversationId: "thread-1", callId: "exec", command: ["echo", token], reason: token }, { decision: { denied: { rejection: "Approval unavailable via Discord" } } }],
       ] as const) {
         fake.reply({ id, method, params });
-        await tick();
+        expectedNotices += 1;
+        await until(() => fake.sent.some((entry) => entry.id === id) && notices() === expectedNotices);
         assert.deepEqual(fake.sent.find((entry) => entry.id === id), { id, result });
       }
       assert.equal(discord.messages.length, 7);
@@ -130,10 +144,10 @@ test("approval requests for a Codex review thread are declined without touching 
         (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count));
       const before = counts();
       const review = runtime.review!("review prompt");
-      while (!fake.sent.some((entry) => entry.method === "turn/start")) await tick();
+      await until(() => fake.sent.some((entry) => entry.method === "turn/start"));
       await tick();
       fake.reply({ id: "rpc-review", method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", itemId: "c", command: "touch pwned.txt" } });
-      await tick();
+      await until(() => fake.sent.some((entry) => entry.id === "rpc-review"));
       assert.deepEqual(fake.sent.find((entry) => entry.id === "rpc-review"), { id: "rpc-review", result: { decision: "decline" } });
       fake.reply({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", text: "{}" } } });
       fake.reply({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });

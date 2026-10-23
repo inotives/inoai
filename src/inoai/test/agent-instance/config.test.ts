@@ -129,3 +129,14 @@ test("rejects an unsupported provider before acquiring the runtime lock", async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("accepts an optional task channel and rejects a malformed one", () => {
+  assert.equal(validateConfiguration(validValues).discordTaskChannelId, undefined);
+  assert.equal("discordTaskChannelId" in validateConfiguration({ ...validValues, DISCORD_TASK_CHANNEL_ID: " " }), false);
+  assert.equal(validateConfiguration({ ...validValues, DISCORD_TASK_CHANNEL_ID: " 123456789012345678 " }).discordTaskChannelId, "123456789012345678");
+  assert.throws(() => validateConfiguration({ ...validValues, DISCORD_TASK_CHANNEL_ID: "tasks" }), (error: unknown) => {
+    assert(error instanceof ConfigurationError);
+    assert.match(error.message, /DISCORD_TASK_CHANNEL_ID must be a Discord channel ID/);
+    return true;
+  });
+});

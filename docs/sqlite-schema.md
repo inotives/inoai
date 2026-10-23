@@ -1,6 +1,6 @@
 # inoai SQLite schema
 
-This is the SQLite schema for the chat-to-agent bridge. Times are Unix seconds. External platform identifiers are `TEXT` to avoid JavaScript integer precision loss. Runtime startup applies new tables and indexes with idempotent `CREATE ... IF NOT EXISTS` statements, so existing runtime homes keep their rows while gaining the Task schema.
+This is the SQLite schema for the chat-to-agent bridge. Times are Unix seconds. External platform identifiers are `TEXT` to avoid JavaScript integer precision loss. Runtime startup applies new tables and indexes with idempotent `CREATE ... IF NOT EXISTS` statements, so existing runtime homes keep their rows while gaining the Task schema. Startup then adds any missing Task schedule columns with `ALTER TABLE tasks ADD COLUMN` in one immediate transaction. Fresh and existing homes get these columns the same way. The UI server never creates or migrates the database (ADR 0026).
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -208,6 +208,16 @@ CREATE INDEX due_tasks
   ON tasks(state, next_due_at, id)
   WHERE deleted_at IS NULL;
 
+-- Task schedule columns. Startup adds each missing column. All are nullable and have no CHECK.
+ALTER TABLE tasks ADD COLUMN title TEXT;          -- at most 100 characters; names the Task thread
+ALTER TABLE tasks ADD COLUMN output_spec TEXT;    -- expected output, at most 2,000 characters
+ALTER TABLE tasks ADD COLUMN timezone TEXT;       -- canonical IANA name, for example 'Asia/Singapore'
+ALTER TABLE tasks ADD COLUMN schedule_kind TEXT;  -- 'once', 'interval', 'daily', 'days', 'weekly', or NULL (legacy)
+ALTER TABLE tasks ADD COLUMN schedule_time TEXT;  -- 'HH:MM' local time for daily, days, and weekly
+ALTER TABLE tasks ADD COLUMN schedule_days TEXT;  -- comma list such as 'mon,tue,wed' for days; one day for weekly
+ALTER TABLE tasks ADD COLUMN ends_at INTEGER;     -- optional stop date
+ALTER TABLE tasks ADD COLUMN max_runs INTEGER;    -- optional run limit
+
 CREATE TABLE task_runs (
   id INTEGER PRIMARY KEY,
   task_id INTEGER NOT NULL REFERENCES tasks(id),
@@ -250,9 +260,66 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - A `memory_reviews` row is a timestamped recap entry. It records the source range since that Agent Session's last completed recap, its concise recap text, and any Memory actions. Only normal chat work runs ahead of it.
 - Daily scheduling uses Events rather than new tables: one `memory_review_cycle` Event per local date, `memory_review_deferred` when chat preempts a review (five per review per day at most), and `memory_review_skipped` for a runtime without review support. Reviews may update or delete only `origin = review` Memory; dropped actions are recorded as non-secret `ignored` outcomes.
 - `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history.
-- `tasks` binds one bounded goal to its Discord Conversation and Agent Session. One-time Tasks have no interval or automatic due time. Recurring intervals use whole hours stored as seconds; the first due time is one interval after creation. The cursor is the newest archived message consumed by the Task.
-- `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them and sets a recurring Task's next due time one interval after recovery.
+- `tasks` binds one bounded goal to its Conversation and Agent Session. `goal` holds the instruction. A legacy Task (`schedule_kind` NULL, created by `/inoai task create`) keeps its earlier behaviour: a one-time Task has no interval or automatic due time, and a recurring interval uses whole hours stored as seconds, with the first due time one interval after creation. A scheduled Task (`schedule_kind` set) follows the rules in [Task schedules](#task-schedules). The cursor is the newest archived message consumed by the Task.
+- `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
 - `approvals` remains in the schema for compatibility, but V1 creates no new pending approvals or Discord approval controls (ADR 0003). Codex approval requests are declined immediately; only a non-secret outcome Event is stored. On restart, any pending row left by an earlier local build becomes `failed`; legacy summaries and linked agent-authored request bodies are redacted, without changing user-authored Messages. Its saved data is never authority to answer or replay a lost runtime request (ADR 0001).
+
+## Task schedules
+
+The shared module `src/inoai/tasks/schedule.ts` validates Task schedules and computes the next run. The agent and the UI server both use it. Every scheduled Task stores `timezone`, and all clock times use that time zone.
+
+| Schedule | `task_type` | `interval_seconds` | Other columns | First run |
+| --- | --- | --- | --- | --- |
+| `once`, now | `one_time` | NULL | none | creation time |
+| `once`, at a time | `one_time` | NULL | none | that time |
+| `interval`, every N hours | `recurring` | N × 3600 (N ≥ 1, whole) | none | one interval after creation |
+| `daily` | `recurring` | 86400 | `schedule_time` | next `HH:MM` |
+| `days` | `recurring` | 86400 | `schedule_time`, `schedule_days` (comma list, `mon`…`sun` order) | next `HH:MM` on a listed day |
+| `weekly` | `recurring` | 86400 | `schedule_time`, `schedule_days` (one day) | next `HH:MM` on that day |
+
+- Clock kinds (`daily`, `days`, `weekly`) are stored as recurring Tasks with 86400 seconds, so the existing CHECK holds. Next-run computation uses `schedule_time`, `schedule_days`, and `timezone`, not the interval.
+- A scheduled one-time Task stores its run time in `next_due_at`. A legacy one-time Task still cannot have a `next_due_at`.
+- `ends_at` and `max_runs` apply only to repeating kinds. `once` rejects them.
+
+Next-run rules for a scheduled Task:
+
+- The scheduler starts any active Task whose `next_due_at` is at or before now, one run at a time, at startup and about once per minute.
+- When a run ends, the next run is computed from the end time and the number of `completed` and `failed` runs so far. This applies to completed, failed, and restart-interrupted runs. A Task paused during its run stays paused.
+- A clock kind runs at the first local `schedule_time` strictly after that time, on an allowed day. After downtime, an overdue Task runs once; missed slots are not replayed.
+- An `interval` Task runs N elapsed hours after the run ends.
+- Daylight saving time: a skipped local time runs at the first valid instant after the gap. For example, 02:30 on New York's spring-forward day runs at 03:00 EDT. A repeated local time runs once, at its earlier instant.
+- Stop conditions: when the run count reaches `max_runs`, or the next run would be after `ends_at`, the Task becomes `completed` and `next_due_at` becomes NULL. A run exactly at `ends_at` is allowed. A `once` Task completes after its run.
+- Failed and interrupted runs count toward `max_runs`, and the Task moves to its next slot. A scheduled one-time Task whose only run fails ends `completed`.
+- Run now sets `next_due_at` to now, and the run counts toward `max_runs`. For a clock kind it is an extra run: the next clock slot still runs, even a few minutes later. For `interval`, the next run is N hours after the Run now run ends. For `once` at a time, Run now replaces the stored run time: that run is the Task's one run, and the Task then completes.
+- Resume recalculates the next run from now. It completes the Task when a stop condition is already reached.
+- A UI edit replaces the spec and recalculates the next run from now with the runs so far. Editing a legacy Task from the UI writes its schedule columns, so it becomes a scheduled Task.
+- A row with invalid schedule columns completes after its next run, recovery, or resume.
+
+Legacy rows (`schedule_kind` NULL) keep the earlier rules: a one-time Task waits for `/inoai task run`, and a recurring Task is next due one interval after a run ends.
+
+### UI-created Tasks
+
+The UI server creates a placeholder `sessions` row and the Task in one immediate transaction, with actor `ui:owner` (ADR 0026). It copies `user_id`, `transport`, `workspace_id`, `agent_provider`, and `project_path` from the most recent session of an owner User. The placeholder values satisfy the unique session indexes:
+
+- `conversation_id` and `initiating_external_message_id`: `pending:ui:<uuid>`; the Task's `conversation_id` has the same value;
+- `parent_conversation_id`: `pending:ui`;
+- `agent_session_id`: `pending:task:<uuid>`; the first run replaces it when it starts the Agent Session.
+
+When `DISCORD_TASK_CHANNEL_ID` is unset, a run of a UI-created Task whose `conversation_id` starts with `pending:ui:` makes no Discord calls. A run that has no thread posts no report. When `DISCORD_TASK_CHANNEL_ID` is set, the first run posts a starter message in that channel and opens a thread named after the title. `bindTaskConversation` then updates, in one immediate transaction, `tasks.conversation_id` and the session's `conversation_id`, `parent_conversation_id` (the task channel), and `initiating_external_message_id` (the starter). Each update is guarded on the old `pending:ui:` value and must change exactly one row; otherwise the transaction rolls back. If thread creation fails, the agent deletes the starter and thread when it can, records a `task_thread_failed` Event with detail `task=<id>; run=<id>`, and continues the run without a thread. The IDs stay pending, and the next run tries again.
+
+### Result file
+
+The agent writes `results/<task-id>/<run-id>/result.md` for every completed and failed run whose run folder was created. This includes runs interrupted by shutdown. These runs get no `result.md`: a run that fails before its folder exists (for example "Task unavailable" or an unsafe `results/` or Task directory), a run failed by startup recovery, a cancelled run, and a run whose `result.md` path is an unsafe link. The file contains:
+
+- a heading with the title, or `Task #<id>`;
+- the Task and Run IDs, the state, and the ISO start and end times;
+- the instruction and the expected output (`Not set.` when empty);
+- the full answer, or for a failed run a safe failure reason only;
+- the list of other files in the run folder.
+
+`results/`, the Task folder, and the run folder must be real directories inside `results/`. The agent opens `result.md` with `O_NOFOLLOW` and writes it only when it is a regular file with one link, so a planted symlink or hard link fails the run instead. `result.md` is not uploaded to Discord and is not listed in the Discord report.
+
+The UI reads `result.md` for the newest 20 runs of each listed Task, in `/api/ui-data` `taskRuns`. It applies the same folder and link checks, refuses files over 64 KB or with NUL bytes, redacts credential-shaped text, and returns at most 4 MB of result text per response. A run in progress shows "Run in progress".
 
 ## Worker rules
 
@@ -260,7 +327,7 @@ The Phase 5 queue durably sets `runtime_started_at` before invoking the Agent Ru
 
 Reset ends the active Session and atomically fails its still-pending and processing inbound Messages plus unsent response chunks. The archived rows and the ended Session's Agent Session ID remain for audit; a later Message may create a new active Session in the same Conversation.
 
-Task Run claims use an immediate transaction. The database index prevents a second processing Task Run in the same Agent Instance. Completion, failure, cancellation, and startup recovery set `completed_at` and update audit fields. Pause prevents new claims but lets an active run finish. Cancellation marks an active run cancelled and ends the Task. Normal Task and Task Run reads exclude soft-deleted rows.
+Task Run claims use an immediate transaction. The database index prevents a second processing Task Run in the same Agent Instance. Completion, failure, cancellation, and startup recovery set `completed_at` and update audit fields. Pause prevents new claims but lets an active run finish. `/inoai task cancel` marks an active run cancelled and ends the Task. A UI cancel ends the Task but lets an active run finish and record its result (ADR 0026). Normal Task and Task Run reads exclude soft-deleted rows.
 
 Use a transaction when claiming work (`pending` to `processing`) and when finalizing a response plus its inbound message. The claim must reject a Message if another Message for its Session is already `processing`. A failed Recap retries up to three times later that day, with a one-hour initial delay and exponential backoff. After that it remains `failed` until the next daily cycle. No `jobs` or lock table is needed until more than one process is intentionally supported.
 

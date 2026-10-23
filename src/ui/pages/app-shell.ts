@@ -1,10 +1,13 @@
 // The ring console: one self-contained page that reads /api/ui-data and draws it with three.js.
-export function renderAppShell(): string {
+// `token` is the per-launch write token. It is hex, so it is safe in an attribute.
+export function renderAppShell(token: string): string {
+  if (!/^[0-9a-f]+$/.test(token)) throw new RangeError("UI token must be hex");
   return `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="inoai-ui-token" content="${token}">
 <title>inoai</title>
 <link rel="stylesheet" href="https://cdn-uicons.flaticon.com/2.6.0/uicons-regular-rounded/css/uicons-regular-rounded.css">
 <style>
@@ -154,7 +157,38 @@ export function renderAppShell(): string {
   .charts.enter .arc{animation:glowin .7s ease-out both}
   @keyframes rise{from{transform:scaleY(0)}}
   @keyframes glowin{from{opacity:0}}
-  @media (max-width:420px){.charts{grid-template-columns:1fr}}
+  .btn{display:inline-flex;align-items:center;gap:6px;min-height:32px;border:1px solid var(--line);background:#ffffff08;color:var(--text);border-radius:999px;padding:6px 12px;font:inherit;font-size:12px;cursor:pointer}
+  .btn:hover{background:#ffffff14}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.primary{background:var(--amber);border-color:var(--amber);color:var(--ink)}
+  .btn.danger{color:var(--coral);border-color:#f47d7966}
+  .actions{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+  .notice{margin:0 0 12px;padding:9px 12px;border:1px solid #f2c66d55;border-radius:12px;background:#f2c66d12;color:var(--amber);font-size:12px}
+  .confirm{margin:0 0 12px;padding:10px 12px;border:1px solid #f47d7966;border-radius:12px;background:#f47d7910;font-size:12px}
+  .confirm .actions{margin:8px 0 0}
+  .done{margin:0 0 10px;color:var(--mint);font-size:12px}
+  .form-error{margin:0 0 10px;color:var(--coral);font-size:12px;overflow-wrap:anywhere}
+  .field{display:flex;flex-direction:column;gap:4px;min-width:0;margin:0 0 12px;padding:0;border:0}
+  .field[hidden]{display:none}
+  .field>label,.field>legend{padding:0;font-size:12px;color:var(--muted)}
+  .field input,.field select,.field textarea{width:100%;min-width:0;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:#ffffff08;color:var(--text);font:inherit}
+  .field input:focus,.field select:focus,.field textarea:focus{outline:2px solid var(--sky);outline-offset:1px}
+  .field textarea{resize:vertical}
+  .field small{font-size:11px;color:var(--muted)}
+  .field [aria-invalid=true]{border-color:var(--coral)}
+  .field option{background:#0e1524;color:var(--text)}
+  .field-error{color:var(--coral);font-size:11px}
+  .form-error:empty,.field-error:empty,.done:empty{display:none}
+  .daypick{display:flex;flex-wrap:wrap;gap:6px}
+  .daypick label{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .daypick input{width:auto;margin:0}
+  .row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 10px}
+  .preview{margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#ffffff05;font-size:12px}
+  .preview ol{margin:4px 0 0;padding-left:18px;font-variant-numeric:tabular-nums}
+  .preview li.muted{list-style:none;margin-left:-18px;color:var(--muted)}
+  .item .sched{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+  .files .pill{flex:none}
+  @media (max-width:420px){.charts{grid-template-columns:1fr}.row2{grid-template-columns:minmax(0,1fr)}}
   @media (max-width:640px){.drawer{top:auto;bottom:0;height:78%;height:78dvh;width:100%;border-left:0;border-top:1px solid var(--line);border-radius:22px 22px 0 0;transform:translateY(102%)}.label.core b{font-size:20px}.label span{letter-spacing:.12em;font-size:8.5px}}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -180,7 +214,7 @@ export function renderAppShell(): string {
 
 <script type="module">
 // ---------- data ----------
-const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], tools: [], health: [], messages: [], memories: [], insights: null };
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], insights: null };
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -265,11 +299,325 @@ const taskKind = (x) => {
   const hours = (x.intervalSeconds ?? 0) / 3600;
   return 'every ' + (hours % 24 === 0 ? hours / 24 + 'd' : hours + 'h');
 };
-const taskItem = (x) => h('button', { class: 'item', type: 'button', 'aria-expanded': 'false', onclick: toggle },
-  h('div', { class: 'meta' }, h('span', { style: 'color:' + (x.taskType === 'recurring' ? 'var(--amber)' : 'var(--sky)') }, taskKind(x)), pill(x.state),
-    h('span', { class: 'when' }, x.state === 'active' && x.nextDueAt ? 'next ' + when(x.nextDueAt) : when(x.createdAt))),
-  h('p', {}, x.goal),
-  h('div', { class: 'more' }, '#' + x.id + ' · ' + x.runs.completed + ' completed · ' + x.runs.failed + ' failed' + (x.runs.lastState ? ' · last run ' + x.runs.lastState + ' ' + when(x.runs.lastAt) : ' · no runs yet')));
+
+// ---------- task client: schedule preview and writes ----------
+// This section uses only Intl, fetch, and the token meta tag, so tests can run it.
+// The preview mirrors nextRunAt in src/inoai/tasks/schedule.ts. The server stays authoritative.
+const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const zoneFormatters = new Map();
+function zoneParts(unix, timeZone) {
+  let format = zoneFormatters.get(timeZone);
+  if (!format) {
+    format = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    zoneFormatters.set(timeZone, format);
+  }
+  const parts = {};
+  for (const { type, value } of format.formatToParts(new Date(unix * 1000))) if (type !== 'literal') parts[type] = Number(value);
+  return parts;
+}
+const zoneWall = (unix, tz) => { const p = zoneParts(unix, tz); return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) / 1000; };
+const zoneOffset = (unix, tz) => zoneWall(unix, tz) - unix;
+// A repeated local time resolves to its first instant; a skipped one to the first instant after the gap.
+function zoneToUnix(year, month, day, hour, minute, tz) {
+  const wall = Date.UTC(year, month - 1, day, hour, minute) / 1000;
+  const guesses = [wall - zoneOffset(wall - 86400, tz), wall - zoneOffset(wall + 86400, tz)];
+  const valid = guesses.filter((at) => zoneWall(at, tz) === wall).sort((a, b) => a - b);
+  if (valid.length) return valid[0];
+  let low = Math.min(...guesses), high = Math.max(...guesses);
+  const target = zoneOffset(high, tz);
+  while (high - low > 60) { const middle = low + Math.floor((high - low) / 120) * 60; if (zoneOffset(middle, tz) === target) high = middle; else low = middle; }
+  return high;
+}
+function nextClockRun(schedule, tz, after) {
+  const [hour, minute] = schedule.time.split(':').map(Number);
+  const allowed = schedule.kind === 'days' ? schedule.days : schedule.kind === 'weekly' ? [schedule.day] : null;
+  const start = zoneParts(after, tz);
+  for (let offset = 0; offset <= 8; offset += 1) {
+    const date = new Date(Date.UTC(start.year, start.month - 1, start.day + offset));
+    if (allowed && !allowed.includes(WEEKDAYS[(date.getUTCDay() + 6) % 7])) continue;
+    const at = zoneToUnix(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), hour, minute, tz);
+    if (at > after) return at;
+  }
+  return null;
+}
+function nextTaskRun(spec, after, runsSoFar) {
+  const s = spec.schedule;
+  if (s.kind === 'once' && runsSoFar >= 1) return null;
+  if (spec.maxRuns != null && runsSoFar >= spec.maxRuns) return null;
+  const next = s.kind === 'once' ? s.at ?? after : s.kind === 'interval' ? after + s.hours * 3600 : nextClockRun(s, spec.timezone, after);
+  if (next === null || (spec.endsAt != null && next > spec.endsAt)) return null;
+  return next;
+}
+// The next runs in order. Each run is computed after the previous one, as the scheduler does.
+function previewRuns(spec, now, runsSoFar = 0, count = 3) {
+  const runs = [];
+  let after = now, done = runsSoFar;
+  while (runs.length < count) { const next = nextTaskRun(spec, after, done); if (next === null) break; runs.push(next); after = next; done += 1; }
+  return runs;
+}
+const pad2 = (n) => String(n).padStart(2, '0');
+// datetime-local values are wall-clock times in the task's time zone.
+function localInputToUnix(value, tz) {
+  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})/.exec(value ?? '');
+  return match ? zoneToUnix(Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5]), tz) : null;
+}
+function unixToLocalInput(unix, tz) {
+  const p = zoneParts(unix, tz);
+  return p.year + '-' + pad2(p.month) + '-' + pad2(p.day) + 'T' + pad2(p.hour) + ':' + pad2(p.minute);
+}
+const TOKEN_HEADER = 'x-inoai-token';
+const uiToken = () => document.querySelector('meta[name="inoai-ui-token"]')?.getAttribute('content') ?? '';
+// Sends one task write as JSON with the per-launch token. Without a token, nothing is sent.
+async function taskWrite(method, path, body = {}) {
+  const token = uiToken();
+  if (!/^[0-9a-f]+$/.test(token)) return { ok: false, status: 0, error: 'This page has no write token. Reload the page.', fields: {} };
+  let response;
+  try {
+    response = await fetch(path, { method, cache: 'no-store', headers: { 'content-type': 'application/json', [TOKEN_HEADER]: token }, body: JSON.stringify(body) });
+  } catch { return { ok: false, status: 0, error: 'The UI server is not reachable. Try again.', fields: {} }; }
+  let data = null;
+  try { data = await response.json(); } catch { /* not JSON */ }
+  if (response.ok && data?.task) return { ok: true, status: response.status, task: data.task };
+  return { ok: false, status: response.status, error: data?.error ?? 'Request failed (' + response.status + ').', fields: data?.fields ?? {}, retryable: data?.retryable === true };
+}
+// Text fields that the read model redacted. Saving one unchanged would store the placeholder.
+const REDACTED_SOURCE = { title: 'title', instruction: 'goal', expectedOutput: 'outputSpec' };
+const REDACTED_ERROR = 'Re-enter this text before saving. It still shows hidden values.';
+function unchangedRedacted(task, spec) {
+  const errors = {};
+  for (const key of task?.redactedFields ?? []) if (REDACTED_SOURCE[key] && (spec[key] ?? '') === (task[REDACTED_SOURCE[key]] ?? '')) errors[key] = REDACTED_ERROR;
+  return errors;
+}
+// Creates a task, or edits the given task. An edit that still holds redacted text is refused before any request.
+async function saveTask(task, spec) {
+  const errors = unchangedRedacted(task, spec);
+  if (Object.keys(errors).length) return { ok: false, status: 0, error: 'Fix the fields marked below.', fields: errors };
+  return task ? taskWrite('PATCH', '/api/tasks/' + task.id, spec) : taskWrite('POST', '/api/tasks', spec);
+}
+// ---------- end task client ----------
+
+// ---------- tasks: list, detail, and form ----------
+// taskView: { mode: 'list' } | { mode: 'detail', id, run, confirm, busy, error, done } | { mode: 'form', id }
+let taskView = { mode: 'list' };
+const READ_ONLY_STATES = ['completed', 'cancelled'];
+const KIND_OPTIONS = [['now', 'Once, now'], ['at', 'Once, at a time'], ['interval', 'Every N hours'], ['daily', 'Daily'], ['days', 'Selected days'], ['weekly', 'Weekly']];
+const DAY_NAMES = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+const ACTION_DONE = { run: 'Run requested. It starts when the agent picks it up.', pause: 'Task paused.', resume: 'Task resumed.', cancel: 'Task cancelled. A run in progress finishes.' };
+const isProcessing = (x) => x.runs.lastState === 'processing';
+const taskName = (x) => x.title || x.goal;
+const scheduleText = (x) => x.scheduleLabel ?? taskKind(x);
+const stamp = (iso) => iso ? new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '—';
+const zoneStamp = (unix, tz) => new Date(unix * 1000).toLocaleString(undefined, { timeZone: tz, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } };
+// Canonical IANA names from the browser, plus the selected zone and UTC.
+function timeZoneNames(selected) {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch { /* older browser */ }
+  return [...new Set([...zones, selected, 'UTC'].filter(Boolean))].sort();
+}
+const stoppedNotice = (v) => v.data.profile.status === 'stopped' ? h('div', { class: 'notice', role: 'status' }, 'Changes run when the agent is running.') : null;
+const actionButton = (label, onclick, kind = '', ico = null, busy = false) => h('button', { type: 'button', class: 'btn ' + kind, onclick, ...(busy ? { disabled: '' } : {}) }, ico ? icon(ico) : null, label);
+function redrawTasks(keepScroll = true) {
+  if (openSection !== 'tasks') return;
+  const body = document.getElementById('d-body'), scroll = body.scrollTop;
+  openDrawer('tasks', true);
+  if (keepScroll) body.scrollTop = scroll;
+}
+const showTasks = (next) => { taskView = next; redrawTasks(false); };
+async function reloadView() {
+  view = derive(await loadData());
+  renderStatus();
+  listeners.forEach((fn) => fn(view));
+}
+async function runTaskAction(id, action) {
+  const run = taskView.run;
+  taskView = { mode: 'detail', id, run, busy: true };
+  redrawTasks();
+  const result = await taskWrite('POST', '/api/tasks/' + id + '/' + action);
+  if (result.ok) await reloadView();
+  if (taskView.mode === 'detail' && taskView.id === id) taskView = { mode: 'detail', id, run, error: result.ok ? null : result.error, done: result.ok ? ACTION_DONE[action] : null };
+  redrawTasks();
+}
+const taskRow = (x) => h('button', { class: 'item', type: 'button', 'data-task': String(x.id), onclick: () => showTasks({ mode: 'detail', id: x.id }) },
+  h('div', { class: 'meta' }, pill(x.state), isProcessing(x) ? pill('processing', 'running') : null,
+    h('span', { class: 'when' }, x.state === 'active' && x.nextDueAt ? 'next ' + stamp(x.nextDueAt) : stamp(x.createdAt))),
+  h('p', {}, taskName(x)),
+  h('div', { class: 'sched' }, scheduleText(x)));
+function taskList(v) {
+  return { kicker: v.activeTasks.length + ' active', title: v.data.tasks.length + ' tasks', body: [
+    stoppedNotice(v),
+    h('div', { class: 'actions' }, actionButton('New task', () => showTasks({ mode: 'form' }), 'primary', 'plus')),
+    searchable({ state: searchState.tasks, items: v.data.tasks, noun: 'tasks', options: ['all', 'active', 'paused', 'completed', 'cancelled'], key: (x) => x.state,
+      text: (x) => [x.title ?? '', x.goal, '#' + x.id, scheduleText(x)].join(' '), render: taskRow, placeholder: 'Search title, goal or #id' })] };
+}
+function taskDetail(v) {
+  const x = v.data.tasks.find((t) => t.id === taskView.id);
+  if (!x) { taskView = { mode: 'list' }; return taskList(v); }
+  const runs = (v.data.taskRuns ?? []).filter((r) => r.taskId === x.id);
+  const selected = runs.find((r) => r.id === taskView.run) ?? runs[0];
+  const busy = taskView.busy === true, processing = isProcessing(x);
+  const controls = READ_ONLY_STATES.includes(x.state)
+    ? h('div', { class: 'note', style: 'margin:0 0 12px' }, 'This task is ' + x.state + ' and read-only.')
+    : taskView.confirm
+      ? h('div', { class: 'confirm', role: 'group', 'aria-label': 'Confirm cancel' }, h('span', {}, 'Are you sure? Cancel stops future runs. A run in progress finishes. This cannot be undone.'),
+        h('div', { class: 'actions' },
+          actionButton('Yes, cancel task', () => runTaskAction(x.id, 'cancel'), 'danger', 'cross-circle', busy),
+          actionButton('Keep task', () => { taskView = { ...taskView, confirm: false }; redrawTasks(); }, '', null, busy)))
+      : h('div', { class: 'actions' },
+        processing ? null : actionButton('Edit', () => showTasks({ mode: 'form', id: x.id }), '', 'edit', busy),
+        x.state === 'active' ? actionButton('Run now', () => runTaskAction(x.id, 'run'), '', 'play', busy) : null,
+        x.state === 'active' ? actionButton('Pause', () => runTaskAction(x.id, 'pause'), '', 'pause', busy) : null,
+        x.state === 'paused' ? actionButton('Resume', () => runTaskAction(x.id, 'resume'), '', 'play', busy) : null,
+        actionButton('Cancel task', () => { taskView = { ...taskView, confirm: true, error: null, done: null }; redrawTasks(); }, 'danger', 'cross-circle', busy));
+  const result = !selected ? null
+    : selected.result !== null ? (selected.result.trim() ? markdown(selected.result, true) : empty('result.md is empty'))
+      : empty(selected.resultNote ?? 'No result.md');
+  return { kicker: 'task #' + x.id + ' · ' + x.state, title: taskName(x), body: [
+    h('button', { class: 'back', type: 'button', onclick: () => showTasks({ mode: 'list' }) }, icon('angle-small-left'), 'all tasks'),
+    stoppedNotice(v),
+    h('div', { class: 'done', role: 'status' }, taskView.done ?? ''),
+    h('div', { class: 'form-error', role: 'alert' }, taskView.error ?? ''),
+    controls,
+    processing && !READ_ONLY_STATES.includes(x.state) ? h('div', { class: 'note', style: 'margin:0 0 12px' }, 'A run is in progress. Edit returns when it finishes.') : null,
+    h('dl', { class: 'kv' },
+      h('dt', {}, 'Schedule'), h('dd', {}, scheduleText(x)),
+      h('dt', {}, 'Next run'), h('dd', {}, x.state === 'active' && x.nextDueAt ? stamp(x.nextDueAt) : '—'),
+      h('dt', {}, 'Time zone'), h('dd', {}, x.timezone ?? '—'),
+      h('dt', {}, 'Runs'), h('dd', {}, x.runs.completed + ' completed · ' + x.runs.failed + ' failed'),
+      h('dt', {}, 'Instruction'), h('dd', { style: 'white-space:pre-wrap' }, x.goal),
+      h('dt', {}, 'Expected output'), h('dd', { style: 'white-space:pre-wrap' }, x.outputSpec ?? '—'),
+      h('dt', {}, 'Created'), h('dd', {}, stamp(x.createdAt))),
+    h('div', { class: 'list-head' }, 'Run history · ' + (runs.length >= 20 ? 'newest 20' : runs.length)),
+    runs.length ? h('div', { class: 'files', role: 'list', 'aria-label': 'Run history' }, runs.map((r) => h('button', { type: 'button', 'aria-pressed': String(r === selected), onclick: () => { taskView = { ...taskView, run: r.id }; redrawTasks(); } },
+      pill(r.state), h('span', {}, 'Run #' + r.id + ' · ' + stamp(r.startedAt)), h('small', {}, r.completedAt ? duration(Math.max(0, (Date.parse(r.completedAt) - Date.parse(r.startedAt)) / 1000)) : '')))) : empty('No runs yet'),
+    selected ? h('div', { class: 'list-head', style: 'margin-top:12px' }, 'Run #' + selected.id + ' · result.md') : null,
+    selected ? h('div', { class: 'viewer' }, result) : null,
+    selected?.failureDetail ? h('div', { class: 'note' }, 'Failure: ' + selected.failureDetail) : null] };
+}
+// Form values from a task. A new task starts with the browser's time zone.
+function taskDraft(x) {
+  const draft = { title: '', instruction: '', expectedOutput: '', kind: 'now', at: '', hours: '1', time: '09:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'], day: 'mon', timezone: browserZone(), until: '', maxRuns: '' };
+  if (!x) return draft;
+  const tz = x.timezone || 'UTC';
+  const due = x.nextDueAt ? Date.parse(x.nextDueAt) / 1000 : null;
+  const once = x.scheduleKind ? x.scheduleKind === 'once' : x.taskType !== 'recurring';
+  const kind = once ? (due !== null && due * 1000 > Date.now() ? 'at' : 'now') : x.scheduleKind ?? 'interval';
+  const days = (x.scheduleDays ?? '').split(',').filter((d) => WEEKDAYS.includes(d));
+  return { ...draft, title: x.title ?? '', instruction: x.goal, expectedOutput: x.outputSpec ?? '', kind, at: kind === 'at' ? unixToLocalInput(due, tz) : '',
+    hours: String(x.intervalSeconds ? Math.max(1, Math.round(x.intervalSeconds / 3600)) : 1), time: x.scheduleTime ?? draft.time,
+    days: days.length ? days : draft.days, day: days[0] ?? draft.day, timezone: tz,
+    until: x.endsAt ? unixToLocalInput(Date.parse(x.endsAt) / 1000, tz) : '', maxRuns: x.maxRuns == null ? '' : String(x.maxRuns) };
+}
+function taskForm(v) {
+  const x = taskView.id === undefined ? null : v.data.tasks.find((t) => t.id === taskView.id);
+  if (taskView.id !== undefined && (!x || READ_ONLY_STATES.includes(x.state) || isProcessing(x))) { taskView = x ? { mode: 'detail', id: x.id } : { mode: 'list' }; return SECTIONS.tasks(v); }
+  const d = taskDraft(x);
+  const errors = {}, controls = {};
+  const errorSlot = (key) => (errors[key] = h('div', { class: 'field-error', id: 'tf-error-' + key.replace('.', '-') }));
+  const field = (id, label, control, keys, hint = null) => {
+    controls[id] = control; control.id = 'tf-' + id;
+    return h('div', { class: 'field', 'data-field': id }, h('label', { for: 'tf-' + id }, label), control, hint ? h('small', {}, hint) : null, keys.map(errorSlot));
+  };
+  const option = (value, label, selected) => h('option', { value, ...(selected ? { selected: '' } : {}) }, label);
+  const hidden = (key, hint = null) => (x?.redactedFields ?? []).includes(key) ? 'Shown with hidden values. Re-enter this text before saving.' : hint;
+  const titleField = field('title', 'Title', h('input', { type: 'text', maxlength: '100', value: d.title, autocomplete: 'off' }), ['title'], hidden('title'));
+  const instructionField = field('instruction', 'Instruction (required)', h('textarea', { rows: '4', maxlength: '4000', required: '' }, d.instruction), ['instruction'], hidden('instruction'));
+  const outputField = field('output', 'Expected output', h('textarea', { rows: '2', maxlength: '2000' }, d.expectedOutput), ['expectedOutput'], hidden('expectedOutput', 'Optional. For example: a Markdown list of failing jobs.'));
+  const kindField = field('kind', 'Schedule', h('select', {}, KIND_OPTIONS.map(([value, label]) => option(value, label, value === d.kind))), ['schedule', 'schedule.kind']);
+  const atField = field('at', 'Run at', h('input', { type: 'datetime-local', value: d.at }), ['schedule.at']);
+  const hoursField = field('hours', 'Every (hours)', h('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', value: d.hours }), ['schedule.hours'], 'At least 1 hour.');
+  const timeField = field('time', 'At (24-hour time)', h('input', { type: 'time', value: d.time }), ['schedule.time']);
+  const dayField = field('day', 'Day', h('select', {}, WEEKDAYS.map((day) => option(day, DAY_NAMES[day], day === d.day))), ['schedule.day']);
+  const dayBoxes = {};
+  const daysField = h('fieldset', { class: 'field', 'data-field': 'days' }, h('legend', {}, 'Days'),
+    h('div', { class: 'daypick' }, WEEKDAYS.map((day) => h('label', {}, dayBoxes[day] = h('input', { type: 'checkbox', value: day, ...(d.days.includes(day) ? { checked: '' } : {}) }), DAY_NAMES[day]))), errorSlot('schedule.days'));
+  const zoneField = field('zone', 'Time zone', h('select', {}, timeZoneNames(d.timezone).map((zone) => option(zone, zone, zone === d.timezone))), ['timezone'],
+    x ? 'Times on this form use this time zone.' : 'Filled from this browser. Times on this form use this time zone.');
+  const untilField = field('until', 'Until (optional)', h('input', { type: 'datetime-local', value: d.until }), ['endsAt'], 'No runs after this time.');
+  const maxField = field('max', 'Run limit (optional)', h('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', value: d.maxRuns }), ['maxRuns'], 'Stops after this many runs.');
+  const general = h('div', { class: 'form-error', role: 'alert' });
+  const previewHead = h('div', { class: 'list-head', style: 'margin:0' }), previewList = h('ol');
+  const saveLabel = x ? 'Save changes' : 'Create task';
+  const save = h('button', { type: 'submit', class: 'btn primary' }, icon(x ? 'disk' : 'plus'), saveLabel);
+  const runsSoFar = x ? x.runs.completed + x.runs.failed : 0;
+  const read = () => {
+    const kind = controls.kind.value, tz = controls.zone.value, local = {};
+    let schedule;
+    if (kind === 'now') schedule = { kind: 'once' };
+    else if (kind === 'at') { const at = localInputToUnix(controls.at.value, tz); if (at === null) local['schedule.at'] = 'Choose a run time.'; schedule = { kind: 'once', at }; }
+    else if (kind === 'interval') schedule = { kind, hours: controls.hours.value === '' ? null : Number(controls.hours.value) };
+    else if (kind === 'daily') schedule = { kind, time: controls.time.value };
+    else if (kind === 'days') schedule = { kind, time: controls.time.value, days: WEEKDAYS.filter((day) => dayBoxes[day].checked) };
+    else schedule = { kind: 'weekly', time: controls.time.value, day: controls.day.value };
+    const once = kind === 'now' || kind === 'at';
+    let endsAt = null, maxRuns = null;
+    if (!once && controls.until.value) { endsAt = localInputToUnix(controls.until.value, tz); if (endsAt === null) local.endsAt = 'Choose a valid stop time.'; }
+    if (!once && controls.max.value !== '') maxRuns = Number(controls.max.value);
+    const spec = { title: controls.title.value, instruction: controls.instruction.value, expectedOutput: controls.output.value.trim() ? controls.output.value : null, schedule, timezone: tz, endsAt, maxRuns };
+    return { spec, local };
+  };
+  const previewable = (spec) => {
+    const s = spec.schedule;
+    if (s.kind === 'once') return s.at !== null;
+    if (s.kind === 'interval') return Number.isInteger(s.hours) && s.hours >= 1;
+    if (!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(s.time)) return false;
+    if (s.kind === 'days' && !s.days.length) return false;
+    return spec.maxRuns === null || (Number.isInteger(spec.maxRuns) && spec.maxRuns >= 1);
+  };
+  const update = () => {
+    const kind = controls.kind.value, once = kind === 'now' || kind === 'at';
+    atField.hidden = kind !== 'at'; hoursField.hidden = kind !== 'interval'; timeField.hidden = !['daily', 'days', 'weekly'].includes(kind);
+    daysField.hidden = kind !== 'days'; dayField.hidden = kind !== 'weekly'; untilField.hidden = once; maxField.hidden = once;
+    const { spec, local } = read();
+    previewHead.textContent = 'Next runs · ' + spec.timezone;
+    let runs = [];
+    const ok = !Object.keys(local).length && previewable(spec);
+    if (ok) { try { runs = previewRuns(spec, Math.floor(Date.now() / 1000), runsSoFar, 3); } catch { runs = []; } }
+    previewList.replaceChildren(...(runs.length ? runs.map((at) => h('li', {}, zoneStamp(at, spec.timezone)))
+      : [h('li', { class: 'muted' }, ok ? 'No run before the stop condition.' : 'Complete the schedule to see its next runs.')]));
+  };
+  const clearErrors = () => {
+    general.textContent = '';
+    for (const slot of Object.values(errors)) slot.textContent = '';
+    for (const control of [...Object.values(controls), ...Object.values(dayBoxes)]) control.removeAttribute('aria-invalid');
+  };
+  const FIELD_OF = { title: 'title', instruction: 'instruction', expectedOutput: 'output', schedule: 'kind', 'schedule.kind': 'kind', 'schedule.at': 'at', 'schedule.hours': 'hours',
+    'schedule.time': 'time', 'schedule.day': 'day', timezone: 'zone', endsAt: 'until', maxRuns: 'max' };
+  const showErrors = (fields) => {
+    const extra = [];
+    for (const [key, message] of Object.entries(fields ?? {})) {
+      if (errors[key]) errors[key].textContent = message; else extra.push(message);
+      controls[FIELD_OF[key]]?.setAttribute('aria-invalid', 'true');
+    }
+    return extra;
+  };
+  const submit = async (event) => {
+    event.preventDefault();
+    clearErrors();
+    const { spec, local } = read();
+    if (Object.keys(local).length) { showErrors(local); general.textContent = 'Fix the fields marked below.'; return; }
+    save.disabled = true; save.lastChild.textContent = 'Saving…';
+    const result = await saveTask(x, spec);
+    if (!result.ok) {
+      save.disabled = false; save.lastChild.textContent = saveLabel;
+      const extra = showErrors(result.fields);
+      general.textContent = [result.status === 400 && Object.keys(result.fields ?? {}).length ? 'Fix the fields marked below.' : result.error, ...extra].join(' ');
+      general.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
+    await reloadView();
+    showTasks({ mode: 'detail', id: result.task.id, done: x ? 'Task saved.' : 'Task created.' });
+  };
+  const form = h('form', { novalidate: '', 'aria-label': x ? 'Edit task' : 'New task', onsubmit: submit, oninput: update, onchange: update },
+    general, titleField, instructionField, outputField, kindField, atField, hoursField, timeField, daysField, dayField,
+    h('div', { class: 'row2' }, untilField, maxField), zoneField,
+    h('div', { class: 'preview', 'aria-live': 'polite' }, previewHead, previewList, h('div', { class: 'note', style: 'margin-top:6px' }, 'Preview only. The server checks the schedule when you save.')),
+    h('div', { class: 'actions' }, save, actionButton('Discard', () => showTasks(x ? { mode: 'detail', id: x.id } : { mode: 'list' }))));
+  update();
+  return { kicker: x ? 'edit task #' + x.id : 'new task', title: x ? taskName(x) : 'New task', body: [
+    h('button', { class: 'back', type: 'button', onclick: () => showTasks(x ? { mode: 'detail', id: x.id } : { mode: 'list' }) }, icon('angle-small-left'), x ? 'back to task' : 'all tasks'),
+    stoppedNotice(v), form] };
+}
 
 // Searchable list: text search plus one filter row. Each section keeps its own
 // query and filter, so they survive refreshes and section switches.
@@ -477,9 +825,7 @@ const SECTIONS = {
   },
   failures: (v) => ({ kicker: 'failed replies', title: v.m.failedReplies24h + ' today · ' + v.m.failedReplies30d + ' in 30d', body: [
     (() => { const rows = v.data.messages.filter((x) => x.direction === 'agent' && x.state === 'failed').map(messageItem); return rows.length ? h('div', { class: 'list' }, rows) : empty('No failed replies'); })()] }),
-  tasks: (v) => ({ kicker: v.activeTasks.length + ' active', title: v.data.tasks.length + ' tasks', body: [searchable({
-    state: searchState.tasks, items: v.data.tasks, noun: 'tasks', options: ['all', 'active', 'paused', 'completed', 'cancelled'], key: (x) => x.state,
-    text: (x) => [x.goal, '#' + x.id, taskKind(x)].join(' '), render: taskItem, placeholder: 'Search goal or #id' })] }),
+  tasks: (v) => taskView.mode === 'form' ? taskForm(v) : taskView.mode === 'detail' ? taskDetail(v) : taskList(v),
   conversations: (v) => ({ kicker: 'messages', title: 'Conversations', body: [searchable({
     state: searchState.conversations, items: v.data.messages, noun: 'messages', options: ['all', 'completed', 'failed', 'processing'], key: (x) => x.state,
     text: (x) => [x.body, '#' + x.id, x.workspaceId, x.direction === 'agent' ? 'agent' : 'owner'].join(' '), render: messageItem, placeholder: 'Search text, #id or workspace' })] }),
@@ -640,7 +986,7 @@ const drawer = document.getElementById('drawer'), rail = document.getElementById
 let openSection = null, drawerShiftPx = 0;
 Object.keys(SECTIONS).forEach((key) => rail.append(h('button', { type: 'button', 'aria-label': key, title: key, style: 'color:' + CSS[key], onclick: () => openDrawer(key) }, icon(key))));
 function openDrawer(key, keepSkill = false) {
-  if (!keepSkill) skillView = null;
+  if (!keepSkill) { skillView = null; taskView = { mode: 'list' }; }
   // Charts animate on a fresh open, not on the 60-second refresh.
   chartsEnter = !keepSkill;
   const s = SECTIONS[key](view);
@@ -678,8 +1024,8 @@ setInterval(async () => {
   view = derive(await loadData());
   renderStatus();
   listeners.forEach((fn) => fn(view));
-  // Re-render an open drawer, but never while someone is typing in it.
-  if (openSection && !drawer.contains(document.activeElement?.matches('input') ? document.activeElement : null)) { const scroll = document.getElementById('d-body').scrollTop; openDrawer(openSection, true); document.getElementById('d-body').scrollTop = scroll; }
+  // Re-render an open drawer, but never while someone is typing in it or has the task form open.
+  if (openSection && !(openSection === 'tasks' && taskView.mode === 'form') && !drawer.contains(document.activeElement?.matches('input') ? document.activeElement : null)) { const scroll = document.getElementById('d-body').scrollTop; openDrawer(openSection, true); document.getElementById('d-body').scrollTop = scroll; }
 }, 60_000);
 
 // ---------- three.js ring scene ----------

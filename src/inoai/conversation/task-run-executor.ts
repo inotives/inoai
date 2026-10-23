@@ -1,8 +1,10 @@
-import { mkdir, readdir, lstat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readdir, realpath, lstat } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import type { AgentRuntime } from "../agent-runtime/ports.js";
 import type { RuntimeHome } from "../agent-instance/runtime-home.js";
 import type { TaskOperationsStore } from "../connectors/persistence/sqlite/operational-store.js";
+import type { TaskRecord } from "../connectors/persistence/sqlite/legacy-database.js";
 import type { OperationalStore } from "../persistence/operational-store.js";
 import type { ChatTransport } from "../transport/ports.js";
 import { resumeAgentSession, startAgentSession } from "./agent-session.js";
@@ -10,16 +12,23 @@ import { addUsage, recordUsage, type Usage } from "./runtime-turn.js";
 import type { ConversationWorker } from "./conversation-worker.js";
 
 type Store = OperationalStore & TaskOperationsStore;
-type ActiveRun = { taskId: number; runId: number; sessionId?: string; cancelled: boolean; done: Promise<void> };
+type RunFolder = { task: TaskRecord; output: string; relativeOutput: string };
+type ActiveRun = { taskId: number; runId: number; startedAt: number; sessionId?: string; cancelled: boolean; done: Promise<void>; folder?: RunFolder };
+type RunTransport = Pick<ChatTransport, "sendMessage" | "uploadFile">
+  & Partial<Pick<ChatTransport, "createConversation" | "deleteConversation" | "deleteMessage">>;
+
+/** Error whose message is safe to store in result.md. Other errors are reported with a generic reason. */
+class TaskRunError extends Error {}
+const genericFailure = "Task Run failed; check local logs";
 
 export class TaskRunExecutor {
   private active?: ActiveRun;
   private settled?: () => void;
 
   constructor(private readonly store: Store, private readonly runtime: AgentRuntime,
-    private readonly home: RuntimeHome, private readonly transport: Pick<ChatTransport, "sendMessage" | "uploadFile">,
+    private readonly home: RuntimeHome, private readonly transport: RunTransport,
     private readonly worker: Pick<ConversationWorker, "reserveTaskRun">, private readonly agentProvider: string,
-    private readonly options: { now?: () => number; pauseReview?: () => Promise<() => void> } = {}) {}
+    private readonly options: { now?: () => number; pauseReview?: () => Promise<() => void>; taskChannelId?: string } = {}) {}
 
   onSettled(listener: () => void): void { this.settled = listener; }
   private now(): number { return this.options.now?.() ?? Math.floor(Date.now() / 1000); }
@@ -36,7 +45,7 @@ export class TaskRunExecutor {
       if (!task || task.state !== "active") return "unavailable";
       const run = await this.store.claimTaskRun(taskId, this.now(), "task-runtime");
       if (!run) return "busy";
-      const active: ActiveRun = { taskId, runId: run.id, cancelled: false, done: Promise.resolve() };
+      const active: ActiveRun = { taskId, runId: run.id, startedAt: run.started_at, cancelled: false, done: Promise.resolve() };
       this.active = active;
       handedOff = true;
       active.done = this.execute(task.id, run.id, active).finally(() => {
@@ -68,7 +77,10 @@ export class TaskRunExecutor {
     active.cancelled = true;
     if (active.sessionId) await this.runtime.cancel(active.sessionId).catch(() => undefined);
     await active.done;
-    await this.store.failTaskRun(active.runId, "Interrupted by shutdown", this.now(), "task-runtime");
+    const endedAt = this.now();
+    if (await this.store.failTaskRun(active.runId, "Interrupted by shutdown", endedAt, "task-runtime") && active.folder) {
+      await this.writeResult(active, active.folder, { state: "failed", endedAt, failure: "Interrupted by shutdown" }).catch(() => undefined);
+    }
   }
 
   private async execute(taskId: number, runId: number, active: ActiveRun): Promise<void> {
@@ -77,8 +89,9 @@ export class TaskRunExecutor {
     let conversationId: string | undefined;
     try {
       const task = await this.store.getTask(taskId);
-      if (!task) throw new Error("Task unavailable");
-      conversationId = task.conversation_id;
+      if (!task) throw new TaskRunError("Task unavailable");
+      // A UI-created Task keeps a `pending:ui:` placeholder until the agent opens its thread.
+      conversationId = task.conversation_id.startsWith("pending:ui:") ? undefined : task.conversation_id;
       const messages = (await this.store.listMessages(task.session_id)).filter((message) =>
         message.id > task.message_cursor && message.direction === "user" && message.state === "completed");
       const cursor = messages.at(-1)?.id ?? task.message_cursor;
@@ -86,24 +99,29 @@ export class TaskRunExecutor {
       const taskDirectory = dirname(output);
       await mkdir(results, { recursive: true });
       const resultsInfo = await lstat(results);
-      if (!resultsInfo.isDirectory() || resultsInfo.isSymbolicLink()) throw new Error("Unsafe results directory");
+      if (!resultsInfo.isDirectory() || resultsInfo.isSymbolicLink()) throw new TaskRunError("Unsafe results directory");
       await mkdir(taskDirectory, { recursive: true });
       const taskInfo = await lstat(taskDirectory);
-      if (!taskInfo.isDirectory() || taskInfo.isSymbolicLink()) throw new Error("Unsafe Task directory");
+      if (!taskInfo.isDirectory() || taskInfo.isSymbolicLink()) throw new TaskRunError("Unsafe Task directory");
       await mkdir(output);
+      const folder: RunFolder = { task, output, relativeOutput };
+      active.folder = folder;
       if (active.cancelled) return;
       const session = await this.store.getSession(task.session_id);
       if (!session || session.state !== "active" || session.agent_provider !== this.agentProvider) {
-        throw new Error("Task Agent Session unavailable");
+        throw new TaskRunError("Task Agent Session unavailable");
       }
+      conversationId ??= await this.openTaskThread(task, runId);
       active.sessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.store, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.store, this.runtime, session.id, this.home);
       if (active.cancelled) { await this.runtime.cancel(active.sessionId); return; }
       const prompt = [
+        ...(task.title ? [`Task title: ${task.title}`] : []),
         `Task goal: ${task.goal}`,
+        ...(task.output_spec ? [`Expected output: ${task.output_spec}`] : []),
         messages.length ? `New Task thread messages:\n${messages.map((message) => message.body).join("\n\n")}` : "No new Task thread messages.",
-        `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Reply with a concise completion summary.`,
+        `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Do not create result.md; inoai writes it with your reply. Reply with a concise completion summary.`,
       ].join("\n\n");
       let answer: string | undefined;
       const usage: Usage = {};
@@ -120,25 +138,109 @@ export class TaskRunExecutor {
         await recordUsage(this.store, session.id, null, usage);
       }
       if (active.cancelled) return;
-      if (answer === undefined) throw new Error("Task Run returned no answer");
-      const paths = await artifactPaths(output, relativeOutput);
-      await this.store.completeTaskRun(runId, cursor, paths, this.now(), "task-runtime");
+      if (answer === undefined) throw new TaskRunError("Task Run returned no answer");
+      const endedAt = this.now();
+      const files = await this.writeResult(active, folder, { state: "completed", endedAt, answer });
+      const paths = [...files, `${relativeOutput}/result.md`].sort();
+      await this.store.completeTaskRun(runId, cursor, paths, endedAt, "task-runtime");
+      if (!conversationId) return;
       const summary = answer.trim().slice(0, 1200) || "Task Run completed.";
-      const report = `Task #${taskId} run #${runId} completed.\n${summary}\n${paths.length ? `Files: ${paths.join(", ")}` : "No files produced."}`;
-      await this.transport.sendMessage(task.conversation_id, report.slice(0, 1900)).catch(() => undefined);
-      for (const path of paths) {
+      const report = `Task #${taskId} run #${runId} completed.\n${summary}\n${files.length ? `Files: ${files.join(", ")}` : "No files produced."}`;
+      await this.transport.sendMessage(conversationId, report.slice(0, 1900)).catch(() => undefined);
+      // result.md stays local; the thread keeps its existing report and uploads only the produced files.
+      for (const path of files) {
         try {
           if (!this.transport.uploadFile) throw new Error("File upload unavailable");
-          await this.transport.uploadFile(task.conversation_id, join(this.home.directory, path), path);
+          await this.transport.uploadFile(conversationId, join(this.home.directory, path), path);
         }
-        catch { await this.transport.sendMessage(task.conversation_id, `Upload failed; local file: ${path}`).catch(() => undefined); }
+        catch { await this.transport.sendMessage(conversationId, `Upload failed; local file: ${path}`).catch(() => undefined); }
       }
-    } catch {
-      if (!active.cancelled && await this.store.failTaskRun(runId, "Task Run failed; check local logs", this.now(), "task-runtime")) {
+    } catch (error) {
+      const endedAt = this.now();
+      if (!active.cancelled && await this.store.failTaskRun(runId, genericFailure, endedAt, "task-runtime")) {
+        const failure = error instanceof TaskRunError ? error.message : genericFailure;
+        if (active.folder) await this.writeResult(active, active.folder, { state: "failed", endedAt, failure }).catch(() => undefined);
         if (conversationId) await this.transport.sendMessage(conversationId, `Task #${taskId} run #${runId} failed. Check the local archive; it will not retry automatically.`).catch(() => undefined);
       }
     }
   }
+
+  /** Opens the Task's thread in the task channel on its first run. On failure the run continues thread-less. */
+  private async openTaskThread(task: TaskRecord, runId: number): Promise<string | undefined> {
+    const channel = this.options.taskChannelId;
+    if (!channel || !this.transport.createConversation) return undefined;
+    let starterId: string | undefined;
+    let threadId: string | undefined;
+    try {
+      starterId = await this.transport.sendMessage(channel, "inoai Task thread");
+      threadId = await this.transport.createConversation(channel, starterId, threadName(task));
+      await this.store.bindTaskConversation(task.id, { conversationId: threadId, parentConversationId: channel,
+        initiatingExternalMessageId: starterId }, this.now(), "task-runtime");
+      return threadId;
+    } catch {
+      if (threadId) await this.transport.deleteConversation?.(threadId).catch(() => undefined);
+      if (starterId) await this.transport.deleteMessage?.(channel, starterId).catch(() => undefined);
+      await this.store.createEvent({ session_id: task.session_id, message_id: null, event_type: "task_thread_failed",
+        detail: `task=${task.id}; run=${runId}` }, "task-runtime").catch(() => undefined);
+      return undefined;
+    }
+  }
+
+  /** Writes result.md inside the run folder and returns the run's other file paths. */
+  private async writeResult(active: ActiveRun, folder: RunFolder,
+    outcome: { state: "completed" | "failed"; endedAt: number; answer?: string; failure?: string }): Promise<string[]> {
+    const results = join(this.home.directory, "results");
+    for (const directory of [results, dirname(folder.output), folder.output]) {
+      const info = await lstat(directory);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new TaskRunError("Unsafe results directory");
+    }
+    if (!(await realpath(folder.output)).startsWith(`${await realpath(results)}${sep}`)) throw new TaskRunError("Unsafe results directory");
+    const resultPath = `${folder.relativeOutput}/result.md`;
+    const files = (await artifactPaths(folder.output, folder.relativeOutput)).filter((path) => path !== resultPath);
+    const { task } = folder;
+    const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
+    const body = [
+      `# ${(task.title ?? `Task #${task.id}`).replace(/\s+/g, " ").trim()}`,
+      "",
+      `- Task: #${task.id}`,
+      `- Run: #${active.runId}`,
+      `- State: ${outcome.state}`,
+      `- Started: ${iso(active.startedAt)}`,
+      `- Ended: ${iso(outcome.endedAt)}`,
+      "",
+      "## Instruction",
+      "",
+      task.goal,
+      "",
+      "## Expected output",
+      "",
+      task.output_spec ?? "Not set.",
+      "",
+      outcome.state === "completed" ? "## Answer" : "## Failure",
+      "",
+      outcome.state === "completed" ? outcome.answer ?? "" : outcome.failure ?? genericFailure,
+      "",
+      "## Files",
+      "",
+      ...(files.length ? files.map((path) => `- \`${path}\``) : ["No other files."]),
+      "",
+    ].join("\n");
+    // O_NOFOLLOW refuses a symlink planted at result.md. The file is opened without O_TRUNC and truncated only after
+    // fstat shows a regular file with one link, so a hard link to a file outside results/ is never overwritten.
+    const handle = await open(join(folder.output, "result.md"), constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.nlink !== 1) throw new TaskRunError("Unsafe result file");
+      await handle.truncate(0);
+      await handle.writeFile(body, "utf8");
+    } finally { await handle.close(); }
+    return files;
+  }
+}
+
+function threadName(task: TaskRecord): string {
+  const name = task.title?.replace(/\s+/g, " ").trim() || `inoai Task #${task.id}`;
+  return Array.from(name).slice(0, 100).join("");
 }
 
 async function artifactPaths(directory: string, prefix: string): Promise<string[]> {

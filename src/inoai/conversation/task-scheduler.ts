@@ -52,8 +52,7 @@ export class TaskScheduler {
   private async checkDue(): Promise<void> {
     if (this.stopped) return;
     const now = Math.floor(this.clock.now().getTime() / 1000);
-    const due = (await this.store.listTasks()).filter((task) => task.task_type === "recurring"
-      && task.state === "active" && task.next_due_at !== null && task.next_due_at <= now)
+    const due = (await this.store.listTasks()).filter((task) => task.state === "active" && task.next_due_at !== null && task.next_due_at <= now)
       .sort((a, b) => a.next_due_at! - b.next_due_at! || a.id - b.id);
     for (const task of due) {
       if (this.stopped) return;

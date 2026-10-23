@@ -5,7 +5,7 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   archiveFailureNotice, archiveMessage, archiveResponseChunks, bindAgentSession, claimNextMessage, claimResponseChunk,
-  cancelTask, claimTaskRun, completeTaskRun, createTask, failTaskRun, getTask, getTaskRun, listTaskRuns, listTasks, pauseTask, recoverTaskRuns, resumeTask,
+  bindTaskConversation, cancelTask, claimTaskRun, completeTaskRun, createTask, failTaskRun, getTask, getTaskRun, listTaskRuns, listTasks, pauseTask, recoverTaskRuns, resumeTask,
   completeMemoryReview, confirmResponseChunk, completeMessageWithResponse, createEvent, createMemory, createMemoryReview, createSession, failProcessingMessage,
   failRemainingResponseChunks, failResponseChunk, getSession, listEvents, listMemories, listMessages,
   listPendingResponseChunks, markRuntimeStarted, messagesForMemoryReview, recoverStaleWork, rebindAgentSession,
@@ -25,8 +25,9 @@ export interface TaskOperationsStore {
   completeTaskRun(runId: number, messageCursor: number, artifactPaths: string[], now: number, actor?: string): Promise<TaskRunRecord>;
   failTaskRun(runId: number, detail: string, now: number, actor?: string): Promise<boolean>;
   pauseTask(taskId: number, actor?: string): Promise<boolean>;
-  resumeTask(taskId: number, actor?: string): Promise<boolean>;
+  resumeTask(taskId: number, actor?: string, now?: number): Promise<boolean>;
   cancelTask(taskId: number, now: number, actor?: string): Promise<boolean>;
+  bindTaskConversation(taskId: number, binding: { conversationId: string; parentConversationId: string; initiatingExternalMessageId: string }, now: number, actor?: string): Promise<void>;
   recoverTaskRuns(actor?: string, now?: number): Promise<void>;
 }
 
@@ -53,8 +54,9 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async completeTaskRun(runId, messageCursor, artifactPaths, now, actor) { return completeTaskRun(database, runId, messageCursor, artifactPaths, now, actor); },
     async failTaskRun(runId, detail, now, actor) { return failTaskRun(database, runId, detail, now, actor); },
     async pauseTask(taskId, actor) { return pauseTask(database, taskId, actor); },
-    async resumeTask(taskId, actor) { return resumeTask(database, taskId, actor); },
+    async resumeTask(taskId, actor, now) { return resumeTask(database, taskId, actor, now); },
     async cancelTask(taskId, now, actor) { return cancelTask(database, taskId, now, actor); },
+    async bindTaskConversation(taskId, binding, now, actor) { bindTaskConversation(database, taskId, binding, now, actor); },
     async recoverTaskRuns(actor, now) { recoverTaskRuns(database, actor, now); },
     async claimLegacyApprovalNotice(id) { return claimLegacyApprovalNotice(database, id); },
     async resolveLegacyApprovalNotice(id, messageId) { resolveLegacyApprovalNotice(database, id, messageId); },
