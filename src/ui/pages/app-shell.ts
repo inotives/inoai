@@ -1,54 +1,637 @@
+// The ring console: one self-contained page that reads /api/ui-data and draws it with three.js.
 export function renderAppShell(): string {
   return `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>inoai / robin-xai-test</title>
-  <style>
-    :root{color-scheme:dark;--ink:#0b1220;--surface:#172235;--steel:#243650;--text:#e7edf4;--muted:#91a0b5;--line:#31435e;--mint:#59e3b1;--amber:#f2c66d;--coral:#f47d79;--shadow:#050a1266}
-    *{box-sizing:border-box}body{margin:0;min-width:320px;background:var(--ink);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.22;background-image:linear-gradient(#243650 1px,transparent 1px),linear-gradient(90deg,#243650 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,#000,transparent 75%)}
-    button{font:inherit}.shell{position:relative;max-width:1380px;margin:auto;padding:30px 34px 60px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:30px}.wordmark{display:flex;align-items:center;gap:12px}.mark{width:34px;height:34px;display:grid;place-items:center;border:1px solid #59e3b166;border-radius:10px;color:var(--mint);font-weight:800;box-shadow:0 0 24px #59e3b11c}.brand{font-size:1.1rem;font-weight:800;letter-spacing:-.02em}.eyebrow{color:var(--muted);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}.top-actions{display:flex;align-items:center;gap:14px}.sync{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:.82rem}.sync-dot{width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 12px var(--mint)}
-    .refresh{width:38px;height:38px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--mint);cursor:pointer}.refresh[aria-pressed=false]{color:#68778d;filter:grayscale(1)}.refresh:hover,.refresh:focus-visible{border-color:var(--mint);outline:2px solid #59e3b133;outline-offset:2px}.refresh svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-    .layout{display:grid;grid-template-columns:270px minmax(0,1fr);gap:22px}.panel{background:color-mix(in srgb,var(--surface) 94%,transparent);border:1px solid var(--line);box-shadow:0 18px 40px var(--shadow)}.profile{align-self:start;padding:22px;border-radius:16px;position:sticky;top:22px}.profile-head{display:flex;align-items:center;gap:12px;margin-bottom:25px}.avatar{width:48px;height:48px;display:grid;place-items:center;border-radius:14px;background:#124838;color:var(--mint);font-weight:850;font-size:1.15rem;border:1px solid #59e3b155}.profile h1{font-size:1.15rem;margin:0;letter-spacing:-.02em}.profile-name{color:var(--muted);font-size:.82rem;margin-top:2px}.profile-status{display:flex;align-items:center;gap:8px;color:var(--mint);font-weight:700;margin:0 0 20px}.profile-status.stopped{color:var(--coral)}.profile-status.unknown{color:var(--amber)}.profile-status .dot{width:8px;height:8px;background:currentColor;border-radius:50%;box-shadow:0 0 12px currentColor}.profile-list{border-top:1px solid var(--line);margin:0;padding:8px 0 0;list-style:none}.profile-list li{display:flex;justify-content:space-between;gap:12px;padding:9px 0;color:var(--muted);font-size:.83rem}.profile-list b{color:var(--text);font-weight:600;text-align:right}.main{min-width:0}.hero{display:flex;justify-content:space-between;align-items:end;gap:20px;margin:2px 0 22px}.hero h2{font-size:clamp(1.8rem,3vw,2.8rem);line-height:1.05;letter-spacing:-.055em;margin:8px 0 8px}.hero p{max-width:560px;color:var(--muted);margin:0}.fixture{color:var(--amber);font-size:.78rem;border-bottom:1px solid #f2c66d55;padding-bottom:2px;white-space:nowrap}
-    .tabs{display:flex;gap:4px;overflow:auto;border-bottom:1px solid var(--line);margin-bottom:20px}.tab{border:0;border-bottom:2px solid transparent;color:var(--muted);padding:11px 13px 12px;background:transparent;cursor:pointer;white-space:nowrap}.tab[aria-selected=true]{border-color:var(--mint);color:var(--text)}.tab:hover,.tab:focus-visible{color:var(--text);outline:none}.tab:focus-visible{box-shadow:inset 0 -2px var(--mint)}
-    .summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}.metric{padding:16px 17px;background:var(--steel);border:1px solid #3b506d;border-radius:12px}.metric-label{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:.78rem}.metric strong{display:block;margin-top:5px;font-size:1.7rem;letter-spacing:-.04em}.metric small{color:var(--mint);font-size:.73rem}.content{padding:20px;border-radius:16px}.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:18px}.section-head h3{margin:0;font-size:1rem}.section-head span{color:var(--muted);font-size:.78rem}.health{padding:20px;border-radius:16px;margin-bottom:12px}.health-head{display:flex;justify-content:space-between;gap:12px;align-items:start}.health-title{font-weight:750}.health-sub{color:var(--muted);font-size:.8rem;margin-top:3px}.health-value{color:var(--mint);font-weight:750}.rail{display:grid;grid-template-columns:repeat(24,1fr);gap:5px;margin:22px 0 10px}.hour{height:22px;border-radius:4px;background:#526078;cursor:help;position:relative}.hour:focus-visible{outline:2px solid var(--text);outline-offset:2px}.hour.good{background:var(--mint)}.hour.degraded{background:var(--amber)}.hour.failed{background:var(--coral)}.hour.recovered{background:linear-gradient(90deg,var(--coral) 0 48%,var(--mint) 48%)}.health-tooltip{position:absolute;z-index:4;right:0;bottom:calc(100% + 8px);width:280px;max-width:calc(100vw - 32px);padding:12px 14px;border:1px solid #57708f;border-radius:10px;background:#152238;box-shadow:0 12px 28px var(--shadow);color:var(--text);font-size:.72rem;line-height:1.45;white-space:normal;overflow-wrap:anywhere;word-break:break-word;pointer-events:none;visibility:hidden;opacity:0;transform:translateY(4px);transition:opacity .12s ease,transform .12s ease,visibility .12s ease}.hour:nth-child(-n+12) .health-tooltip{left:0;right:auto}.hour:hover .health-tooltip,.hour:focus-visible .health-tooltip{visibility:visible;opacity:1;transform:translateY(0)}.rail-labels{display:flex;justify-content:space-between;color:var(--muted);font-size:.7rem}.legend{display:flex;gap:14px;margin-top:16px;color:var(--muted);font-size:.73rem}.legend span{display:inline-flex;align-items:center;gap:5px}.legend i{width:7px;height:7px;border-radius:2px;background:currentColor}.legend .good{color:var(--mint)}.legend .degraded{color:var(--amber)}.legend .failed{color:var(--coral)}.legend .unknown{color:#526078}
-    .activity{width:100%;border-collapse:collapse}.activity th{color:var(--muted);font-size:.72rem;font-weight:600;text-align:left;padding:0 10px 10px}.activity td{border-top:1px solid var(--line);padding:12px 10px;color:var(--muted)}.activity td:first-child{color:var(--text);font-weight:650}.message-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 16px}.message-search,.message-filter,.message-date{min-height:36px;border:1px solid var(--line);border-radius:8px;background:var(--ink);color:var(--text);padding:7px 10px}.message-search{flex:1;min-width:150px}.datetime-label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:.75rem}.message-date{color-scheme:dark}.message-row{cursor:pointer}.message-row:hover td{background:#24365066}.message-body td{background:#101a2a;color:var(--muted);font-size:.82rem;padding:11px 16px}.state{font-size:.74rem;color:var(--mint)}.failed-state{color:var(--coral)}.below-grid{display:grid;grid-template-columns:6fr 4fr;gap:12px;margin-top:12px}.doc-panel,.capabilities{min-height:250px}.doc-copy{color:var(--muted);font-size:.88rem;line-height:1.65}.doc-copy h4{color:var(--text);font-size:.86rem;margin:18px 0 5px}.doc-copy h4:first-child{margin-top:0}.capability-group+.capability-group{border-top:1px solid var(--line);margin-top:17px;padding-top:15px}.capability-group h4{font-size:.8rem;margin:0 0 8px;color:var(--muted)}.skill-list{display:flex;flex-wrap:wrap;gap:7px}.skill{border:1px solid var(--line);border-radius:7px;padding:5px 8px;color:var(--text);background:var(--steel);font-size:.76rem}.empty{padding:30px 12px;text-align:center;color:var(--muted)}.tab-panel[hidden]{display:none}.btn:focus-visible,.message-row:focus-visible,.message-search:focus-visible,.message-filter:focus-visible,.message-date:focus-visible{outline:2px solid var(--mint);outline-offset:2px}
-    @media(max-width:1100px){.summary{grid-template-columns:1fr 1fr}}
-    @media(max-width:860px){.shell{padding:22px 18px 44px}.layout{grid-template-columns:1fr}.profile{position:static}.profile-list{display:grid;grid-template-columns:repeat(2,1fr);column-gap:20px}.hero{align-items:start;flex-direction:column;gap:10px}}
-    @media(max-width:700px){.below-grid{grid-template-columns:1fr}}
-    @media(max-width:520px){.topbar{align-items:start}.sync{display:none}.summary{grid-template-columns:1fr}.profile-list{grid-template-columns:1fr}.content,.health{padding:16px}.rail{gap:3px}.hour{height:18px}.activity{font-size:.8rem}.activity th:nth-child(3),.activity td:nth-child(3){display:none}}
-    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>inoai</title>
+<link rel="stylesheet" href="https://cdn-uicons.flaticon.com/2.6.0/uicons-regular-rounded/css/uicons-regular-rounded.css">
+<style>
+  :root{color-scheme:dark;--ink:#060a13;--glass:rgba(14,21,36,.8);--line:rgba(140,170,210,.14);--text:#e7edf4;--muted:#8b9ab0;--mint:#59e3b1;--amber:#f2c66d;--coral:#f47d79;--sky:#7cc4ff;--violet:#a78bfa;--pink:#f0a6ca;--slate:#5a6d8c}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--ink);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0}
+  #stage canvas{display:block}
+  .top{position:fixed;top:18px;left:20px;right:20px;display:flex;justify-content:space-between;align-items:center;gap:12px;z-index:5;pointer-events:none}
+  .top>*{pointer-events:auto}
+  .brand{display:flex;gap:10px;align-items:center;font-weight:600;letter-spacing:.04em}
+  .mark{width:22px;height:22px;border-radius:50%;border:2px solid var(--mint);box-shadow:0 0 14px #59e3b166}
+  .chip{display:flex;gap:8px;align-items:center;padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--glass);backdrop-filter:blur(10px);color:var(--muted);font-size:12px}
+  .chip button{border:0;background:transparent;color:var(--muted);cursor:pointer;font:inherit;padding:0 0 0 6px;border-left:1px solid var(--line)}
+  .chip button[aria-pressed=true]{color:var(--mint)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--slate)}
+  .dot.running{background:var(--mint);box-shadow:0 0 10px var(--mint);animation:pulse 2.4s ease-in-out infinite}
+  .dot.stopped{background:var(--coral);box-shadow:0 0 10px var(--coral)}
+  @keyframes pulse{50%{opacity:.35}}
+  .label{position:fixed;left:0;top:0;transform:translate(-50%,-50%);text-align:center;pointer-events:none;z-index:2;white-space:nowrap}
+  .label b{display:block;font-weight:400;font-size:20px;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .label span{display:block;font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+  .label.core b{font-size:24px;font-weight:300}
+  .label.name{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .label.tip b{font-size:15px}
+  .tooltip{position:fixed;z-index:6;pointer-events:none;padding:5px 10px;border-radius:8px;background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(8px);font-size:12px;opacity:0;transform:translate(12px,12px);transition:opacity .15s}
+  .tooltip.on{opacity:1}
+  .hint{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);opacity:.7;transition:opacity .6s;z-index:2;pointer-events:none}
+  .fallback{position:fixed;inset:0;display:none;place-items:center;color:var(--muted);text-align:center;padding:24px}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(440px,100%);background:var(--glass);backdrop-filter:blur(22px);border-left:1px solid var(--line);transform:translateX(102%);transition:transform .4s cubic-bezier(.2,.8,.2,1);z-index:10;display:flex;flex-direction:column}
+  .drawer.open{transform:none}
+  .d-head{display:flex;align-items:center;gap:12px;padding:20px 20px 12px}
+  .d-head h2{margin:0;font-size:17px;font-weight:500}
+  .d-head small{display:block;color:var(--muted);font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+  .ring-ico{width:30px;height:30px;border-radius:50%;border:2px solid currentColor;box-shadow:0 0 12px currentColor;flex:none;display:grid;place-items:center;font-size:13px}
+  .fi{display:flex;line-height:1}
+  .close{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:transparent;color:var(--text);cursor:pointer;font-size:18px;line-height:1}
+  .close:hover{background:#ffffff10}
+  .rail{display:flex;gap:6px;padding:0 20px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .rail button{width:34px;height:34px;display:grid;place-items:center;padding:0;font-size:14px;border-radius:50%;border:2px solid currentColor;background:transparent;color:inherit;cursor:pointer;opacity:.4;transition:opacity .2s,transform .2s}
+  .rail button[aria-current=true]{opacity:1;box-shadow:0 0 10px currentColor}
+  .rail button:hover{opacity:.8;transform:scale(1.08)}
+  .d-body{flex:1;overflow:auto;padding:16px 20px 32px}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px}
+  .stat{padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:#ffffff06}
+  .stat b{display:block;font-size:22px;font-weight:300;font-variant-numeric:tabular-nums}
+  .stat span{font-size:11px;color:var(--muted)}
+  .seg{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+  .seg button{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:4px 11px;font:inherit;font-size:12px;cursor:pointer}
+  .seg button[aria-pressed=true]{color:var(--ink);background:var(--text);border-color:var(--text)}
+  .list{display:flex;flex-direction:column;gap:6px}
+  .item{display:block;width:100%;text-align:left;font:inherit;color:inherit;border:1px solid var(--line);background:#ffffff05;border-radius:14px;padding:10px 12px}
+  button.item{cursor:pointer}
+  button.item:hover{background:#ffffff0c}
+  .item .meta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);margin-bottom:3px}
+  .item .meta .when{margin-left:auto;font-variant-numeric:tabular-nums}
+  .item p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .item[aria-expanded=true] p{-webkit-line-clamp:unset}
+  .item .more{display:none;margin-top:8px;font-size:12px;color:var(--muted)}
+  .item[aria-expanded=true] .more{display:block}
+  .pill{display:inline-flex;align-items:center;gap:5px}
+  .pill:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .hours{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+  .hour{border:1px solid var(--line);border-radius:12px;padding:8px 6px;text-align:center;font-size:11px}
+  .hour i{display:block;width:14px;height:14px;margin:0 auto 4px;border-radius:50%;border:3px solid currentColor}
+  .hour span{color:var(--muted)}
+  .md h3{font-size:13px;margin:16px 0 4px}
+  .md p,.md li{color:#c9d3e0;margin:4px 0;overflow-wrap:anywhere}
+  .md ul{padding-left:18px;margin:4px 0}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px;margin:0 0 16px}
+  .kv dt{color:var(--muted)}
+  .kv dd{margin:0;overflow-wrap:anywhere}
+  .tags{display:flex;flex-wrap:wrap;gap:6px}
+  .tags span{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px}
+  .empty{color:var(--muted);text-align:center;padding:30px 0}
+  .back{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;padding:0 0 12px}
+  .back:hover{color:var(--text)}
+  .files{display:flex;flex-direction:column;gap:4px;margin:12px 0}
+  .files button{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:10px;padding:7px 10px;font:inherit;font-size:12px;cursor:pointer;text-align:left}
+  .files button:hover{background:#ffffff0c}
+  .files button span{flex:1;overflow-wrap:anywhere;color:var(--text)}
+  .files button[aria-pressed=true]{border-color:var(--pink);background:#f0a6ca14}
+  .viewer{border:1px solid var(--line);border-radius:14px;padding:12px 14px;background:#ffffff04}
+  .code{margin:8px 0;padding:10px 12px;border-radius:10px;background:#0000004d;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#d6dfeb}
+  .viewer>.code{margin:0;padding:0;background:transparent}
+  .md h1{font-size:15px;margin:4px 0 8px}
+  .md p code,.md li code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border-radius:5px;background:#ffffff12}
+  .note{margin-top:12px;font-size:11px;color:var(--muted)}
+  .list-head{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+  .search{width:100%;padding:9px 12px;margin:0 0 10px;border-radius:10px;border:1px solid var(--line);background:#ffffff08;color:var(--text);font:inherit}
+  .search:focus{outline:2px solid var(--sky);outline-offset:1px}
+  .setting{border:1px solid var(--line);border-radius:14px;padding:14px;background:#ffffff05}
+  .setting-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px}
+  .setting-head small{color:var(--muted);font-size:11px}
+  .swatches{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+  .swatch{width:34px;height:34px;border-radius:50%;border:2px solid transparent;cursor:pointer;box-shadow:inset 0 0 0 3px var(--ink)}
+  .swatch[aria-pressed=true]{border-color:var(--text);box-shadow:inset 0 0 0 3px var(--ink),0 0 12px currentColor}
+  .custom{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
+  .custom input{width:44px;height:30px;padding:0;border:1px solid var(--line);border-radius:8px;background:transparent;cursor:pointer}
+  .custom code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+  @media (max-width:640px){.drawer{top:auto;height:78%;width:100%;border-left:0;border-top:1px solid var(--line);border-radius:22px 22px 0 0;transform:translateY(102%)}.label.core b{font-size:20px}}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar"><div class="wordmark"><div class="mark">i</div><div><div class="brand">inoai</div><div class="eyebrow">local agent console</div></div></div><div class="top-actions"><div class="sync"><span class="sync-dot"></span> Local preview · updated just now</div><button class="refresh" type="button" aria-label="Toggle profile refresh" aria-pressed="true" title="Toggle profile refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.8-4L4 9m0 0V4m0 5h5M4 13a8 8 0 0 0 14.8 4L20 15m0 0v5m0-5h-5"/></svg></button></div></header>
-    <div class="layout">
-      <aside id="profile-panel" class="panel profile"><div class="profile-head"><div class="avatar">R</div><div><h1 id="agent-name">robin-xai-test</h1><div class="profile-name">deployed agent</div></div></div><div id="profile-status" class="profile-status"><span class="dot"></span> Checking status…</div><ul class="profile-list"><li><span>Provider</span><b id="agent-provider">Codex</b></li><li><span>Transport</span><b id="agent-transport">Discord</b></li><li><span>Workspace</span><b id="agent-workspace">workspace-robin</b></li><li><span>Last heartbeat</span><b id="last-heartbeat">12:00 UTC</b></li><li><span>Storage</span><b>SQLite · read-only</b></li></ul></aside>
-      <section class="main">
-        <div class="hero"><div><div class="eyebrow">Agent overview</div><h2>Keep the signal clear.</h2><p>A calm operational view of what robin is doing, and whether it needs attention.</p></div><div class="fixture">Fixture-driven preview</div></div>
-        <div class="tabs" role="tablist" aria-label="Agent sections"><button class="tab" role="tab" aria-selected="true" aria-controls="overview-panel">Overview</button><button class="tab" role="tab" aria-selected="false" aria-controls="conversations-panel">Conversations</button><button class="tab" role="tab" aria-selected="false" aria-controls="memory-panel">Memory</button></div>
-        <div id="overview-panel" class="tab-panel" role="tabpanel"><div class="summary"><div class="metric"><div class="metric-label"><span>Messages</span><small>last 24h</small></div><strong id="messages-24h">42</strong><small id="messages-30d">318 in 30 days</small></div><div class="metric"><div class="metric-label"><span>Failed replies</span><small>last 24h</small></div><strong id="failed-24h">02</strong><small id="failed-30d">7 in 30 days</small></div><div class="metric"><div class="metric-label"><span>Active sessions</span><small>current</small></div><strong id="active-sessions">03</strong><small>one agent · active threads</small></div><div class="metric"><div class="metric-label"><span>Messages / session</span><small>last 24h</small></div><strong id="messages-per-session">14.0</strong><small>24h messages ÷ active sessions</small></div></div><div id="health-panel" class="panel health"><div class="health-head"><div><div class="health-title">24-hour health</div><div class="health-sub">Hourly heartbeat evidence · hover a marker for detail</div></div><div id="health-value" class="health-value">98.6% healthy</div></div><div id="health-rail" class="rail" aria-label="24-hour health timeline"><span class="hour good" title="00:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="01:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="02:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="03:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="04:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="05:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="06:00 UTC · healthy" tabindex="0"></span><span class="hour degraded" title="07:00 UTC · database busy, recovered" tabindex="0"></span><span class="hour recovered" title="08:00 UTC · recovered after retry" tabindex="0"></span><span class="hour good" title="09:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="10:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="11:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="12:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="13:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="14:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="15:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="16:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="17:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="18:00 UTC · healthy" tabindex="0"></span><span class="hour failed" title="19:00 UTC · restart required" tabindex="0"></span><span class="hour recovered" title="20:00 UTC · recovered after restart" tabindex="0"></span><span class="hour good" title="21:00 UTC · healthy" tabindex="0"></span><span class="hour good" title="22:00 UTC · healthy" tabindex="0"></span><span class="hour" title="23:00 UTC · not yet observed" tabindex="0"></span></div><div class="rail-labels"><span>24h ago</span><span>now</span></div><div class="legend"><span class="good"><i></i>Healthy</span><span class="degraded"><i></i>Degraded</span><span class="failed"><i></i>Restarted</span><span class="unknown"><i></i>Unknown</span></div></div></div>
-        <div id="conversations-panel" class="tab-panel panel content" role="tabpanel" hidden><div class="section-head"><h3>Conversations</h3><span>default: last 30 days</span></div><div class="message-tools"><input class="message-search" type="search" placeholder="Search messages" aria-label="Search messages"><label class="datetime-label">From <input class="message-date" type="datetime-local" aria-label="Created at from"></label><label class="datetime-label">To <input class="message-date" type="datetime-local" aria-label="Created at to"></label><select class="message-filter" aria-label="Filter message state"><option value="all">All states</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="processing">Processing</option></select></div><table class="activity message-table"><thead><tr><th>ID</th><th>Workspace</th><th>Transport / direction</th><th>State</th><th>Created at</th><th>Updated at</th></tr></thead><tbody><tr class="message-row" data-state="completed" data-created="2026-10-11T12:00" data-search="msg-1042 workspace-robin discord-agent completed"><td>msg-1042</td><td>workspace-robin</td><td>discord-agent</td><td class="state">Completed</td><td>2026-10-11 12:00:04</td><td>2026-10-11 12:00:09</td></tr><tr class="message-body" hidden><td colspan="6">Agent reply: heartbeat check completed and the runtime is ready.</td></tr><tr class="message-row" data-state="completed" data-created="2026-10-11T11:42" data-search="msg-1041 workspace-robin discord-user completed"><td>msg-1041</td><td>workspace-robin</td><td>discord-user</td><td class="state">Completed</td><td>2026-10-11 11:42:18</td><td>2026-10-11 11:42:20</td></tr><tr class="message-body" hidden><td colspan="6">Can you summarize the current deployment health?</td></tr><tr class="message-row" data-state="failed" data-created="2026-10-11T10:18" data-search="msg-1039 workspace-robin discord-agent failed"><td>msg-1039</td><td>workspace-robin</td><td>discord-agent</td><td class="state failed-state">Failed</td><td>2026-10-11 10:18:51</td><td>2026-10-11 10:19:03</td></tr><tr class="message-body" hidden><td colspan="6">Reply delivery failed after the provider returned a safe generic error.</td></tr></tbody></table></div><div id="memory-panel" class="tab-panel panel content" role="tabpanel" hidden><div class="section-head"><h3>Memory</h3><span>default: last 30 days</span></div><div class="message-tools"><input class="message-search memory-search" type="search" placeholder="Search memory" aria-label="Search memory"><label class="datetime-label">From <input class="message-date memory-date" type="datetime-local" aria-label="Memory created at from"></label><label class="datetime-label">To <input class="message-date memory-date" type="datetime-local" aria-label="Memory created at to"></label><select class="message-filter memory-filter" aria-label="Filter memory review"><option value="all">All review states</option><option value="under-review">Under review</option><option value="reviewed">Reviewed</option><option value="not-reviewed">Not reviewed</option></select></div><table class="activity memory-table"><thead><tr><th>ID</th><th>Origin</th><th>State</th><th>Memory review</th><th>Created at</th><th>Updated at</th></tr></thead><tbody><tr class="memory-row" data-review="under-review" data-created="2026-10-11T09:10" data-search="memory-72 review deployment under-review"><td>memory-72</td><td>review</td><td class="state">Active</td><td class="state">Under review</td><td>2026-10-11 09:10:12</td><td>2026-10-11 09:10:12</td></tr><tr class="memory-body" hidden><td colspan="6"><strong>Memory:</strong> Robin uses SQLite as the local source of truth.<br><strong>Review:</strong> Review #18 · processing · awaiting recap completion.</td></tr><tr class="memory-row" data-review="reviewed" data-created="2026-10-08T16:25" data-search="memory-69 manual discord reviewed"><td>memory-69</td><td>manual</td><td class="state">Active</td><td class="state">Reviewed</td><td>2026-10-08 16:25:44</td><td>2026-10-08 16:25:44</td></tr><tr class="memory-body" hidden><td colspan="6"><strong>Memory:</strong> Discord is the selected V1 transport.<br><strong>Review:</strong> Review #16 · completed · retained in the latest recap.</td></tr><tr class="memory-row" data-review="not-reviewed" data-created="2026-09-29T08:02" data-search="memory-61 review heartbeat not-reviewed"><td>memory-61</td><td>review</td><td class="state">Active</td><td class="muted">Not reviewed</td><td>2026-09-29 08:02:07</td><td>2026-09-29 08:02:07</td></tr><tr class="memory-body" hidden><td colspan="6"><strong>Memory:</strong> Heartbeat evidence is retained for timeline analysis.<br><strong>Review:</strong> No linked memory review yet.</td></tr></tbody></table></div>
-      </section>
-    </div>
-  </main>
-  <template id="agent-details"><div class="below-grid"><section class="panel content doc-panel"><div class="section-head"><h3>agent.md</h3><span>rendered profile</span></div><div id="agent-markdown" class="doc-copy"><h4>Role</h4><p>Robin is a local coding agent that helps its owner investigate, explain, and improve software.</p><h4>Working style</h4><p>Use clear evidence, keep each turn focused, and preserve the selected runtime's safety controls.</p><h4>Guardrails</h4><p>Keep secrets out of messages and logs. Treat SQLite as the local source of truth.</p></div></section><section class="panel content capabilities"><div class="section-head"><h3>Skills &amp; tools</h3><span>enabled locally</span></div><div class="capability-group"><h4>Skills</h4><div id="skills-list" class="skill-list"><span class="skill">frontend-design</span><span class="skill">codebase-design</span><span class="skill">web-design-guidelines</span><span class="skill">typescript</span></div></div><div class="capability-group"><h4>Tools</h4><div id="tools-list" class="skill-list"><span class="skill">discord</span><span class="skill">sqlite</span><span class="skill">heartbeat</span></div></div></section></div></template>
-  <script>const tabs=[...document.querySelectorAll(".tab")];const panels=[...document.querySelectorAll(".tab-panel")];const summary=document.querySelector(".summary");document.querySelector("#conversations-panel").prepend(summary);const health=document.querySelector("#overview-panel .health"),details=document.querySelector("#agent-details");health.after(details.content.cloneNode(true));tabs.forEach(tab=>tab.addEventListener("click",()=>{tabs.forEach(item=>item.setAttribute("aria-selected",String(item===tab)));panels.forEach(panel=>panel.hidden=panel.id!==tab.getAttribute("aria-controls"));}));const refresh=document.querySelector(".refresh");refresh.addEventListener("click",()=>{const enabled=refresh.getAttribute("aria-pressed")==="true";refresh.setAttribute("aria-pressed",String(!enabled));refresh.title=enabled?"Enable profile refresh":"Disable profile refresh";});document.querySelectorAll(".message-row,.memory-row").forEach(row=>row.addEventListener("click",()=>{const body=row.nextElementSibling;body.hidden=!body.hidden;}));const search=document.querySelector(".message-search"),filter=document.querySelector(".message-filter"),dateInputs=[...document.querySelectorAll(".message-date")];function filterMessages(){const query=search.value.toLowerCase(),from=dateInputs[0].value,to=dateInputs[1].value;document.querySelectorAll(".message-row").forEach(row=>{const created=row.dataset.created||"";const match=(row.dataset.search||"").includes(query)&&(filter.value==="all"||row.dataset.state===filter.value)&&(!from||created>=from)&&(!to||created<=to);row.hidden=!match;row.nextElementSibling.hidden=true;});}search.addEventListener("input",filterMessages);filter.addEventListener("change",filterMessages);dateInputs.forEach(input=>input.addEventListener("change",filterMessages));const memorySearch=document.querySelector(".memory-search"),memoryFilter=document.querySelector(".memory-filter"),memoryDates=[...document.querySelectorAll(".memory-date")];function filterMemories(){const query=memorySearch.value.toLowerCase(),from=memoryDates[0].value,to=memoryDates[1].value;document.querySelectorAll(".memory-row").forEach(row=>{const created=row.dataset.created||"";const match=(row.dataset.search||"").includes(query)&&(memoryFilter.value==="all"||row.dataset.review===memoryFilter.value)&&(!from||created>=from)&&(!to||created<=to);row.hidden=!match;row.nextElementSibling.hidden=true;});}memorySearch.addEventListener("input",filterMemories);memoryFilter.addEventListener("change",filterMemories);memoryDates.forEach(input=>input.addEventListener("change",filterMemories));let overviewTimer;const setText=(selector,value)=>{const element=document.querySelector(selector);if(element)element.textContent=value??"unknown";};const setSkills=(selector,items)=>{const list=document.querySelector(selector);if(!list||!Array.isArray(items)||!items.length)return;if(items.length){list.replaceChildren(...items.map(name=>{const span=document.createElement("span");span.className="skill";span.textContent=name;return span;}));}};function renderHealth(events){const rail=document.querySelector("#health-rail");if(!rail)return;const now=Date.now();const slots=Array.from({length:24},(_,index)=>({hour:new Date(now-(23-index)*3600000),event:null}));events.forEach(event=>{const age=Math.floor((now-Date.parse(event.createdAt))/3600000);if(age>=0&&age<24)slots[23-age].event=event;});rail.replaceChildren(...slots.map(slot=>{const marker=document.createElement("span");marker.className="hour";if(slot.event){marker.classList.add(slot.event.eventType==="heartbeat_recovery"?"recovered":"good");marker.title=slot.event.createdAt+" · "+slot.event.eventType+(slot.event.detail?" · "+slot.event.detail:"");}else marker.title=slot.hour.toISOString()+" · not yet observed";marker.tabIndex=0;return marker;}));const observed=slots.filter(slot=>slot.event).length;setText("#health-value",observed?Math.round(observed/24*100)+"% observed":"No heartbeat evidence");const last=events[0];if(last)setText("#last-heartbeat",new Date(last.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",timeZoneName:"short"}));}async function refreshOverview(){try{const response=await fetch("/api/ui-data",{cache:"no-store"});const data=await response.json();if(data.error)return;setText("#agent-name",data.profile.agentInstanceId);setText("#agent-provider",data.profile.provider);setText("#agent-transport",data.profile.transport);setText("#agent-workspace",data.profile.workspaceIds?.join(", ")||"none");const status=data.profile.status||"unknown";const statusLabel=status==="running"?"Running normally":status==="stopped"?"Stopped":"Status unavailable";const profileStatus=document.querySelector("#profile-status");if(profileStatus){profileStatus.className="profile-status "+status;profileStatus.replaceChildren(Object.assign(document.createElement("span"),{className:"dot"}),document.createTextNode(" "+statusLabel));}const markdown=document.querySelector("#agent-markdown");if(markdown&&typeof data.agentMarkdown==="string")markdown.textContent=data.agentMarkdown;setSkills("#skills-list",data.skills);setSkills("#tools-list",data.tools);renderHealth(data.health||[]);}catch{setText("#profile-status","Data unavailable");}}function scheduleOverviewRefresh(){clearInterval(overviewTimer);if(refresh.getAttribute("aria-pressed")==="true"&&!document.hidden)overviewTimer=setInterval(refreshOverview,60000);}refresh.addEventListener("click",()=>{if(refresh.getAttribute("aria-pressed")==="true")refreshOverview();scheduleOverviewRefresh();});document.addEventListener("visibilitychange",scheduleOverviewRefresh);refreshOverview();scheduleOverviewRefresh();</script>
-<script>let ledgerLoaded=false;const formatDate=value=>value.replace("T"," ").slice(0,19);const makeCell=(row,value,className="")=>{const cell=document.createElement("td");cell.textContent=value;if(className)cell.className=className;row.append(cell);};const addExpandable=(row,body,cls)=>{row.className=cls;row.tabIndex=0;row.addEventListener("click",()=>{const next=row.nextElementSibling;next.hidden=!next.hidden;});row.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();row.click();}});const detail=document.createElement("tr");detail.className=cls.replace("-row","-body");detail.hidden=true;const cell=document.createElement("td");cell.colSpan=6;cell.textContent=body;detail.append(cell);row.after(detail);};function renderLedger(data){const metrics=data.metrics||{};setText("#messages-24h",String(metrics.messages24h??0).padStart(2,"0"));setText("#messages-30d",String(metrics.messages30d??0)+" in 30 days");setText("#failed-24h",String(metrics.failedReplies24h??0).padStart(2,"0"));setText("#failed-30d",String(metrics.failedReplies30d??0)+" in 30 days");setText("#active-sessions",String(metrics.activeSessions??0).padStart(2,"0"));setText("#messages-per-session",Number(metrics.messagesPerSession??0).toFixed(1));const messages=document.querySelector(".message-table tbody");if(messages){messages.replaceChildren();(data.messages||[]).forEach(message=>{const row=document.createElement("tr");row.dataset.state=message.state;row.dataset.created=message.createdAt.slice(0,16);row.dataset.search=[message.id,message.workspaceId,message.transport,message.direction,message.state].join(" ").toLowerCase();makeCell(row,String(message.id));makeCell(row,message.workspaceId);makeCell(row,message.transport+"-"+message.direction);makeCell(row,message.state,message.state==="failed"?"failed-state":"state");makeCell(row,formatDate(message.createdAt));makeCell(row,formatDate(message.updatedAt));addExpandable(row,message.body,"message-row");});}const memories=document.querySelector(".memory-table tbody");if(memories){memories.replaceChildren();(data.memories||[]).forEach(memory=>{const review=memory.review?.state?memory.review.state:"not-reviewed";const label=review==="not-reviewed"?"Not reviewed":review[0].toUpperCase()+review.slice(1);const row=document.createElement("tr");row.dataset.review=review;row.dataset.created=memory.createdAt.slice(0,16);row.dataset.search=[memory.id,memory.origin,memory.state,label,memory.body].join(" ").toLowerCase();makeCell(row,String(memory.id));makeCell(row,memory.origin);makeCell(row,memory.state,"state");makeCell(row,label,review==="not-reviewed"?"muted":"state");makeCell(row,formatDate(memory.createdAt));makeCell(row,formatDate(memory.updatedAt));addExpandable(row,"Memory: "+memory.body+"\nReview: "+(memory.review?.recap||"No linked memory review yet."),"memory-row");});}ledgerLoaded=true;}const originalRefreshOverview=refreshOverview;refreshOverview=async()=>{await originalRefreshOverview();if(!ledgerLoaded){try{const response=await fetch("/api/ui-data",{cache:"no-store"});const data=await response.json();if(!data.error)renderLedger(data);}catch{}}};refreshOverview();</script>
-<script>(async()=>{try{const response=await fetch("/api/ui-data",{cache:"no-store"});const data=await response.json();const add=(table,rows,bodyOf)=>{if(!table)return;table.replaceChildren();(rows||[]).forEach(item=>{const row=document.createElement("tr");row.tabIndex=0;const values=bodyOf(item);values.cells.forEach(([value,klass])=>{const cell=document.createElement("td");cell.textContent=value;if(klass)cell.className=klass;row.append(cell);});const detail=document.createElement("tr");detail.hidden=true;const cell=document.createElement("td");cell.colSpan=6;cell.textContent=values.body;detail.append(cell);const toggle=()=>{detail.hidden=!detail.hidden;};row.addEventListener("click",toggle);row.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();toggle();}});table.append(row,detail);});};add(document.querySelector(".message-table tbody"),data.messages,item=>({cells:[[String(item.id)],[item.workspaceId],[item.transport+"-"+item.direction],[item.state,item.state==="failed"?"failed-state":"state"],[formatDate(item.createdAt)],[formatDate(item.updatedAt)]],body:item.body}));add(document.querySelector(".memory-table tbody"),data.memories,item=>({cells:[[String(item.id)],[item.origin],[item.state,"state"],[item.review?.state||"Not reviewed",item.review?"state":"muted"],[formatDate(item.createdAt)],[formatDate(item.updatedAt)]],body:"Memory: "+item.body+" Review: "+(item.review?.recap||"No linked memory review yet.")}));}catch{}})();</script>
-<script>const normalizeMessageRows=()=>document.querySelectorAll(".message-table tbody tr").forEach(row=>{if(row.hidden||row.cells.length!==6)return;const cells=[...row.cells].map(cell=>cell.textContent||"");const detail=row.nextElementSibling;row.className="message-row";row.dataset.state=cells[3].toLowerCase();row.dataset.created=cells[4].replace(" ","T").slice(0,16);row.dataset.search=[...cells,detail?.textContent||""].join(" ").toLowerCase();});const messageRowsTable=document.querySelector(".message-table tbody");if(messageRowsTable){new MutationObserver(normalizeMessageRows).observe(messageRowsTable,{childList:true,subtree:true});normalizeMessageRows();}</script>
-<script>document.querySelectorAll(".message-date").forEach(input=>input.addEventListener("change",()=>{if(input.value)input.value=input.value.slice(0,10)+"T00:00";},{capture:true}));</script>
-<script>(async()=>{try{const data=await (await fetch("/api/ui-data",{cache:"no-store"})).json();const fmt=value=>String(value).replace("T"," ").slice(0,19);const fill=(selector,rows,make)=>{const table=document.querySelector(selector);if(!table)return;table.replaceChildren();for(const item of rows||[]){const row=document.createElement("tr");row.tabIndex=0;for(const value of make(item).cells){const cell=document.createElement("td");cell.textContent=value;row.append(cell);}const detail=document.createElement("tr");detail.hidden=true;const cell=document.createElement("td");cell.colSpan=6;cell.textContent=make(item).body;detail.append(cell);const toggle=()=>{detail.hidden=!detail.hidden;};row.onclick=toggle;row.onkeydown=event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();toggle();}};table.append(row,detail);}};fill(".message-table tbody",data.messages,item=>({cells:[item.id,item.workspaceId,item.transport+"-"+item.direction,item.state,fmt(item.createdAt),fmt(item.updatedAt)],body:item.body}));fill(".memory-table tbody",data.memories,item=>({cells:[item.id,item.origin,item.state,item.review?.state||"Not reviewed",fmt(item.createdAt),fmt(item.updatedAt)],body:"Memory: "+item.body+" Review: "+(item.review?.recap||"No linked memory review yet.")}));}catch{}})();</script>
-<script>setTimeout(()=>fetch("/api/ui-data",{cache:"no-store"}).then(response=>response.json()).then(data=>{const fill=(selector,rows,values,detailText)=>{const table=document.querySelector(selector);if(!table)return;table.replaceChildren();(rows||[]).forEach(item=>{const row=document.createElement("tr");row.tabIndex=0;values(item).forEach(value=>{const cell=document.createElement("td");cell.textContent=String(value);row.append(cell);});const detail=document.createElement("tr");detail.hidden=true;const cell=document.createElement("td");cell.colSpan=6;cell.textContent=detailText(item);detail.append(cell);const toggle=()=>{detail.hidden=!detail.hidden;};row.onclick=toggle;row.onkeydown=event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();toggle();}};table.append(row,detail);});};const fmt=value=>String(value).replace("T"," ").slice(0,19);fill(".message-table tbody",data.messages,item=>[item.id,item.workspaceId,item.transport+"-"+item.direction,item.state,fmt(item.createdAt),fmt(item.updatedAt)],item=>item.body);fill(".memory-table tbody",data.memories,item=>[item.id,item.origin,item.state,item.review?.state||"Not reviewed",fmt(item.createdAt),fmt(item.updatedAt)],item=>"Memory: "+item.body+" Review: "+(item.review?.recap||"No linked memory review yet."));}),250);</script>
-<script>setTimeout(()=>{document.querySelectorAll(".message-table tbody,.memory-table tbody").forEach(table=>{if(!table.children.length){const row=document.createElement("tr");const cell=document.createElement("td");cell.colSpan=6;cell.className="empty";cell.textContent="No records in the selected runtime for these filters.";row.append(cell);table.append(row);}});},400);</script>
-<script>window.renderAgentMarkdown=function renderAgentMarkdown(source){const target=document.querySelector("#agent-markdown");if(!target)return;target.replaceChildren();let list;let code;for(const line of String(source||"").split("\n")){if(line.trim().startsWith(String.fromCharCode(96,96,96))){if(code){target.append(code);code=undefined;}else{code=document.createElement("pre");code.append(document.createElement("code"));}continue;}if(code){code.firstChild.textContent+=(code.firstChild.textContent?"\n":"")+line;continue;}const heading=line.match(/^#{1,6}\\s+(.+)$/);if(heading){const element=document.createElement("h4");element.textContent=heading[1];target.append(element);list=undefined;continue;}const item=line.match(/^\\s*[-*]\\s+(.+)$/);if(item){if(!list){list=document.createElement("ul");target.append(list);}const element=document.createElement("li");element.textContent=item[1];list.append(element);continue;}if(line.trim()){const element=document.createElement("p");element.textContent=line;target.append(element);list=undefined;}}if(code)target.append(code);};const agentMarkdown=document.querySelector("#agent-markdown");if(agentMarkdown){const observer=new MutationObserver(()=>{if(agentMarkdown.childElementCount===1&&agentMarkdown.firstElementChild?.tagName==="P")window.renderAgentMarkdown(agentMarkdown.textContent||"");});observer.observe(agentMarkdown,{childList:true,subtree:true});setTimeout(()=>{if(agentMarkdown.textContent?.includes("# "))window.renderAgentMarkdown(agentMarkdown.textContent);},150);}</script>
-<script>setInterval(()=>{const target=document.querySelector("#agent-markdown");if(target&&target.firstChild?.nodeType===3&&target.textContent?.includes("# "))window.renderAgentMarkdown(target.textContent);},100);</script>
-<script>const enhanceHealth=()=>document.querySelectorAll("#health-rail .hour").forEach(marker=>{if(marker.querySelector(".health-tooltip"))return;const detail=marker.title||marker.getAttribute("aria-label")||"";marker.removeAttribute("title");marker.setAttribute("aria-label",detail);const parts=detail.split(" · ");let payload;try{payload=JSON.parse(parts.slice(2).join(" · "));}catch{}const status=payload?.status||"unknown";const tooltip=document.createElement("span");tooltip.className="health-tooltip";const head=document.createElement("span");head.className="health-tooltip-head";const icon=document.createElement("span");icon.className="health-tooltip-icon "+status;icon.textContent=status==="healthy"?"✓":status==="recovered"?"↻":"!";const title=document.createElement("span");title.className="health-tooltip-title";title.textContent=(parts[1]||"heartbeat").replace(/_/g," ");const pill=document.createElement("span");pill.className="health-status-pill "+status;pill.textContent=status[0].toUpperCase()+status.slice(1);head.append(icon,title,pill);tooltip.append(head);const meta=document.createElement("span");meta.className="health-tooltip-meta";const addRow=(label,value)=>{if(value===undefined||value===null)return;const row=document.createElement("span");row.className="health-meta-row";const key=document.createElement("span");key.className="health-meta-key";key.textContent=label;const content=document.createElement("span");content.className="health-meta-value";content.textContent=String(value);row.append(key,content);meta.append(row);};addRow("Time",parts[0]||"Unknown");if(payload){addRow("Process",payload.child);addRow("Lock",payload.lock);addRow("Database",payload.query);addRow("Action",payload.action);}else addRow("Detail",detail);tooltip.append(meta);marker.append(tooltip);});const healthRail=document.querySelector("#health-rail");if(healthRail){new MutationObserver(enhanceHealth).observe(healthRail,{childList:true});enhanceHealth();}</script>
-<style>.health-tooltip-head{display:flex;align-items:center;gap:8px;padding-bottom:9px;border-bottom:1px solid #57708f}.health-tooltip-icon{display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:#526078;color:#fff;font-weight:800}.health-tooltip-icon.healthy{background:#2dba8b}.health-tooltip-icon.recovered{background:#2dba8b}.health-tooltip-icon.unknown{background:#d49a39}.health-tooltip-title{font-weight:750;text-transform:capitalize;letter-spacing:.01em}.health-status-pill{margin-left:auto;padding:3px 7px;border:1px solid #7186a3;border-radius:999px;color:#c9d7ea;font-size:.66rem;font-weight:750;line-height:1}.health-status-pill.healthy,.health-status-pill.recovered{border-color:#4ed8ad;color:#72e6be}.health-status-pill.unknown{border-color:#e2b45d;color:#f2c66d}.health-tooltip-meta{display:grid;gap:0;padding-top:4px}.health-meta-row{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;padding:6px 0;border-bottom:1px solid #334964}.health-meta-row:last-child{border-bottom:0}.health-meta-key{color:#8fa3bd;font-size:.65rem;text-transform:uppercase;letter-spacing:.08em}.health-meta-value{min-width:0;color:#e7eef8;overflow-wrap:anywhere;word-break:break-word}</style>
-<style>.message-markdown p{margin:0 0 10px}.message-markdown p:last-child{margin-bottom:0}.message-markdown ul{margin:0 0 10px;padding-left:20px}.message-markdown li{margin:4px 0}.message-markdown a{color:var(--mint);text-decoration:underline;text-underline-offset:3px}.message-markdown pre{margin:8px 0;padding:10px 12px;background:#0b1424;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}.message-markdown code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#dbe8f7}</style>
-<script>const appendMessageInline=(parent,text)=>{let rest=text;while(rest){const open=rest.indexOf("[");const middle=open<0?-1:rest.indexOf("](",open);const close=middle<0?-1:rest.indexOf(")",middle);const url=close<0?"":rest.slice(middle+2,close);if(open<0||middle<0||close<0||!(url.startsWith("https://")||url.startsWith("http://"))){parent.append(document.createTextNode(rest));break;}if(open>0)parent.append(document.createTextNode(rest.slice(0,open)));const link=document.createElement("a");link.href=url;link.target="_blank";link.rel="noreferrer";link.textContent=rest.slice(open+1,middle);parent.append(link);rest=rest.slice(close+1);}};const renderMessageMarkdown=(target,source)=>{target.replaceChildren();let list;let code;const tick=String.fromCharCode(96);for(const line of String(source||"").split(String.fromCharCode(10))){if(line.trim().startsWith(tick+tick+tick)){if(code){target.append(code);code=undefined;}else{code=document.createElement("pre");const block=document.createElement("code");code.append(block);}continue;}if(code){code.firstChild.textContent+=(code.firstChild.textContent?String.fromCharCode(10):"")+line;continue;}const heading=line.match(/^#{1,6}\\s+(.+)$/);if(heading){const element=document.createElement("h4");appendMessageInline(element,heading[1]);target.append(element);list=undefined;continue;}const item=line.match(/^\\s*[-*]\\s+(.+)$/);if(item){if(!list){list=document.createElement("ul");target.append(list);}const element=document.createElement("li");appendMessageInline(element,item[1]);list.append(element);continue;}if(line.trim()){const element=document.createElement("p");appendMessageInline(element,line);target.append(element);list=undefined;}}if(code)target.append(code);};const enhanceMessageBodies=()=>document.querySelectorAll(".message-body td,.message-table tbody tr[hidden] td[colspan='6']").forEach(cell=>{if(cell.dataset.markdownRendered)return;const source=cell.textContent||"";cell.classList.add("message-markdown");renderMessageMarkdown(cell,source);cell.dataset.markdownRendered="true";});const messageTable=document.querySelector(".message-table tbody");if(messageTable){new MutationObserver(enhanceMessageBodies).observe(messageTable,{childList:true,subtree:true});enhanceMessageBodies();}</script>
+<div id="stage"></div>
+<header class="top">
+  <div class="brand"><div class="mark"></div>inoai</div>
+  <div class="chip"><span id="status-dot" class="dot"></span><span id="status-text">loading</span><button id="refresh" type="button" aria-pressed="true" title="Auto refresh every minute">auto</button></div>
+</header>
+<div id="labels"></div>
+<div id="tooltip" class="tooltip" role="status"></div>
+<div id="hint" class="hint">tap a ring</div>
+<div id="fallback" class="fallback">The ring view needs WebGL and the three.js CDN. Open the drawer from the status chip.</div>
+<aside id="drawer" class="drawer" aria-hidden="true" aria-labelledby="d-title">
+  <div class="d-head"><div id="d-ico" class="ring-ico"></div><div style="flex:1"><small id="d-kicker"></small><h2 id="d-title"></h2></div><button id="d-close" class="close" type="button" aria-label="Close details">×</button></div>
+  <nav id="d-rail" class="rail" aria-label="Sections"></nav>
+  <div id="d-body" class="d-body"></div>
+</aside>
+
+<script type="module">
+// ---------- data ----------
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tools: [], health: [], messages: [], memories: [] };
+async function loadData() {
+  try {
+    const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
+    return data && !data.error ? { ...EMPTY, ...data } : { ...EMPTY, unavailable: true };
+  } catch { return { ...EMPTY, unavailable: true }; }
+}
+
+const HOUR = 3_600_000, DAY = 24 * HOUR;
+const RANK = { unknown: 0, healthy: 1, degraded: 2, restarted: 3, blocked: 4 };
+function healthState(event) {
+  let detail = {};
+  try { detail = JSON.parse(event.detail ?? '{}') ?? {}; } catch { /* plain-text detail */ }
+  if (event.eventType === 'heartbeat_recovery') return 'healthy';
+  if (detail.status === 'blocked') return 'blocked';
+  if (detail.action === 'restart') return 'restarted';
+  if (detail.status === 'degraded') return 'degraded';
+  if (detail.status === 'healthy') return 'healthy';
+  return 'unknown';
+}
+function describe(detail) {
+  if (!detail) return 'No detail recorded';
+  try {
+    const parsed = JSON.parse(detail);
+    return Object.entries(parsed).filter(([key]) => key !== 'status').map(([key, value]) => key.replaceAll('_', ' ') + ' ' + value).join(' · ');
+  } catch { return detail; }
+}
+function derive(data) {
+  const now = Date.now(), m = data.metrics;
+  const end = Math.floor(now / HOUR) * HOUR + HOUR;
+  const hours = Array.from({ length: 24 }, (_, i) => ({ start: end - (24 - i) * HOUR, state: 'unknown', events: [] }));
+  for (const event of data.health) {
+    const slot = hours[Math.floor((Date.parse(event.createdAt) - (end - DAY)) / HOUR)];
+    if (!slot) continue;
+    const state = healthState(event);
+    slot.events.push({ ...event, state });
+    if (RANK[state] > RANK[slot.state]) slot.state = state;
+  }
+  const known = hours.filter((h) => h.state !== 'unknown');
+  const recent = data.messages.filter((x) => now - Date.parse(x.createdAt) <= DAY);
+  const replies24h = recent.filter((x) => x.direction === 'agent').length;
+  const share = (items, test) => items.length ? items.filter(test).length / items.length : 0;
+  return {
+    data, m, hours,
+    healthPct: known.length ? Math.round(100 * known.filter((h) => h.state === 'healthy').length / known.length) : null,
+    // A full activity ring means twice the 30-day daily average.
+    activityFrac: m.messages30d ? Math.min(1, m.messages24h / ((m.messages30d / 30) * 2)) : 0,
+    failureFrac: replies24h ? Math.min(1, m.failedReplies24h / replies24h) : 0,
+    completedFrac: share(data.messages, (x) => x.state === 'completed'),
+    reviewedFrac: share(data.memories, (x) => x.review?.state === 'completed'),
+    name: data.profile.agentInstanceId.replace(/^inoai-connect-?/, '') || data.profile.agentInstanceId,
+  };
+}
+let view = derive(await loadData());
+
+// ---------- drawer (plain DOM, works without WebGL) ----------
+const ICONS = { profile: 'robot', health: 'heart-rate', activity: 'chart-line-up', failures: 'triangle-warning', conversations: 'comments', memory: 'brain', skills: 'sparkles', settings: 'settings' };
+const icon = (key) => h('i', { class: 'fi fi-rr-' + (ICONS[key] ?? key), 'aria-hidden': 'true' });
+const CSS = { profile: 'var(--text)', health: 'var(--mint)', activity: 'var(--sky)', failures: 'var(--coral)', conversations: 'var(--sky)', memory: 'var(--violet)', skills: 'var(--pink)', settings: 'var(--muted)' };
+const STATE_CSS = { healthy: 'var(--mint)', degraded: 'var(--amber)', restarted: 'var(--coral)', blocked: 'var(--coral)', unknown: 'var(--slate)', completed: 'var(--mint)', failed: 'var(--coral)', processing: 'var(--amber)', pending: 'var(--amber)', running: 'var(--mint)', stopped: 'var(--coral)' };
+const h = (tag, props = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) { if (k === 'class') el.className = v; else if (k === 'style') el.style.cssText = v; else if (k.startsWith('on')) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v); }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+};
+const clock = (ms) => new Date(ms).toTimeString().slice(0, 5);
+const when = (iso) => { const t = Date.parse(iso); return Date.now() - t < DAY ? clock(t) : new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ' + clock(t); };
+const pill = (state, text = state) => h('span', { class: 'pill', style: 'color:' + (STATE_CSS[state] ?? 'var(--muted)') }, text);
+const toggle = (e) => { const b = e.currentTarget; b.setAttribute('aria-expanded', String(b.getAttribute('aria-expanded') !== 'true')); };
+const empty = (text = 'Nothing here yet') => h('div', { class: 'empty' }, text);
+const messageItem = (x) => h('button', { class: 'item', type: 'button', 'aria-expanded': 'false', onclick: toggle },
+  h('div', { class: 'meta' }, x.direction === 'agent' ? 'agent' : 'owner', pill(x.state), h('span', { class: 'when' }, when(x.createdAt))),
+  h('p', {}, x.body), h('div', { class: 'more' }, '#' + x.id + ' · ' + x.workspaceId + ' · ' + x.transport + ' · updated ' + when(x.updatedAt)));
+const reviewKey = (x) => x.review ? (x.review.state === 'completed' ? 'reviewed' : 'in review') : 'not reviewed';
+const memoryItem = (x) => h('button', { class: 'item', type: 'button', 'aria-expanded': 'false', onclick: toggle },
+  h('div', { class: 'meta' }, x.origin, pill(x.review ? (x.review.state === 'completed' ? 'completed' : 'processing') : 'unknown', reviewKey(x)), h('span', { class: 'when' }, when(x.createdAt))),
+  h('p', {}, x.body),
+  h('div', { class: 'more' }, '#' + x.id + ' · ' + (x.review ? 'Review #' + x.review.id + ' · ' + x.review.state + (x.review.recap ? ' · ' + x.review.recap : '') : 'No linked memory review yet')));
+// Searchable list: text search plus one filter row. Each section keeps its own
+// query and filter, so they survive refreshes and section switches.
+const SEARCH_RESULT_LIMIT = 200;
+const searchState = { conversations: { query: '', option: 'all' }, memory: { query: '', option: 'all' } };
+function searchable({ state, items, noun, options, key, text, render, placeholder }) {
+  const count = h('div', { class: 'list-head' }), results = h('div', { class: 'list' });
+  const run = () => {
+    const query = state.query.trim().toLowerCase();
+    const rows = items.filter((x) => (state.option === 'all' || key(x) === state.option) && (!query || text(x).toLowerCase().includes(query)));
+    count.textContent = rows.length + ' of ' + items.length + ' ' + noun;
+    results.replaceChildren(...(rows.length ? rows.slice(0, SEARCH_RESULT_LIMIT).map(render) : [empty(query ? 'No matches' : 'Nothing here yet')]));
+    if (rows.length > SEARCH_RESULT_LIMIT) results.append(h('div', { class: 'note' }, 'Showing the newest ' + SEARCH_RESULT_LIMIT + ' · refine the search'));
+  };
+  const input = h('input', { type: 'search', class: 'search', placeholder, 'aria-label': placeholder, value: state.query, oninput: (e) => { state.query = e.currentTarget.value; run(); } });
+  const seg = h('div', { class: 'seg' }, options.map((option) => h('button', { type: 'button', 'aria-pressed': String(option === state.option), onclick: (e) => {
+    state.option = option; seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === e.currentTarget))); run();
+  } }, option)));
+  run();
+  return h('div', {}, input, seg, count, results);
+}
+const NEWLINE = String.fromCharCode(10), TICK = String.fromCharCode(96), FENCE = TICK.repeat(3);
+// Inline code spans; everything stays text nodes.
+const inline = (text) => text.split(TICK).map((part, i) => i % 2 ? h('code', {}, part) : part);
+function markdown(source, keepTitle = false) {
+  const box = h('div', { class: 'md' }); let ul = null, code = null;
+  let lines = source.split(NEWLINE);
+  if (lines[0] === '---') { const end = lines.indexOf('---', 1); if (end > 0) lines = lines.slice(end + 1); }
+  for (const line of lines) {
+    if (line.startsWith(FENCE)) { ul = null; if (code) code = null; else box.append(h('pre', { class: 'code' }, code = h('code'))); continue; }
+    if (code) { code.append(line + NEWLINE); continue; }
+    if (/^# /.test(line)) { ul = null; if (keepTitle) box.append(h('h1', {}, line.slice(2))); continue; }
+    if (/^#{2,} /.test(line)) { ul = null; box.append(h('h3', {}, line.replace(/^#+ /, ''))); }
+    else if (/^[-*] /.test(line)) { if (!ul) box.append(ul = h('ul')); ul.append(h('li', {}, inline(line.slice(2)))); }
+    else if (line.trim()) { ul = null; box.append(h('p', {}, inline(line))); }
+  }
+  return box.children.length ? box : empty('agent.md is empty');
+}
+// Skill drill-in: which skill and file the drawer shows.
+let skillView = null;
+const showSkill = (id, file) => { skillView = { id, file }; openDrawer('skills', true); };
+const fileSize = (n) => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
+const skillDescription = (skill) => {
+  const text = skill.files.find((f) => f.path === 'SKILL.md')?.text ?? '';
+  const match = text.split(NEWLINE).find((line) => line.startsWith('description:'));
+  return match ? match.slice('description:'.length).trim() : '';
+};
+function skillDetail(v) {
+  const skill = v.data.skillDetails.find((s) => s.id === skillView.id);
+  if (!skill) { skillView = null; return SECTIONS.skills(v); }
+  const file = skill.files.find((f) => f.path === skillView.file) ?? skill.files[0];
+  const enabled = Object.entries(skill.capabilities).filter(([, value]) => value !== false && value !== 'false');
+  const viewer = !file ? empty('No files in this package')
+    : file.text === null ? empty('Binary or large file · ' + fileSize(file.size))
+    : file.path.toLowerCase().endsWith(".md") ? markdown(file.text, true)
+    : h('pre', { class: 'code' }, h('code', {}, file.text));
+  return { kicker: 'skill · v' + skill.version, title: skill.id, body: [
+    h('button', { class: 'back', type: 'button', onclick: () => { skillView = null; openDrawer('skills', true); } }, icon('angle-small-left'), 'all skills'),
+    h('div', { class: 'tags' }, enabled.length ? enabled.map(([key, value]) => h('span', {}, value === true ? key : key + ': ' + value)) : h('span', {}, 'no extra capabilities')),
+    h('div', { class: 'files' }, skill.files.map((f) => h('button', { type: 'button', 'aria-pressed': String(f === file), onclick: () => showSkill(skill.id, f.path) },
+      icon(f.path.toLowerCase().endsWith(".md") ? 'document' : f.text === null ? 'picture' : 'file-code'), h('span', {}, f.path), h('small', {}, fileSize(f.size))))),
+    h('div', { class: 'viewer' }, viewer),
+    h('div', { class: 'note' }, 'approved ' + when(skill.approvedAt))] };
+}
+const SECTIONS = {
+  profile: (v) => ({ kicker: 'agent', title: v.data.profile.agentInstanceId, body: [
+    h('dl', { class: 'kv' },
+      h('dt', {}, 'Status'), h('dd', {}, pill(v.data.profile.status)),
+      h('dt', {}, 'Provider'), h('dd', {}, v.data.profile.provider),
+      h('dt', {}, 'Transport'), h('dd', {}, v.data.profile.transport),
+      h('dt', {}, 'Workspaces'), h('dd', {}, v.data.profile.workspaceIds.join(', ') || '—'),
+      h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · read-only')),
+    markdown(v.data.agentMarkdown)] }),
+  health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [
+    h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
+    h('div', { class: 'list', style: 'margin-top:16px' }, v.hours.flatMap((x) => x.events).filter((x) => x.state !== 'healthy').reverse().map((x) =>
+      h('div', { class: 'item' }, h('div', { class: 'meta' }, pill(x.state), h('span', { class: 'when' }, when(x.createdAt))), h('p', {}, describe(x.detail)))))] }),
+  activity: (v) => ({ kicker: 'activity', title: v.m.messages24h + ' messages today', body: [
+    h('div', { class: 'stats' }, [[v.m.messages24h, 'last 24h'], [v.m.messages30d, 'last 30 days'], [v.m.activeSessions, 'active sessions'], [v.m.messagesPerSession, 'msgs / session · 24h']].map(([value, label]) => h('div', { class: 'stat' }, h('b', {}, value), h('span', {}, label)))),
+    h('div', { class: 'list-head' }, 'last 24 hours'),
+    (() => { const recent = v.data.messages.filter((x) => Date.now() - Date.parse(x.createdAt) <= DAY); return recent.length ? h('div', { class: 'list' }, recent.map(messageItem)) : empty('No messages in the last 24 hours'); })()] }),
+  failures: (v) => ({ kicker: 'failed replies', title: v.m.failedReplies24h + ' today · ' + v.m.failedReplies30d + ' in 30d', body: [
+    (() => { const rows = v.data.messages.filter((x) => x.direction === 'agent' && x.state === 'failed').map(messageItem); return rows.length ? h('div', { class: 'list' }, rows) : empty('No failed replies'); })()] }),
+  conversations: (v) => ({ kicker: 'messages', title: 'Conversations', body: [searchable({
+    state: searchState.conversations, items: v.data.messages, noun: 'messages', options: ['all', 'completed', 'failed', 'processing'], key: (x) => x.state,
+    text: (x) => [x.body, '#' + x.id, x.workspaceId, x.direction === 'agent' ? 'agent' : 'owner'].join(' '), render: messageItem, placeholder: 'Search text, #id or workspace' })] }),
+  memory: (v) => ({ kicker: 'memory', title: v.data.memories.length + ' memories', body: [searchable({
+    state: searchState.memory, items: v.data.memories, noun: 'memories', options: ['all', 'reviewed', 'in review', 'not reviewed'], key: reviewKey,
+    text: (x) => [x.body, '#' + x.id, x.origin, x.review?.recap ?? ''].join(' '), render: memoryItem, placeholder: 'Search memory, #id or recap' })] }),
+  skills: (v) => skillView ? skillDetail(v) : ({ kicker: 'enabled locally', title: v.data.skills.length + ' skills', body: [
+    v.data.skillDetails.length ? h('div', { class: 'list' }, v.data.skillDetails.map((s) => h('button', { class: 'item', type: 'button', onclick: () => showSkill(s.id, 'SKILL.md') },
+      h('div', { class: 'meta' }, 'v' + s.version, h('span', {}, s.files.length + (s.files.length === 1 ? ' file' : ' files')), h('span', { class: 'when' }, icon('angle-small-right'))),
+      h('p', {}, h('b', {}, s.id)), skillDescription(s) ? h('p', { style: 'color:var(--muted);font-size:12px' }, skillDescription(s)) : null)))
+      : v.data.skills.length ? h('div', { class: 'tags' }, v.data.skills.map((s) => h('span', {}, s))) : empty('No skills enabled'),
+    v.data.tools.length ? h('div', { class: 'tags', style: 'margin-top:12px' }, v.data.tools.map((s) => h('span', {}, s))) : null] }),
+  settings: () => ({ kicker: 'settings', title: 'Appearance', body: [
+    h('div', { class: 'setting' },
+      h('div', { class: 'setting-head' }, h('span', {}, 'Robot colour'), h('small', {}, 'saved in this browser')),
+      h('div', { class: 'swatches' }, ROBOT_COLORS.map(([name, hex]) => h('button', { type: 'button', class: 'swatch', title: name, 'aria-label': name, 'aria-pressed': String(hex === robotColor), style: 'background:' + hex + ';color:' + hex, onclick: () => setRobotColor(hex) }))),
+      h('div', { class: 'custom' },
+        h('label', { for: 'robot-color' }, 'Custom'),
+        h('input', { id: 'robot-color', type: 'color', value: robotColor, oninput: (e) => setRobotColor(e.currentTarget.value, false), onchange: (e) => setRobotColor(e.currentTarget.value) }),
+        h('code', {}, robotColor),
+        h('button', { type: 'button', class: 'back', style: 'padding:0;margin-left:auto', onclick: () => setRobotColor(ROBOT_COLORS[0][1]) }, icon('rotate-left'), 'reset')))] }),
+};
+
+// Robot colour: a per-agent browser preference. Storage can be unavailable, so
+// every read and write is guarded and the default always works.
+const ROBOT_COLORS = [['clay', '#c8664a'], ['mint', '#59e3b1'], ['sky', '#7cc4ff'], ['violet', '#a78bfa'], ['pink', '#f0a6ca'], ['amber', '#f2c66d'], ['steel', '#9aa8bd']];
+const robotColorKey = () => 'inoai.robotColor.' + view.data.profile.agentInstanceId;
+const readRobotColor = () => { try { const stored = localStorage.getItem(robotColorKey()); if (/^#[0-9a-f]{6}$/i.test(stored ?? '')) return stored; } catch { /* storage unavailable */ } return ROBOT_COLORS[0][1]; };
+let robotColor = readRobotColor();
+let paintRobot = () => {};
+function setRobotColor(hex, rerender = true) {
+  robotColor = hex.toLowerCase();
+  try { localStorage.setItem(robotColorKey(), robotColor); } catch { /* storage unavailable */ }
+  paintRobot(robotColor);
+  if (rerender) openDrawer('settings', true); else document.querySelector('.custom code')?.replaceChildren(robotColor);
+}
+const drawer = document.getElementById('drawer'), rail = document.getElementById('d-rail');
+let openSection = null, drawerShiftPx = 0;
+Object.keys(SECTIONS).forEach((key) => rail.append(h('button', { type: 'button', 'aria-label': key, title: key, style: 'color:' + CSS[key], onclick: () => openDrawer(key) }, icon(key))));
+function openDrawer(key, keepSkill = false) {
+  if (!keepSkill) skillView = null;
+  const s = SECTIONS[key](view);
+  openSection = key;
+  const ico = document.getElementById('d-ico');
+  ico.style.color = CSS[key]; ico.replaceChildren(icon(key));
+  document.getElementById('d-kicker').textContent = s.kicker;
+  document.getElementById('d-title').textContent = s.title;
+  document.getElementById('d-body').replaceChildren(...s.body.filter(Boolean));
+  document.getElementById('d-body').scrollTop = 0;
+  rail.querySelectorAll('button').forEach((b) => b.setAttribute('aria-current', String(b.title === key)));
+  drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false');
+  drawerShiftPx = innerWidth > 900 ? drawer.offsetWidth / 2 : 0;
+  document.getElementById('hint').style.opacity = 0;
+}
+function closeDrawer() { openSection = null; drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); drawerShiftPx = 0; }
+document.getElementById('d-close').addEventListener('click', closeDrawer);
+addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+document.querySelector('.chip').addEventListener('click', (e) => { if (e.target.id !== 'refresh') openDrawer('profile'); });
+
+function renderStatus() {
+  const p = view.data.profile, dot = document.getElementById('status-dot');
+  dot.className = 'dot ' + p.status;
+  document.getElementById('status-text').textContent = view.data.unavailable ? 'data unavailable' : [p.status, p.provider, p.transport].join(' · ');
+  document.title = 'inoai · ' + view.name;
+}
+renderStatus();
+
+// ---------- refresh ----------
+const refreshButton = document.getElementById('refresh');
+refreshButton.addEventListener('click', () => refreshButton.setAttribute('aria-pressed', String(refreshButton.getAttribute('aria-pressed') !== 'true')));
+const listeners = [];
+setInterval(async () => {
+  if (refreshButton.getAttribute('aria-pressed') !== 'true' || document.hidden) return;
+  view = derive(await loadData());
+  renderStatus();
+  listeners.forEach((fn) => fn(view));
+  // Re-render an open drawer, but never while someone is typing in it.
+  if (openSection && !drawer.contains(document.activeElement?.matches('input') ? document.activeElement : null)) { const scroll = document.getElementById('d-body').scrollTop; openDrawer(openSection, true); document.getElementById('d-body').scrollTop = scroll; }
+}, 60_000);
+
+// ---------- three.js ring scene ----------
+let THREE, EffectComposer, RenderPass, UnrealBloomPass, OutputPass;
+try {
+  THREE = await import('three');
+  ({ EffectComposer } = await import('three/addons/postprocessing/EffectComposer.js'));
+  ({ RenderPass } = await import('three/addons/postprocessing/RenderPass.js'));
+  ({ UnrealBloomPass } = await import('three/addons/postprocessing/UnrealBloomPass.js'));
+  ({ OutputPass } = await import('three/addons/postprocessing/OutputPass.js'));
+} catch {
+  document.getElementById('fallback').style.display = 'grid';
+  document.getElementById('hint').hidden = true;
+}
+if (THREE) startScene();
+
+function startScene() {
+  const COLORS = { mint: 0x59e3b1, amber: 0xf2c66d, coral: 0xf47d79, sky: 0x7cc4ff, violet: 0xa78bfa, pink: 0xf0a6ca, slate: 0x2e3d56 };
+  const STATE_COLOR = { healthy: COLORS.mint, degraded: COLORS.amber, restarted: COLORS.coral, blocked: COLORS.coral, unknown: COLORS.slate };
+  const STATUS_COLOR = { running: COLORS.mint, stopped: COLORS.coral, unknown: COLORS.slate };
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const stage = document.getElementById('stage');
+  let renderer;
+  try { renderer = new THREE.WebGLRenderer({ antialias: true }); } catch { document.getElementById('fallback').style.display = 'grid'; return; }
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  stage.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x060a13);
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.35, 0.18);
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+
+  const root = new THREE.Group(); scene.add(root);
+  const core = new THREE.Group(); core.position.y = 0.9; root.add(core);
+  const tilt = new THREE.Group(); core.add(tilt);
+  const hits = [];
+  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+  const basic = (color, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity });
+  const placeCW = (mesh, start, angle) => { mesh.rotation.z = Math.PI / 2 - start - angle; };
+  const torusArc = (r, tube, angle) => new THREE.TorusGeometry(r, tube, 12, Math.max(4, Math.ceil(angle * 48)), Math.max(0.001, angle));
+  const arc = (r, tube, angle, color, opacity) => new THREE.Mesh(torusArc(r, tube, angle), basic(color, opacity));
+  function setArc(mesh, r, tube, frac) { mesh.geometry.dispose(); const a = Math.max(0.001, frac * Math.PI * 2); mesh.geometry = torusArc(r, tube, a); placeCW(mesh, 0, a); }
+  function hitBand(parent, inner, outer, start, angle, info) {
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(inner, outer, 24, 1, Math.PI / 2 - start - angle, angle), hitMat);
+    mesh.userData = info; parent.add(mesh); hits.push(mesh); return mesh;
+  }
+  function ticks(r, count, len, color, opacity) {
+    const points = [];
+    for (let i = 0; i < count; i++) { const a = (i / count) * Math.PI * 2, l = i % 5 === 0 ? len * 2 : len; points.push(Math.cos(a) * r, Math.sin(a) * r, 0, Math.cos(a) * (r + l), Math.sin(a) * (r + l), 0); }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+    return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
+  }
+
+  const outerTicks = ticks(3.7, 120, 0.08, 0x3a5070, 0.55); tilt.add(outerTicks);
+
+  // Health: 24 hourly segments, oldest to newest clockwise from the top.
+  const step = (Math.PI * 2) / 24, gap = 0.04;
+  const healthSegs = Array.from({ length: 24 }, (_, i) => {
+    const seg = arc(3.3, 0.06, step - gap, COLORS.slate);
+    placeCW(seg, i * step + gap / 2, step - gap); seg.scale.setScalar(0.001); tilt.add(seg);
+    hitBand(tilt, 3.05, 3.6, i * step, step, { section: 'health', seg, tip: () => clock(view.hours[i].start) + ' · ' + view.hours[i].state });
+    return seg;
+  });
+
+  tilt.add(arc(2.7, 0.03, Math.PI * 2, COLORS.sky, 0.12));
+  const activityArc = arc(2.7, 0.06, 0.001, COLORS.sky); tilt.add(activityArc);
+  const activityHead = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 16), basic(0xd8efff)); tilt.add(activityHead);
+  hitBand(tilt, 2.5, 2.9, 0, Math.PI * 2, { section: 'activity', tip: () => view.m.messages24h + ' messages · 24h' });
+
+  tilt.add(arc(2.25, 0.025, Math.PI * 2, COLORS.coral, 0.1));
+  const failureArc = arc(2.25, 0.055, 0.001, COLORS.coral); tilt.add(failureArc);
+  const failureHead = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 16), basic(0xffd0ce)); tilt.add(failureHead);
+  hitBand(tilt, 2.05, 2.45, 0, Math.PI * 2, { section: 'failures', tip: () => view.m.failedReplies24h + ' failed replies · 24h' });
+
+  tilt.add(arc(1.75, 0.008, Math.PI * 2, COLORS.violet, 0.25));
+  const orbitGroup = new THREE.Group(); tilt.add(orbitGroup);
+  hitBand(tilt, 1.55, 1.95, 0, Math.PI * 2, { section: 'activity', tip: () => view.m.activeSessions + ' active sessions' });
+
+  const statusRing = arc(1.3, 0.012, Math.PI * 2, COLORS.slate, 0.8); tilt.add(statusRing);
+
+  // Pixel robot in the core, built from voxels. The antenna light shows status.
+  const ROBOT = ['.....a.....', '.....s.....', '.HHHHHHHHH.', '.HHEHHHEHH.', '.HHEHHHEHH.', 'AHHHHHHHHHA', '.HHHHHHHHH.', '..LL...LL..'];
+  const cell = 0.13, robot = new THREE.Group(); tilt.add(robot);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(-2, 3, 6); scene.add(sun);
+  const voxel = new THREE.BoxGeometry(cell * 0.96, cell * 0.96, cell * 1.6);
+  const eyeVoxel = new THREE.BoxGeometry(cell * 0.9, cell * 0.96, cell * 0.5);
+  const bodyMat = new THREE.MeshLambertMaterial({ color: robotColor }), eyeMat = basic(0x050608), antennaMat = basic(COLORS.slate);
+  paintRobot = (hex) => bodyMat.color.set(hex);
+  const eyes = [], arms = [];
+  let antenna = null;
+  ROBOT.forEach((row, y) => [...row].forEach((ch, x) => {
+    if (ch === '.') return;
+    const at = (mesh, z = 0) => { mesh.position.set((x - 5) * cell, (3.5 - y) * cell, z); robot.add(mesh); return mesh; };
+    if (ch === 'a') { antenna = at(new THREE.Mesh(new THREE.SphereGeometry(cell * 0.6, 16, 16), antennaMat)); return; }
+    const body = at(new THREE.Mesh(voxel, bodyMat));
+    if (ch === 'E') eyes.push(at(new THREE.Mesh(eyeVoxel, eyeMat), cell * 0.8));
+    if (ch === 'A') arms.push(body);
+  }));
+  const coreHit = new THREE.Mesh(new THREE.CircleGeometry(1.3, 48), hitMat);
+  coreHit.userData = { section: 'profile', tip: () => 'agent profile' }; tilt.add(coreHit); hits.push(coreHit);
+
+  const satellites = [
+    { key: 'conversations', x: -3.3, color: COLORS.sky, word: 'messages', frac: (v) => v.completedFrac, value: (v) => v.m.messages30d },
+    { key: 'memory', x: 0, color: COLORS.violet, word: 'memory', frac: (v) => v.reviewedFrac, value: (v) => v.data.memories.length },
+    { key: 'skills', x: 3.3, color: COLORS.pink, word: 'skills', value: (v) => v.data.skills.length, segmented: true },
+  ].map((sat) => {
+    const group = new THREE.Group(); group.position.set(sat.x, -3.95, 0); root.add(group);
+    group.add(arc(0.72, 0.02, Math.PI * 2, sat.color, 0.15));
+    const spin = ticks(0.9, 36, 0.05, sat.color, 0.35); group.add(spin);
+    const fill = sat.segmented ? new THREE.Group() : arc(0.72, 0.045, 0.001, sat.color); group.add(fill);
+    const hit = new THREE.Mesh(new THREE.CircleGeometry(1.05, 32), hitMat);
+    hit.userData = { section: sat.key, sat: group, tip: () => sat.key }; group.add(hit); hits.push(hit);
+    return { ...sat, group, spin, fill };
+  });
+
+  {
+    const n = 1200, pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { const r = 18 + Math.random() * 40, t = Math.random() * Math.PI * 2, p = Math.acos(2 * Math.random() - 1); pos.set([r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), -Math.abs(r * Math.cos(p))], i * 3); }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    var stars = new THREE.Points(g, new THREE.PointsMaterial({ color: 0x6f86aa, size: 0.07, transparent: true, opacity: 0.6 })); scene.add(stars);
+  }
+
+  // Rebuild the parts whose shape depends on the data.
+  let orbiters = [];
+  function applyView(v) {
+    v.hours.forEach((hour, i) => healthSegs[i].material.color.setHex(STATE_COLOR[hour.state]));
+    statusRing.material.color.setHex(STATUS_COLOR[v.data.profile.status] ?? COLORS.slate);
+    antennaMat.color.setHex(STATUS_COLOR[v.data.profile.status] ?? COLORS.slate);
+    orbitGroup.clear();
+    const sessionCount = Math.min(v.m.activeSessions, 24);
+    orbiters = Array.from({ length: sessionCount }, (_, i) => {
+      const s = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 16), basic(COLORS.violet));
+      s.userData = { phase: (i / sessionCount) * Math.PI * 2, speed: 0.35 + (i % 5) * 0.07 }; orbitGroup.add(s); return s;
+    });
+    const skills = satellites[2], count = v.data.skills.length;
+    skills.fill.clear();
+    if (count) {
+      const sStep = (Math.PI * 2) / count, sGap = Math.min(0.12, sStep * 0.3);
+      for (let i = 0; i < count; i++) { const p = arc(0.72, 0.045, sStep - sGap, skills.color); placeCW(p, i * sStep + sGap / 2, sStep - sGap); skills.fill.add(p); }
+    }
+    labels.name.textContent = v.name;
+  }
+
+  // HTML labels projected from 3D points.
+  const labelsEl = document.getElementById('labels');
+  const makeLabel = (cls, word) => { const el = h('div', { class: 'label ' + cls }, h('b', {}, '0'), h('span', {}, word)); labelsEl.append(el); return el; };
+  const labels = { core: makeLabel('core', ''), activity: makeLabel('tip', 'msgs'), failure: makeLabel('tip', 'failed') };
+  labels.core.querySelector('span').remove();
+  labels.name = h('div', { class: 'label name' }); labelsEl.append(labels.name);
+  satellites.forEach((s) => { s.label = makeLabel('', s.word); });
+  applyView(view);
+  listeners.push(applyView);
+
+  const v3 = new THREE.Vector3();
+  function place(el, obj, local = [0, 0, 0]) {
+    v3.set(...local); obj.localToWorld(v3); v3.project(camera);
+    el.style.left = (v3.x * 0.5 + 0.5) * innerWidth + 'px'; el.style.top = (-v3.y * 0.5 + 0.5) * innerHeight + 'px';
+  }
+  const tipPoint = (r, frac, pad) => { const a = Math.PI / 2 - frac * Math.PI * 2; return [Math.cos(a) * (r + pad), Math.sin(a) * (r + pad), 0]; };
+
+  // Interaction.
+  const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2(9, 9), parallax = new THREE.Vector2();
+  const tooltip = document.getElementById('tooltip');
+  let hovered = null;
+  addEventListener('pointermove', (e) => {
+    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    parallax.copy(pointer);
+    tooltip.style.left = e.clientX + 'px'; tooltip.style.top = e.clientY + 'px';
+  });
+  renderer.domElement.addEventListener('click', (e) => {
+    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); pick();
+    if (hovered) openDrawer(hovered.section); else closeDrawer();
+  });
+  function pick() {
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObjects(hits, false)[0];
+    hovered = hit ? hit.object.userData : null;
+    renderer.domElement.style.cursor = hovered ? 'pointer' : 'default';
+    tooltip.classList.toggle('on', !!hovered);
+    if (hovered) tooltip.textContent = hovered.tip();
+  }
+
+  function resize() {
+    const w = innerWidth, ht = innerHeight;
+    renderer.setSize(w, ht); composer.setSize(w, ht); bloom.setSize(w, ht);
+    camera.aspect = w / ht;
+    const tan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    camera.position.z = Math.max(10.4 / (2 * tan), 9 / (2 * tan * camera.aspect));
+    camera.updateProjectionMatrix();
+  }
+  addEventListener('resize', resize); resize();
+
+  // Animated values ease toward the current view, so refreshes glide.
+  const shown = { health: 0, activity: 0, failure: 0, messages: 0, failed: 0, sats: [0, 0, 0], satValues: [0, 0, 0] };
+  const approach = (from, to, k) => Math.abs(to - from) < 0.0005 ? to : from + (to - from) * k;
+  const ease = (t) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
+  const timer = new THREE.Clock();
+  let hop = 0;
+  const one = new THREE.Vector3(1, 1, 1), big = new THREE.Vector3(1.1, 1.1, 1.1);
+  function frame() {
+    const t = reduceMotion ? 10 : timer.getElapsedTime();
+    const spin = reduceMotion ? 0 : t;
+    const k = reduceMotion ? 1 : 0.06;
+    const ready = (delay) => t > delay;
+    healthSegs.forEach((seg, i) => { const target = hovered?.seg === seg ? 1.04 : 1; seg.scale.setScalar(Math.max(0.001, ease((t - 0.2 - i * 0.035) / 0.7) * target)); });
+    const prev = { a: shown.activity, f: shown.failure };
+    if (ready(0.6)) { shown.activity = approach(shown.activity, view.activityFrac, k); shown.messages = approach(shown.messages, view.m.messages24h, k); }
+    if (ready(0.9)) { shown.failure = approach(shown.failure, view.failureFrac, k); shown.failed = approach(shown.failed, view.m.failedReplies24h, k); }
+    if (ready(0.2)) shown.health = approach(shown.health, view.healthPct ?? 0, k);
+    if (prev.a !== shown.activity || !activityArc.userData.drawn) { setArc(activityArc, 2.7, 0.06, shown.activity); activityArc.userData.drawn = true; }
+    if (prev.f !== shown.failure || !failureArc.userData.drawn) { setArc(failureArc, 2.25, 0.055, Math.max(0.004, shown.failure)); failureArc.userData.drawn = true; }
+    activityHead.position.set(...tipPoint(2.7, shown.activity, 0));
+    failureHead.position.set(...tipPoint(2.25, Math.max(0.004, shown.failure), 0));
+    activityHead.visible = shown.activity > 0.002; failureHead.visible = shown.failure > 0.002;
+    satellites.forEach((s, i) => {
+      if (ready(1 + i * 0.15)) {
+        shown.satValues[i] = approach(shown.satValues[i], s.value(view), k);
+        if (!s.segmented) { const before = shown.sats[i]; shown.sats[i] = approach(shown.sats[i], s.frac(view), k); if (before !== shown.sats[i] || !s.fill.userData.drawn) { setArc(s.fill, 0.72, 0.045, Math.max(0.004, shown.sats[i])); s.fill.userData.drawn = true; } }
+        else s.fill.scale.setScalar(Math.max(0.001, ease((t - 1 - i * 0.15) / 0.8)));
+      } else if (s.segmented) s.fill.scale.setScalar(0.001);
+      s.spin.rotation.z = spin * (i % 2 ? -0.15 : 0.15);
+      s.group.scale.lerp(hovered?.sat === s.group ? big : one, 0.15);
+      s.group.position.y = -3.95 + Math.sin(spin * 0.8 + i) * 0.04;
+      s.label.querySelector('b').textContent = Math.round(shown.satValues[i]);
+    });
+    orbiters.forEach((o) => { const a = o.userData.phase - spin * o.userData.speed; o.position.set(Math.cos(a) * 1.75, Math.sin(a) * 1.75, 0); });
+    statusRing.material.opacity = 0.45 + 0.4 * (0.5 + 0.5 * Math.sin(spin * 2.2));
+    statusRing.scale.setScalar(1 + 0.015 * Math.sin(spin * 2.2));
+    hop += ((hovered?.section === 'profile' ? 0.08 : 0) - hop) * 0.15;
+    robot.position.y = Math.sin(spin * 1.6) * 0.035 + hop;
+    robot.rotation.y += ((parallax.x * 0.35) - robot.rotation.y) * 0.08;
+    robot.rotation.x += ((-parallax.y * 0.3) - robot.rotation.x) * 0.08;
+    const blink = !reduceMotion && t % 4.2 < 0.13 ? 0.12 : 1;
+    eyes.forEach((eye) => { eye.scale.y = blink; });
+    arms.forEach((arm, i) => { arm.position.y = -1.5 * cell + Math.sin(spin * 3 + i * Math.PI) * 0.018; });
+    antenna.scale.setScalar(1 + 0.18 * Math.sin(spin * 3.2));
+    outerTicks.rotation.z = -spin * 0.03;
+    stars.rotation.z = spin * 0.004;
+    tilt.rotation.x += ((-0.22 - parallax.y * 0.12) - tilt.rotation.x) * 0.05;
+    tilt.rotation.y += ((parallax.x * 0.22) - tilt.rotation.y) * 0.05;
+    const unitsPerPx = (2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / innerHeight;
+    root.position.x += (-drawerShiftPx * unitsPerPx - root.position.x) * 0.08;
+    scene.updateMatrixWorld();
+    labels.core.querySelector('b').textContent = view.healthPct === null ? '—' : Math.round(shown.health) + '%';
+    labels.activity.querySelector('b').textContent = Math.round(shown.messages);
+    labels.failure.querySelector('b').textContent = Math.round(shown.failed);
+    place(labels.core, robot, [0, 0.82, 0]);
+    place(labels.name, robot, [0, -0.78, 0]);
+    place(labels.activity, tilt, tipPoint(2.7, shown.activity, 1.5));
+    place(labels.failure, tilt, tipPoint(2.25, Math.max(0.004, shown.failure), -0.42));
+    satellites.forEach((s) => place(s.label, s.group));
+    pick();
+    composer.render();
+    requestAnimationFrame(frame);
+  }
+  frame();
+}
+</script>
 </body>
-</html>`.replace(/\nReview: /g, "\\nReview: ").replace(/"\n"/g, "String.fromCharCode(10)");
+</html>
+`;
 }

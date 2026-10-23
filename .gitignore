@@ -7,3 +7,4 @@
 /.agent-rig.backup-*/
 /dist/
 /node_modules/
+/demo-test/

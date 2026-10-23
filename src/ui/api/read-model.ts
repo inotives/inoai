@@ -1,9 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { inspectRuntimeHomeLock, type RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import { validateEnabledSkills, type EnabledSkillsDocument } from "../../inoai/skills/skill-manifest.js";
 
 type UiMessage = { id: number; workspaceId: string; transport: string; direction: string; state: string; body: string; createdAt: string; updatedAt: string };
+type UiSkillFile = { path: string; size: number; text: string | null };
+type UiSkill = { id: string; version: string; approvedAt: string; capabilities: Record<string, string | boolean>; files: UiSkillFile[] };
 type UiMemory = { id: number; origin: string; state: string; body: string; review: { id: number; state: string; recap: string | null } | null; createdAt: string; updatedAt: string };
 
 export type UiData = {
@@ -11,6 +14,7 @@ export type UiData = {
   metrics: { messages24h: number; messages30d: number; failedReplies24h: number; failedReplies30d: number; activeSessions: number; messagesPerSession: number };
   agentMarkdown: string;
   skills: string[];
+  skillDetails: UiSkill[];
   tools: string[];
   health: Array<{ eventType: string; detail: string | null; createdAt: string }>;
   messages: UiMessage[];
@@ -28,17 +32,51 @@ function redact(value: string): string {
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]");
 }
 
-async function readEnabledSkills(home: RuntimeHome): Promise<string[]> {
+const SKILL_FILE_LIMIT = 200;
+const SKILL_TEXT_LIMIT = 64 * 1024;
+
+// Lists regular files in an installed skill package. Symlinks are skipped, and
+// only small text files carry their redacted content.
+async function readSkillFiles(directory: string): Promise<UiSkillFile[]> {
+  const files: UiSkillFile[] = [];
+  const walk = async (relativeDirectory: string): Promise<void> => {
+    const entries = await readdir(join(directory, relativeDirectory), { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (files.length >= SKILL_FILE_LIMIT) return;
+      const path = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { await walk(path); continue; }
+      if (!entry.isFile()) continue;
+      const size = (await stat(join(directory, path))).size;
+      let text: string | null = null;
+      if (size <= SKILL_TEXT_LIMIT) {
+        const content = await readFile(join(directory, path));
+        if (!content.includes(0)) text = redact(content.toString("utf8"));
+      }
+      files.push({ path, size, text });
+    }
+  };
+  await walk("");
+  return files.sort((a, b) => Number(b.path === "SKILL.md") - Number(a.path === "SKILL.md"));
+}
+
+async function readEnabledSkills(home: RuntimeHome): Promise<UiSkill[]> {
+  let document: EnabledSkillsDocument;
   try {
-    const document = validateEnabledSkills(JSON.parse(await readFile(home.skillsEnabledFile, "utf8")) as EnabledSkillsDocument);
-    return document.skills.map((skill) => skill.id);
+    document = validateEnabledSkills(JSON.parse(await readFile(home.skillsEnabledFile, "utf8")) as EnabledSkillsDocument);
   } catch {
     return [];
   }
+  return Promise.all(document.skills.map(async (skill) => ({
+    id: skill.id,
+    version: skill.version,
+    approvedAt: skill.approved_at,
+    capabilities: skill.capabilities,
+    files: await readSkillFiles(join(home.skillsDirectory, skill.id)).catch(() => []),
+  })));
 }
 
 export async function loadUiData(home: RuntimeHome): Promise<UiData> {
-  const [agentMarkdown, skills, lockState] = await Promise.all([
+  const [agentMarkdown, skillDetails, lockState] = await Promise.all([
     readFile(home.agentFile, "utf8").then(redact),
     readEnabledSkills(home),
     inspectRuntimeHomeLock(home.lockFile),
@@ -57,7 +95,7 @@ export async function loadUiData(home: RuntimeHome): Promise<UiData> {
     const memories = (database.prepare("SELECT m.id, m.origin, m.state, m.body, m.created_at AS createdAt, m.updated_at AS updatedAt, r.id AS reviewId, r.state AS reviewState, r.recap AS reviewRecap FROM memories m LEFT JOIN memory_reviews r ON r.id = m.review_id AND r.deleted_at IS NULL WHERE m.deleted_at IS NULL ORDER BY m.created_at DESC LIMIT 500").all() as Array<UiMemory & { createdAt: number; updatedAt: number; reviewId: number | null; reviewState: string | null; reviewRecap: string | null }>).map((row) => ({ id: row.id, origin: row.origin, state: row.state, body: redact(row.body), review: row.reviewId === null ? null : { id: row.reviewId, state: row.reviewState!, recap: row.reviewRecap === null ? null : redact(row.reviewRecap) }, createdAt: timestamp(row.createdAt), updatedAt: timestamp(row.updatedAt) }));
     const health = (database.prepare("SELECT event_type AS eventType, detail, created_at AS createdAt FROM events WHERE event_type LIKE 'heartbeat%' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 24").all() as Array<{ eventType: string; detail: string | null; createdAt: number }>).map((row) => ({ eventType: row.eventType, detail: row.detail === null ? null : redact(row.detail), createdAt: timestamp(row.createdAt) }));
     const status = lockState === "live" ? "running" : lockState === "missing" || lockState === "stale" ? "stopped" : "unknown";
-    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills, tools: [], health, messages, memories };
+    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tools: [], health, messages, memories };
   } finally {
     database.close();
   }
