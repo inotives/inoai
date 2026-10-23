@@ -112,8 +112,8 @@ test("UI create writes a placeholder session and a task with ui:owner audit fiel
     // Reads still work and carry the new task columns.
     const data = (await send("GET", "/api/ui-data")).body;
     assert.equal(data.tasks.length, 2);
-    assert.deepEqual(Object.keys(data.tasks[0]).sort(), ["createdAt", "endsAt", "goal", "id", "intervalSeconds", "maxRuns", "nextDueAt", "outputSpec",
-      "runs", "scheduleDays", "scheduleKind", "scheduleTime", "state", "taskType", "timezone", "title", "updatedAt"]);
+    assert.deepEqual(Object.keys(data.tasks[0]).sort(), ["createdAt", "endsAt", "goal", "id", "intervalSeconds", "maxRuns", "nextDueAt", "outputSpec", "redactedFields",
+      "runs", "scheduleDays", "scheduleKind", "scheduleLabel", "scheduleTime", "state", "taskType", "timezone", "title", "updatedAt"]);
   });
 });
 
