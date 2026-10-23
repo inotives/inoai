@@ -275,7 +275,8 @@ export class PostgresOperationalStore implements OperationalStore, MemoryOperati
   }
 
   async archiveResponseChunks(messageId: number, bodies: string[], actor = "runtime:codex"): Promise<MessageRecord[] | undefined> {
-    if (!bodies.length || bodies.some((body) => !body)) throw new RangeError("Response chunks must be nonempty");
+    // An empty list completes the turn without a reply (a reply that held only a Task block).
+    if (bodies.some((body) => !body)) throw new RangeError("Response chunks must be nonempty");
     return transaction(this.pool, async (client) => {
       const inbound = (await safeQuery<MessageRecord>(client, `SELECT * FROM ${this.table("messages")} WHERE id = $1 AND direction = 'user' AND state = 'processing' AND runtime_started_at IS NOT NULL AND deleted_at IS NULL FOR UPDATE`, [messageId]))[0];
       if (!inbound) return undefined;

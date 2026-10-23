@@ -701,7 +701,9 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       console.error(failure instanceof Error ? failure.message : failure);
       process.exitCode = 1;
     });
-  }, transport);
+  }, transport, { store: instance.store! as OperationalStore & TaskOperationsStore, ownerUserId: instance.owner.id,
+    ownerTimeZone: instance.configuration.ownerTimeZone,
+    now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000) });
   // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
   // chat always runs first.
   const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {

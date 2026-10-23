@@ -1020,7 +1020,8 @@ export function failProcessingMessage(database: DatabaseSync, messageId: number,
 }
 
 export function archiveResponseChunks(database: DatabaseSync, messageId: number, bodies: string[], actor = "runtime:codex"): MessageRecord[] | undefined {
-  if (!bodies.length || bodies.some((body) => !body)) throw new RangeError("Response chunks must be nonempty");
+  // An empty list completes the turn without a reply (a reply that held only a Task block).
+  if (bodies.some((body) => !body)) throw new RangeError("Response chunks must be nonempty");
   database.exec("BEGIN IMMEDIATE");
   try {
     const inbound = activeRow<MessageRecord>(database, `SELECT * FROM messages WHERE id = ? AND direction = 'user'

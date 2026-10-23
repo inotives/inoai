@@ -9,6 +9,9 @@ import { KnownDeliveryFailure } from "./transport-port.js";
 import type { ConversationTransport } from "./transport-port.js";
 import { buildEnabledSkillIndex, loadSelectedSkill, selectEnabledSkill } from "../skills/skill-loader.js";
 import { prepareSkillScripts, skillExecutionInstructions } from "../skills/skill-execution.js";
+import type { TaskOperationsStore } from "../connectors/persistence/sqlite/operational-store.js";
+import type { SessionRecord, TaskProposalRecord, TaskRecord } from "../connectors/persistence/sqlite/legacy-database.js";
+import { extractTaskBlock, taskBlockInstruction, validateTaskBlock } from "../tasks/task-block.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
@@ -22,6 +25,19 @@ export function providerMismatchNotice(storedProvider: string, currentDisplayNam
   const owner = Object.hasOwn(providerNames, storedProvider) ? `${providerNames[storedProvider]} session` : "a session from a different agent provider";
   return `This thread belongs to ${owner}. Use /inoai reset to start a new ${currentDisplayName} session here, or start a new thread.`;
 }
+
+const proposalLifetimeSeconds = 24 * 60 * 60;
+const proposalStoreFailedNote = "Task card not created: the proposal could not be saved. Please ask again.";
+
+/** Chat-proposed Tasks: owner turns in normal conversations get the Task block instruction and may create proposals. */
+export type ChatTaskOptions = {
+  store: Pick<TaskOperationsStore, "listTasks" | "createTaskProposal">;
+  ownerUserId: number;
+  ownerTimeZone: string;
+  /** Receives each new pending proposal after the answer is archived. T-0004 delivers the card. */
+  onProposal?: (proposal: TaskProposalRecord, message: MessageRecord) => Promise<void> | void;
+  now?: () => number;
+};
 
 export function splitFinalAnswer(answer: string, limit = 2000): string[] {
   if (!answer.trim() || limit < 2) throw new RangeError("Final answer must be nonblank and have a usable limit");
@@ -59,6 +75,7 @@ export class ConversationWorker {
     private readonly agentProvider: Configuration["agentProvider"],
     private readonly onFailure: (error: Error) => void = () => {},
     private readonly transport?: ConversationTransport,
+    private readonly chatTasks?: ChatTaskOptions,
   ) {}
 
   wake(): Promise<void> {
@@ -191,6 +208,8 @@ export class ConversationWorker {
         ? await startAgentSession(this.database, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
       let prompt = await composeTurnPrompt(this.database, message);
+      const tasks = await this.chatTaskList(session, message);
+      if (tasks) prompt += `\n\n${taskBlockInstruction(tasks, this.chatTasks!.ownerTimeZone, this.now())}`;
       const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
       const skillInstructions = selected ? await loadSelectedSkill(this.home, { skillId: selected.id }) : undefined;
       if (selected && skillInstructions) {
@@ -215,7 +234,10 @@ export class ConversationWorker {
         return;
       }
       if (outcome.state === "completed") {
-        if (outcome.answer?.trim()) {
+        const extracted = extractTaskBlock(outcome.answer ?? "");
+        if (extracted.found) {
+          await this.archiveWithTaskBlock(session, message, extracted, tasks);
+        } else if (outcome.answer?.trim()) {
           await this.database.archiveResponseChunks(message.id, splitFinalAnswer(outcome.answer), "conversation-worker");
         } else if (await this.database.failProcessingMessage(message.id, "Runtime returned no final answer", "conversation-worker")) {
           await this.database.createEvent({ session_id: session.id, message_id: message.id,
@@ -244,6 +266,64 @@ export class ConversationWorker {
     } finally {
       if (indicator) clearInterval(indicator);
       this.activeAgentSessionIds.delete(message.id);
+    }
+  }
+
+  private now(): number { return this.chatTasks?.now?.() ?? Math.floor(Date.now() / 1000); }
+
+  // Owner turns in normal conversations only. Task threads never reach this worker as pending turns, but a Task's
+  // Session is excluded here too. Returns undefined when the turn gets no Task instruction.
+  private async chatTaskList(session: SessionRecord, message: MessageRecord): Promise<TaskRecord[] | undefined> {
+    if (!this.chatTasks || message.user_id !== this.chatTasks.ownerUserId || session.agent_session_id.startsWith("pending:task:")) return undefined;
+    try {
+      const tasks = await this.chatTasks.store.listTasks();
+      return tasks.some((task) => task.session_id === session.id) ? undefined : tasks;
+    } catch {
+      return undefined; // Without the Task list the turn runs without the instruction; it never fails the turn.
+    }
+  }
+
+  // The raw block never reaches the archive or Discord. A block-only answer archives only its note, or nothing.
+  private async archiveWithTaskBlock(session: SessionRecord, message: MessageRecord,
+    extracted: ReturnType<typeof extractTaskBlock> & { found: true }, tasks: TaskRecord[] | undefined): Promise<void> {
+    let note: string | undefined;
+    let proposal: TaskProposalRecord | undefined;
+    if (tasks && this.chatTasks) {
+      const now = this.now();
+      const result = validateTaskBlock(extracted, { ownerTimeZone: this.chatTasks.ownerTimeZone, now, taskIds: new Set(tasks.map((task) => task.id)) });
+      let detail: string;
+      if (result.ok) {
+        try {
+          proposal = await this.chatTasks.store.createTaskProposal({ session_id: session.id, transport: session.transport,
+            workspace_id: session.workspace_id, conversation_id: session.conversation_id, kind: result.proposal.kind,
+            task_id: result.proposal.taskId, spec_json: result.proposal.spec ? JSON.stringify(result.proposal.spec) : null,
+            expires_at: now + proposalLifetimeSeconds }, now, "discord:owner");
+          detail = `proposal=${proposal.id}; kind=${proposal.kind}; task=${proposal.task_id ?? "new"}`;
+        } catch {
+          note = proposalStoreFailedNote;
+          detail = "reason=store_failed";
+        }
+      } else {
+        note = result.rejection.note;
+        detail = `reason=${result.rejection.reason}${result.rejection.fields.length ? `; fields=${result.rejection.fields.join(",")}` : ""}`;
+      }
+      await this.recordBestEffort(session.id, message.id, proposal ? "task_proposal_created" : "task_proposal_rejected", detail);
+    }
+    const text = note ? (extracted.answer ? `${extracted.answer}\n\n${note}` : note) : extracted.answer;
+    const archived = await this.database.archiveResponseChunks(message.id, text ? splitFinalAnswer(text) : [], "conversation-worker");
+    if (!proposal || !archived) return;
+    try {
+      await this.chatTasks?.onProposal?.(proposal, message);
+    } catch {
+      // Card delivery owns its own failure handling; the turn already has its archived answer.
+    }
+  }
+
+  private async recordBestEffort(sessionId: number, messageId: number, eventType: string, detail: string): Promise<void> {
+    try {
+      await this.database.createEvent({ session_id: sessionId, message_id: messageId, event_type: eventType, detail }, "conversation-worker");
+    } catch {
+      // Proposal event recording never fails the turn.
     }
   }
 
