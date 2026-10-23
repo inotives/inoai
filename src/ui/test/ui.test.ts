@@ -43,6 +43,8 @@ test("local UI binds to loopback and serves the dark ring console", async () => 
     assert.match(html, /inoai\.robotColor\./);
     assert.match(html, /aria-label="Close details"/);
     assert.equal(html.includes("Fixture-driven preview"), false);
+    assert.match(html, /Anomaly event log/);
+    assert.match(html, /No anomalies in the last 24 hours/);
     // Activity: a 24h / 7d / 30d window switch and seven charts replace the message list.
     assert.match(html, /const INSIGHT_WINDOWS = \['24h', '7d', '30d'\];/);
     assert.match(html, /'aria-label': 'Chart window'/);

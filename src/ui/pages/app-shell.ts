@@ -429,8 +429,13 @@ const SECTIONS = {
     markdown(v.data.agentMarkdown)] }),
   health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [
     h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
-    h('div', { class: 'list', style: 'margin-top:16px' }, v.hours.flatMap((x) => x.events).filter((x) => x.state !== 'healthy').reverse().map((x) =>
-      h('div', { class: 'item' }, h('div', { class: 'meta' }, pill(x.state), h('span', { class: 'when' }, when(x.createdAt))), h('p', {}, describe(x.detail)))))] }),
+    ...(() => {
+      const anomalies = v.hours.flatMap((x) => x.events).filter((x) => x.state !== 'healthy').reverse();
+      return [h('div', { class: 'list-head', style: 'margin-top:16px' }, 'Anomaly event log · ' + anomalies.length),
+        anomalies.length ? h('div', { class: 'list' }, anomalies.map((x) =>
+          h('div', { class: 'item' }, h('div', { class: 'meta' }, pill(x.state), h('span', { class: 'when' }, when(x.createdAt))), h('p', {}, describe(x.detail)))))
+          : empty('No anomalies in the last 24 hours')];
+    })()] }),
   activity: (v) => {
     // The window switch redraws only the charts, so scroll position stays put.
     const box = h('div', { class: 'charts' + (chartsEnter ? ' enter' : '') });
