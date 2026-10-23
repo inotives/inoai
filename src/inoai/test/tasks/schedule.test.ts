@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { describeSchedule, nextRunAt, toTaskColumns, validateTaskSpec, type Schedule, type TaskSpec } from "../../tasks/schedule.js";
+import { describeSchedule, nextRunAt, taskSpecFromRow, toTaskColumns, validateTaskSpec, type Schedule, type TaskSpec } from "../../tasks/schedule.js";
 
 const at = (iso: string) => Date.parse(iso) / 1000;
 const spec = (schedule: Schedule, timezone: string, extra: Partial<TaskSpec> = {}): TaskSpec => ({
@@ -166,4 +166,21 @@ test("describeSchedule returns short plain-English labels", () => {
   assert.equal(describeSchedule(spec({ kind: "once", at: null }, "UTC")), "once, now");
   assert.equal(describeSchedule(spec({ kind: "once", at: at("2026-10-24T01:00:00Z") }, "Asia/Singapore")),
     "once at 2026-10-24 09:00 (Asia/Singapore)");
+});
+
+test("taskSpecFromRow rebuilds each stored schedule and ignores legacy or invalid rows", () => {
+  const now = at("2026-10-23T00:00:00Z");
+  const schedules: Schedule[] = [{ kind: "once", at: now + 3600 }, { kind: "interval", hours: 4 }, { kind: "daily", time: "09:00" },
+    { kind: "days", time: "09:00", days: ["mon", "fri"] }, { kind: "weekly", time: "18:30", day: "sun" }];
+  for (const schedule of schedules) {
+    const original = spec(schedule, "Asia/Singapore", { expectedOutput: "List", maxRuns: schedule.kind === "once" ? null : 3 });
+    const columns = toTaskColumns(original, now);
+    assert.deepEqual(taskSpecFromRow(columns), original, schedule.kind);
+  }
+  const legacy = { ...toTaskColumns(spec({ kind: "daily", time: "09:00" }, "UTC"), now), schedule_kind: null };
+  assert.equal(taskSpecFromRow(legacy), null);
+  const daily = toTaskColumns(spec({ kind: "daily", time: "09:00" }, "UTC"), now);
+  assert.equal(taskSpecFromRow({ ...daily, schedule_time: "9am" }), null);
+  assert.equal(taskSpecFromRow({ ...daily, schedule_kind: "days", schedule_days: "mon,funday" }), null);
+  assert.equal(taskSpecFromRow({ ...daily, timezone: "Not/AZone" }), null);
 });

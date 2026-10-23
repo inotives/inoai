@@ -182,3 +182,93 @@ test("createTask keeps rejecting a due time on legacy one-time Tasks", async (t)
   await assert.rejects(store.createTask({ goal: "once", task_type: "one_time", interval_seconds: 3600, schedule_kind: "once",
     conversation_id: "thread", session_id: session.id }), /One-time Task cannot have a schedule/);
 });
+
+const at = (iso: string) => Date.parse(iso) / 1000;
+
+async function scheduledTask(context: Awaited<ReturnType<typeof fixture>>, key: string, input: Record<string, unknown>, now: number) {
+  const { store, home, session: ownerSession } = context;
+  const result = validateTaskSpec({ title: key, instruction: `Goal ${key}`, timezone: "Asia/Singapore", ...input }, now);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const columns = toTaskColumns((result as { spec: TaskSpec }).spec, now);
+  const session = await store.createSession({
+    user_id: ownerSession.user_id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel",
+    conversation_id: `pending:ui:${key}`, initiating_external_message_id: `starter-${key}`, agent_provider: "codex",
+    agent_session_id: `agent-session-${key}`, project_path: home.directory,
+  }, "session:test");
+  return store.createTask({ ...columns, conversation_id: session.conversation_id, session_id: session.id }, "ui:owner");
+}
+
+async function runOnce(store: Awaited<ReturnType<typeof fixture>>["store"], taskId: number, now: number, outcome: "completed" | "failed" = "completed") {
+  const run = await store.claimTaskRun(taskId, now);
+  assert.ok(run);
+  if (outcome === "completed") await store.completeTaskRun(run.id, 0, [], now + 60);
+  else assert.equal(await store.failTaskRun(run.id, "boom", now + 60), true);
+  return store.getTask(taskId);
+}
+
+test("a weekdays-at-09:00 Singapore Task keeps its clock time across a weekend after runs and failures", async (t) => {
+  const context = await fixture(t);
+  const friday = at("2026-10-23T00:00:00Z"); // Friday 08:00 in Singapore
+  const task = await scheduledTask(context, "weekdays", { schedule: { kind: "days", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] } }, friday);
+  assert.equal(task.next_due_at, at("2026-10-23T01:00:00Z"));
+  let row = await runOnce(context.store, task.id, at("2026-10-23T01:00:00Z"));
+  assert.equal(row?.next_due_at, at("2026-10-26T01:00:00Z"), "Friday run moves to Monday 09:00 SGT");
+  assert.equal(row?.state, "active");
+  row = await runOnce(context.store, task.id, at("2026-10-26T01:00:00Z"), "failed");
+  assert.equal(row?.next_due_at, at("2026-10-27T01:00:00Z"), "a failed run also moves to the next weekday 09:00");
+  assert.equal(row?.state, "active");
+});
+
+test("max_runs and ends_at complete a scheduled Task after the last allowed run", async (t) => {
+  const context = await fixture(t);
+  const now = at("2026-10-23T00:00:00Z");
+  const limited = await scheduledTask(context, "limited", { schedule: { kind: "interval", hours: 2 }, maxRuns: 2 }, now);
+  let row = await runOnce(context.store, limited.id, now + 7200);
+  assert.equal(row?.next_due_at, now + 7260 + 7200);
+  assert.equal(row?.state, "active");
+  row = await runOnce(context.store, limited.id, now + 14_460, "failed");
+  assert.equal(row?.state, "completed");
+  assert.equal(row?.next_due_at, null);
+
+  const dated = await scheduledTask(context, "dated", { schedule: { kind: "daily", time: "09:00" },
+    endsAt: at("2026-10-24T12:00:00Z") }, now);
+  row = await runOnce(context.store, dated.id, at("2026-10-23T01:00:00Z"));
+  assert.equal(row?.next_due_at, at("2026-10-24T01:00:00Z"));
+  row = await runOnce(context.store, dated.id, at("2026-10-24T01:00:00Z"));
+  assert.equal(row?.state, "completed");
+  assert.equal(row?.next_due_at, null);
+  assert.equal((await context.store.listTaskRuns(dated.id)).length, 2);
+});
+
+test("resume and restart recovery recalculate scheduled Tasks from their schedule", async (t) => {
+  const context = await fixture(t);
+  const { store } = context;
+  const now = at("2026-10-23T00:00:00Z");
+  const daily = await scheduledTask(context, "daily", { schedule: { kind: "daily", time: "09:00" } }, now);
+  assert.equal(await store.pauseTask(daily.id), true);
+  assert.equal(await store.resumeTask(daily.id, "user:owner", at("2026-10-25T03:00:00Z")), true);
+  let row = await store.getTask(daily.id);
+  assert.equal(row?.state, "active");
+  assert.equal(row?.next_due_at, at("2026-10-26T01:00:00Z"), "resume uses the next 09:00 after now");
+
+  const interval = await scheduledTask(context, "interval", { schedule: { kind: "interval", hours: 3 } }, now);
+  await store.pauseTask(interval.id);
+  await store.resumeTask(interval.id, "user:owner", now + 50_000);
+  assert.equal((await store.getTask(interval.id))?.next_due_at, now + 50_000 + 10_800);
+
+  const claimed = await store.claimTaskRun(daily.id, at("2026-10-26T01:00:00Z"));
+  assert.ok(claimed);
+  await store.recoverTaskRuns("startup-recovery", at("2026-10-26T05:00:00Z"));
+  assert.equal((await store.getTaskRun(claimed.id))?.state, "failed");
+  row = await store.getTask(daily.id);
+  assert.equal(row?.next_due_at, at("2026-10-27T01:00:00Z"), "recovery keeps the 09:00 clock time");
+  assert.equal(row?.state, "active");
+
+  const once = await scheduledTask(context, "once", { schedule: { kind: "once" } }, now);
+  const onceRun = await store.claimTaskRun(once.id, now);
+  assert.ok(onceRun);
+  await store.recoverTaskRuns("startup-recovery", now + 100);
+  row = await store.getTask(once.id);
+  assert.equal(row?.state, "completed");
+  assert.equal(row?.next_due_at, null);
+});

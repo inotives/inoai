@@ -277,6 +277,54 @@ export function toTaskColumns(spec: TaskSpec, now = Math.floor(Date.now() / 1000
   };
 }
 
+/** The stored task columns that `taskSpecFromRow` reads. */
+export type TaskScheduleRow = {
+  goal: string;
+  title: string | null;
+  output_spec: string | null;
+  interval_seconds: number | null;
+  next_due_at: number | null;
+  timezone: string | null;
+  schedule_kind: string | null;
+  schedule_time: string | null;
+  schedule_days: string | null;
+  ends_at: number | null;
+  max_runs: number | null;
+};
+
+/**
+ * Rebuilds the TaskSpec from a stored task row. Returns null for a legacy row
+ * (`schedule_kind` null) or a row whose schedule columns are not valid.
+ * A stored one-time task keeps its `next_due_at` as its run time.
+ */
+export function taskSpecFromRow(row: TaskScheduleRow): TaskSpec | null {
+  if (!(scheduleKinds as readonly unknown[]).includes(row.schedule_kind)) return null;
+  const kind = row.schedule_kind as ScheduleKind;
+  const timezone = normalizeTimeZone(row.timezone ?? "UTC");
+  if (!timezone) return null;
+  let schedule: Schedule;
+  if (kind === "once") schedule = { kind, at: row.next_due_at };
+  else if (kind === "interval") {
+    const seconds = row.interval_seconds;
+    if (seconds == null || !Number.isSafeInteger(seconds) || seconds < 3600 || seconds % 3600 !== 0) return null;
+    schedule = { kind, hours: seconds / 3600 };
+  } else {
+    const time = row.schedule_time;
+    if (time == null || !timePattern.test(time)) return null;
+    if (kind === "daily") schedule = { kind, time };
+    else {
+      const days = (row.schedule_days ?? "").split(",").map((day) => day.trim());
+      if (days.length === 0 || !days.every(isWeekday)) return null;
+      if (kind === "weekly") {
+        if (days.length !== 1) return null;
+        schedule = { kind, time, day: days[0] };
+      } else schedule = { kind: "days", time, days: weekdays.filter((day) => days.includes(day)) };
+    }
+  }
+  return { title: row.title ?? "", instruction: row.goal, expectedOutput: row.output_spec, schedule, timezone,
+    endsAt: row.ends_at, maxRuns: row.max_runs };
+}
+
 function formatLocal(unixSeconds: number, timeZone: string): string {
   const p = localParts(unixSeconds, timeZone);
   const pad = (value: number) => String(value).padStart(2, "0");
