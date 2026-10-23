@@ -24,7 +24,8 @@ export const reviewInstructions = [
 export type RuntimeEvent =
   | { type: "progress"; text: string }
   | { type: "session"; id: string }
-  | { type: "answer"; text: string };
+  | { type: "answer"; text: string }
+  | { type: "usage"; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number; costUsd?: number };
 
 export type RuntimeFailureKind = "authentication" | "usage" | "pre_start" | "timed_out" | "cancelled" | "uncertain" | "session_missing";
 
