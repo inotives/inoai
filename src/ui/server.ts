@@ -21,6 +21,11 @@ function respondJson(response: ServerResponse<IncomingMessage>, status: number, 
   response.end(JSON.stringify(body));
 }
 
+function respondMethodNotAllowed(response: ServerResponse<IncomingMessage>, allow: string): void {
+  response.setHeader("allow", allow);
+  respondJson(response, 405, { error: "Method not allowed." });
+}
+
 class RequestRejected extends Error {
   constructor(readonly status: 400 | 403 | 404 | 405, readonly reason: string, readonly publicMessage: string) {
     super(reason);
@@ -119,12 +124,25 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
   const token = randomBytes(32).toString("hex");
   let boundPort = port;
   const server = createServer(async (request, response) => {
-    if (request.url === "/api/ui-data") {
+    const method = request.method ?? "GET";
+    const path = (request.url ?? "/").split("?")[0]!;
+    // Every path needs the server's own Host, so a DNS-rebinding page cannot read the page, token, or data.
+    if (![`127.0.0.1:${boundPort}`, `localhost:${boundPort}`].includes(request.headers.host ?? "")) {
+      if (path === "/api/tasks" || path.startsWith("/api/tasks/")) logRejection(method, path, "host");
+      response.setHeader("connection", "close");
+      respondJson(response, 403, { error: "Forbidden." });
+      return;
+    }
+    if (path === "/api/ui-data") {
+      if (method !== "GET") { respondMethodNotAllowed(response, "GET"); return; }
       try { respondJson(response, 200, await loadUiData(home)); } catch { respondJson(response, 200, { error: "Runtime data unavailable" }); }
       return;
     }
-    const method = request.method ?? "GET";
-    const path = (request.url ?? "/").split("?")[0]!;
+    if (path === "/") {
+      if (method !== "GET" && method !== "HEAD") { respondMethodNotAllowed(response, "GET, HEAD"); return; }
+      respond(response, 200, renderAppShell(token));
+      return;
+    }
     let route: TaskRoute | undefined;
     try {
       route = taskRoute(method, path);
@@ -135,7 +153,7 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
       return;
     }
     if (route) { await handleTaskWrite(request, response, home, route, boundPort, token, method, path); return; }
-    respond(response, 200, renderAppShell(token));
+    respondJson(response, 404, { error: "Not found." });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", (error) => { server.close(); reject(error); });

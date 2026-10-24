@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { bootstrapRuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import { loadUiData } from "../api/read-model.js";
 import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
@@ -150,6 +150,89 @@ test("UI data reads the selected SQLite home and redacts secret-like content", a
     assert.equal(JSON.stringify(data).includes("discord"), true);
     assert.equal(JSON.stringify(data).includes("do-not-return"), false);
   } finally {
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
+type RawReply = { status: number; text: string; allow?: string };
+
+function rawRequest(port: number, method: string, path: string, headers: Record<string, string> = {}, payload?: string): Promise<RawReply> {
+  return new Promise((resolve, reject) => {
+    const outgoing = request({ host: "127.0.0.1", port, path, method, headers }, (reply) => {
+      let text = "";
+      reply.setEncoding("utf8");
+      reply.on("data", (chunk) => { text += chunk; });
+      reply.on("end", () => resolve({ status: reply.statusCode ?? 0, text, allow: reply.headers.allow }));
+    });
+    outgoing.on("error", reject);
+    outgoing.end(payload);
+  });
+}
+
+test("UI checks Host on every path, methods on page and data routes, and 404s unknown paths", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-request-checks-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  const database = openDatabase(home);
+  database.prepare("INSERT INTO users (transport, workspace_id, external_user_id, role) VALUES ('discord', 'guild', 'owner', 'owner')").run();
+  database.prepare(`INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id,
+    agent_provider, agent_session_id, project_path) VALUES (1, 'discord', 'guild', 'channel', 'thread-1', 'm-1', 'claude', 'agent-1', ?)`).run(deploymentDirectory);
+  database.close();
+  const ui = await launchUi(deploymentDirectory, ".inoai-connect-test", 0);
+  const port = ui.port;
+  const warn = mock.method(console, "warn", () => {});
+  const tokenOf = (html: string) => /<meta name="inoai-ui-token" content="([0-9a-f]{64})">/.exec(html)?.[1];
+  try {
+    const page = await rawRequest(port, "GET", "/");
+    const token = tokenOf(page.text);
+    assert.ok(token, "page carries the per-launch token");
+    const taskBody = JSON.stringify({ title: "CI summary", instruction: "Summarize failing CI", expectedOutput: "A Markdown list",
+      schedule: { kind: "interval", hours: 2 }, timezone: "Asia/Singapore" });
+
+    // A wrong Host gets 403 on every path, with no page, data, or token.
+    for (const host of [`evil.example:${port}`, "127.0.0.1", `127.0.0.1:${port + 1}`, `localhost.evil.example:${port}`]) {
+      for (const [method, path] of [["GET", "/"], ["HEAD", "/"], ["GET", "/api/ui-data"], ["POST", "/api/ui-data"], ["GET", "/nope"],
+        ["POST", "/api/tasks"], ["POST", "/api/tasks/1/cancel"], ["PATCH", "/api/tasks/1"], ["GET", "/api/tasks"]] as const) {
+        const headers: Record<string, string> = { host, origin: `http://${host}`, "content-type": "application/json", "x-inoai-token": token };
+        const reply = await rawRequest(port, method, path, headers, method === "GET" || method === "HEAD" ? undefined : taskBody);
+        assert.equal(reply.status, 403, `${method} ${path} with Host ${host}`);
+        assert.equal(reply.text.includes(token), false, `${method} ${path} with Host ${host} leaks the token`);
+        assert.equal(reply.text.includes("profile"), false, `${method} ${path} with Host ${host} leaks data`);
+      }
+    }
+
+    // A wrong method on the page or data route gets 405.
+    for (const [method, path] of [["POST", "/"], ["PUT", "/"], ["DELETE", "/"], ["POST", "/api/ui-data"], ["HEAD", "/api/ui-data"], ["DELETE", "/api/ui-data"]] as const) {
+      const reply = await rawRequest(port, method, path);
+      assert.equal(reply.status, 405, `${method} ${path}`);
+      assert.equal(reply.text.includes(token), false, `${method} ${path} leaks the token`);
+    }
+
+    // An unknown path gets 404 without the app shell or token.
+    for (const path of ["/nope", "/index.html", "/favicon.ico", "/api/ui-data/extra", "/api", "/?x=1/../nope"]) {
+      const reply = await rawRequest(port, "GET", path);
+      if (path.startsWith("/?")) { assert.equal(reply.status, 200, "a query string on / still loads the page"); continue; }
+      assert.equal(reply.status, 404, `GET ${path}`);
+      assert.equal(reply.text.includes(token), false, `GET ${path} leaks the token`);
+    }
+
+    // The server's own Host loads the page, data, and Task writes on both names.
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`]) {
+      const shell = await rawRequest(port, "GET", "/", { host });
+      assert.equal(shell.status, 200, `page on ${host}`);
+      assert.ok(tokenOf(shell.text), `page on ${host} carries the token`);
+      const head = await rawRequest(port, "HEAD", "/", { host });
+      assert.equal(head.status, 200, `HEAD on ${host}`);
+      assert.equal(head.text, "");
+      const data = await rawRequest(port, "GET", "/api/ui-data", { host });
+      assert.equal(data.status, 200, `data on ${host}`);
+      assert.ok(JSON.parse(data.text).profile, `data on ${host} has a profile`);
+      const write = await rawRequest(port, "POST", "/api/tasks",
+        { host, origin: `http://${host}`, "content-type": "application/json", "x-inoai-token": token }, taskBody);
+      assert.equal(write.status, 201, `task write on ${host}: ${write.text}`);
+    }
+  } finally {
+    warn.mock.restore();
+    await new Promise<void>((resolve) => ui.server.close(() => resolve()));
     await rm(deploymentDirectory, { recursive: true, force: true });
   }
 });
