@@ -157,6 +157,18 @@ test("block-only answers do not fail the turn and archive nothing or only the no
   });
 });
 
+test("an owner turn with a # Task ID creates one run proposal for that Task", async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.turn("run the digest now", block({ action: "run", task: `#${fixture.taskId}` }));
+    assert.equal(result.state, "completed");
+    assert.deepEqual(result.events.map((event) => event.event_type), ["task_proposal_created"]);
+    const pending = await pendingProposals(fixture);
+    assert.deepEqual(pending.map((proposal) => [proposal.kind, proposal.task_id]), [["run", fixture.taskId]]);
+    assert.equal(fixture.proposals.length, 1);
+    assert.deepEqual([fixture.proposals[0].proposal.kind, fixture.proposals[0].proposal.task_id], ["run", fixture.taskId]);
+  });
+});
+
 test("an invalid block adds a field-error note, creates no proposal, and never archives raw JSON", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.turn("make a task", `Here it is.\n${block({ action: "create", title: "secret-title", schedule: { kind: "daily", time: "9am" } })}`);

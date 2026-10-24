@@ -96,6 +96,12 @@ export function extractTaskBlock(answer: string): ExtractedTaskBlock {
   }
 }
 
+/** Reads a Task ID from 3, "3", or "#3". Returns undefined for anything else. */
+function parseTaskId(value: unknown): number | undefined {
+  const id = typeof value === "string" && /^\s*#?\d+\s*$/.test(value) ? Number(value.trim().replace(/^#/, "")) : value;
+  return typeof id === "number" && Number.isSafeInteger(id) && id >= 1 ? id : undefined;
+}
+
 function reject(reason: TaskBlockRejection["reason"], note: string, fields: string[] = []): TaskBlockResult {
   return { ok: false, rejection: { reason, fields, note: `Task card not created: ${note}` } };
 }
@@ -112,9 +118,10 @@ export function validateTaskBlock(parsed: ExtractedTaskBlock & { found: true }, 
   const kind = action as TaskBlockAction;
   let taskId: number | null = null;
   if (kind !== "create") {
-    if (typeof task !== "number" || !Number.isSafeInteger(task) || task < 1) return reject("invalid_task", "task must be a Task ID number.", ["task"]);
-    if (options.taskIds && !options.taskIds.has(task)) return reject("task_not_found", `Task #${task} was not found.`, ["task"]);
-    taskId = task;
+    const id = parseTaskId(task);
+    if (id === undefined) return reject("invalid_task", "task must be a Task ID number.", ["task"]);
+    if (options.taskIds && !options.taskIds.has(id)) return reject("task_not_found", `Task #${id} was not found.`, ["task"]);
+    taskId = id;
   }
   if (kind !== "create" && kind !== "edit") return { ok: true, proposal: { kind, taskId, spec: null } };
   const timezone = fields.timezone == null || (typeof fields.timezone === "string" && !fields.timezone.trim())
@@ -155,7 +162,7 @@ export function taskBlockInstruction(tasks: readonly TaskListRow[], ownerTimeZon
     "inoai Tasks (system note, not from the user):",
     "Only when the user asks for scheduled, repeated, or later work, or to edit, run, pause, resume, or cancel a Task, end your reply with one fenced code block tagged inoai-task that holds JSON. inoai removes the block and shows the user a confirm card. Nothing is saved until they confirm. Do not show or explain the JSON.",
     `Create: {"action":"create","title":"...","instruction":"...","expectedOutput":"..." or null,"schedule":{...},"timezone":"IANA name","endsAt":unix seconds or null,"maxRuns":number or null}`,
-    `Edit: {"action":"edit","task":ID, plus every create field}. Others: {"action":"run"|"pause"|"resume"|"cancel","task":ID}.`,
+    `Edit: {"action":"edit","task":12, plus every create field}. Others: {"action":"run"|"pause"|"resume"|"cancel","task":12}. task is the Task ID number without #.`,
     `Schedule kinds (${scheduleKinds.join(", ")}): {"kind":"once","at":unix seconds or null for now}, {"kind":"interval","hours":N}, {"kind":"daily","time":"HH:MM"}, {"kind":"days","time":"HH:MM","days":["mon","fri"]}, {"kind":"weekly","time":"HH:MM","day":"mon"}.`,
     `Now: ${localTime(now, zone)} ${zone} (unix ${now}). Default time zone: ${zone}.`,
     listed.length ? `Current Tasks:\n${listed.join("\n")}` : "Current Tasks: none.",

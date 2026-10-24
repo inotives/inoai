@@ -103,12 +103,31 @@ test("validateTaskBlock checks edit and management shapes", () => {
   for (const action of ["run", "pause", "resume", "cancel"] as const) {
     const result = validate({ action, task: 4 }, new Set([4]));
     assert.deepEqual(result, { ok: true, proposal: { kind: action, taskId: 4, spec: null } });
-    for (const task of [undefined, "4", 1.5, 0]) {
+    for (const task of [undefined, 1.5, 0]) {
       const invalid = validate({ action, task });
       assert.equal(!invalid.ok && invalid.rejection.reason, "invalid_task", `${action} ${String(task)}`);
     }
     const missing = validate({ action, task: 5 }, new Set([4]));
     assert.equal(!missing.ok && missing.rejection.reason, "task_not_found");
+  }
+});
+
+test("validateTaskBlock reads the Task ID from a number, digits, or # plus digits", () => {
+  for (const action of ["edit", "run", "pause", "resume", "cancel"] as const) {
+    const extra = action === "edit" ? create : {};
+    for (const task of [3, "3", " #3 ", "#3"]) {
+      const result = validate({ ...extra, action, task }, new Set([3]));
+      assert.equal(result.ok && result.proposal.taskId, 3, `${action} ${JSON.stringify(task)}`);
+      assert.equal(result.ok && result.proposal.kind, action);
+    }
+    for (const task of [0, -1, 1.5, "", "#", "three", "3a", "#-3", "-3", "0", "#0", Number.MAX_SAFE_INTEGER + 1,
+      String(Number.MAX_SAFE_INTEGER + 1), "9".repeat(400), null, true, [3], { id: 3 }]) {
+      const invalid = validate({ ...extra, action, task }, new Set([3]));
+      assert.equal(!invalid.ok && invalid.rejection.reason, "invalid_task", `${action} ${JSON.stringify(task)}`);
+    }
+    const missing = validate({ ...extra, action, task: "#5" }, new Set([3]));
+    assert.equal(!missing.ok && missing.rejection.reason, "task_not_found");
+    assert.equal(!missing.ok && missing.rejection.note, "Task card not created: Task #5 was not found.");
   }
 });
 
@@ -122,6 +141,8 @@ test("taskBlockInstruction lists up to 20 active and paused Tasks with schedule 
   const text = taskBlockInstruction(tasks, "Asia/Singapore", now);
   assert.match(text, /inoai-task/);
   assert.match(text, /"kind":"weekly"/);
+  assert.match(text, /\{"action":"run"\|"pause"\|"resume"\|"cancel","task":12\}/);
+  assert.match(text, /task is the Task ID number without #\./);
   assert.match(text, /Default time zone: Asia\/Singapore/);
   assert.match(text, new RegExp(`unix ${now}`));
   const listed = text.split("\n").filter((line) => line.startsWith("- #"));
