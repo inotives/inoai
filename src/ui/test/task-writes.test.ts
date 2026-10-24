@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test, { mock } from "node:test";
 import { bootstrapRuntimeHome, type RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
-import { noSessionMessage } from "../api/task-writes.js";
+import { createUiTask, noSessionMessage, TaskWriteError } from "../api/task-writes.js";
 import { launchUi, uiTokenHeader } from "../server.js";
 
 type Reply = { status: number; body: any; text: string };
@@ -126,6 +126,36 @@ test("UI create returns 409 with a clear message when the home has no session", 
     assert.equal(query(home, "SELECT * FROM sessions").length, 0);
     assert.equal(query(home, "SELECT * FROM tasks").length, 0);
   }, { session: false });
+});
+
+test("UI create copies the newest Session of an active owner and ignores disabled owners", async (t) => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-writes-owner-state-"));
+  t.after(() => rm(deploymentDirectory, { recursive: true, force: true }));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  const write = (change: (database: DatabaseSync) => void) => {
+    const database = openDatabase(home);
+    try { change(database); } finally { database.close(); }
+  };
+  const addOwner = (database: DatabaseSync, externalId: string, state: string) => Number(database.prepare(`INSERT INTO users
+    (transport, workspace_id, external_user_id, role, state) VALUES ('discord', 'guild', ?, 'owner', ?)`).run(externalId, state).lastInsertRowid);
+  const addSession = (database: DatabaseSync, userId: number, conversation: string, provider: string) => database.prepare(`INSERT INTO sessions
+    (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id, agent_provider, agent_session_id, project_path)
+    VALUES (?, 'discord', 'guild', 'channel', ?, ?, ?, ?, ?)`).run(userId, conversation, `m-${conversation}`, provider, `agent-${conversation}`, deploymentDirectory);
+  let disabled = 0;
+  write((database) => { disabled = addOwner(database, "old-owner", "disabled"); addSession(database, disabled, "thread-old", "codex"); });
+  assert.throws(() => createUiTask(home, spec()), (error: unknown) => error instanceof TaskWriteError && error.status === 409 && error.message === noSessionMessage);
+  assert.equal(query(home, "SELECT * FROM tasks").length, 0);
+
+  let active = 0;
+  write((database) => {
+    active = addOwner(database, "owner", "active");
+    addSession(database, active, "thread-active", "claude");
+    addSession(database, disabled, "thread-newer", "codex"); // the newest Session belongs to the disabled owner
+  });
+  const task = createUiTask(home, spec());
+  const [row] = query<{ session_id: number }>(home, "SELECT session_id FROM tasks WHERE id=?", task.id);
+  const [session] = query<{ user_id: number; agent_provider: string }>(home, "SELECT user_id, agent_provider FROM sessions WHERE id=?", row!.session_id);
+  assert.deepEqual([session!.user_id, session!.agent_provider], [active, "claude"]);
 });
 
 test("UI edit, run now, pause, resume, and cancel update the task and its audit fields", async () => {

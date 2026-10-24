@@ -214,6 +214,20 @@ test("extractTaskBlock cuts from the start of the line, so JSON before the fence
   assert.doesNotMatch(extracted.answer, /action|inoai-task|\{/);
 });
 
+test("extractTaskBlock stays linear on a long fence run before a bare CR or line separator", () => {
+  // The quadratic opener took about 944 ms here; the linear one takes well under 1 ms. The bound leaves room for a loaded machine.
+  for (const char of ["`", "~"]) {
+    for (const separator of ["\r", " "]) {
+      const answer = char.repeat(50_000) + separator + "x";
+      const started = performance.now();
+      const extracted = extractTaskBlock(answer);
+      const elapsed = performance.now() - started;
+      assert.ok(elapsed < 250, `${JSON.stringify(char + separator)} took ${elapsed} ms`);
+      assert.deepEqual(extracted, { found: false, answer });
+    }
+  }
+});
+
 test("extractTaskBlock stays linear on long fence-character and space lines", () => {
   for (const char of ["`", "~", " "]) {
     for (const answer of [char.repeat(50_000), `Hi\n${char.repeat(50_000)}x\nBye`, "```inoai-task\n" + char.repeat(50_000) + "x"]) {

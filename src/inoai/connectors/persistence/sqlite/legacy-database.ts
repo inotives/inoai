@@ -336,12 +336,15 @@ const taskScheduleColumns = [
 ] as const;
 
 function migrateTasks(database: DatabaseSync): void {
-  const existing = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
-  const missing = taskScheduleColumns.filter(([name]) => !existing.has(name));
-  if (missing.length === 0) return;
+  const missingColumns = () => {
+    const existing = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
+    return taskScheduleColumns.filter(([name]) => !existing.has(name));
+  };
+  if (missingColumns().length === 0) return;
   database.exec("BEGIN IMMEDIATE");
   try {
-    for (const [name, type] of missing) database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+    // Another connection may have added columns before this one took the write lock.
+    for (const [name, type] of missingColumns()) database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
@@ -766,7 +769,7 @@ export function pauseTask(database: DatabaseSync, taskId: number, actor = "user:
 export function resumeTask(database: DatabaseSync, taskId: number, actor = "user:owner", now = Math.floor(Date.now() / 1000)): boolean {
   database.exec("BEGIN IMMEDIATE");
   try {
-    const changed = database.prepare("UPDATE tasks SET state='active',updated_at=unixepoch(),updated_by=? WHERE id=? AND state='paused' AND deleted_at IS NULL").run(actor, taskId).changes === 1;
+    const changed = database.prepare("UPDATE tasks SET state='active',updated_at=?,updated_by=? WHERE id=? AND state='paused' AND deleted_at IS NULL").run(now, actor, taskId).changes === 1;
     if (changed) advanceScheduledTask(database, taskId, now, actor);
     database.exec("COMMIT");
     return changed;
@@ -1252,7 +1255,7 @@ export function failRemainingResponseChunks(database: DatabaseSync, inboundMessa
     AND delivery_state = 'pending' AND deleted_at IS NULL`).run(actor, inboundMessageId).changes);
 }
 
-export function resetSession(database: DatabaseSync, sessionId: number, actor = "user:owner"): boolean {
+export function resetSession(database: DatabaseSync, sessionId: number, actor = "user:owner", now = Math.floor(Date.now() / 1000)): boolean {
   database.exec("BEGIN IMMEDIATE");
   try {
     const changed = database.prepare(`UPDATE sessions SET state = 'ended', ended_at = unixepoch(),
@@ -1265,7 +1268,7 @@ export function resetSession(database: DatabaseSync, sessionId: number, actor = 
       database.prepare(`UPDATE messages SET delivery_state = 'failed', failure_detail = 'Delivery cancelled by reset',
         updated_at = unixepoch(), updated_by = ?
         WHERE session_id = ? AND direction = 'agent' AND delivery_state = 'pending' AND deleted_at IS NULL`).run(actor, sessionId);
-      expireProposalsWhere(database, "session_id=?", [sessionId], Math.floor(Date.now() / 1000), "system", "reset");
+      expireProposalsWhere(database, "session_id=?", [sessionId], now, "system", "reset");
     }
     database.exec("COMMIT");
     return changed === 1;

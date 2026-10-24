@@ -39,7 +39,7 @@ export function sqliteStore(database: DatabaseSync): OperationalStore {
     async confirmResponseChunk(id, externalId, actor = "transport:discord") { return database.prepare("UPDATE messages SET external_message_id=?, delivery_state='confirmed', updated_by=? WHERE id=? AND delivery_state='uncertain'").run(externalId as string, actor as string, id as number).changes === 1; },
     async failResponseChunk(id, detail, actor) { return failResponseChunk(database, id, detail, actor); },
     async failRemainingResponseChunks(id, actor) { return failRemainingResponseChunks(database, id, actor); },
-    async resetSession(id, actor) { return resetSession(database, id, actor); },
+    async resetSession(id, actor, now) { return resetSession(database, id, actor, now); },
     async completeMessageWithResponse(id, response: NewAgentResponse, actor) { return completeMessageWithResponse(database, id, response, actor); },
     async createEvent(event: NewEvent, actor) { return createEvent(database, event, actor); },
     async listEvents(sessionId) { return listEvents(database, sessionId); },

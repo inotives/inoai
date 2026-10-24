@@ -121,7 +121,7 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async confirmResponseChunk(id, externalId, actor) { return confirmResponseChunk(database, id, externalId, actor); },
     async failResponseChunk(id, detail, actor) { return failResponseChunk(database, id, detail, actor); },
     async failRemainingResponseChunks(id, actor) { return failRemainingResponseChunks(database, id, actor); },
-    async resetSession(id, actor) { return resetSession(database, id, actor); },
+    async resetSession(id, actor, now) { return resetSession(database, id, actor, now); },
     async completeMessageWithResponse(id, response: NewAgentResponse, actor) { return completeMessageWithResponse(database, id, response, actor); },
     async createEvent(event: NewEvent, actor) { return createEvent(database, event, actor); },
     async listEvents(sessionId) { return listEvents(database, sessionId); },
