@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -287,9 +288,12 @@ test("failed or unanswered button callbacks reply with a private error", async (
     { update: { content: "Working.", components: [], allowedMentions: { parse: [] } } }, { followUp: failure },
   ]);
 
-  const rejecting = { ...buttonInteraction("inoai:throw", replies), reply: async () => { throw new Error("interaction expired"); } };
+  let rejected = false;
+  const rejecting = { ...buttonInteraction("inoai:throw", replies), reply: async () => { rejected = true; throw new Error("interaction expired"); } };
   assert.doesNotThrow(() => fake.emit(Events.InteractionCreate, rejecting));
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await until(() => rejected);
+  // The reply rejection settles after `rejected` is set; let it settle before checking that health did not change.
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(transport.health().state, "ready");
   await transport.stop();
 });
@@ -401,6 +405,8 @@ test("plain reply pings are ignored while explicit top-level mentions create dis
       await new Promise((resolve) => setImmediate(resolve));
       fake.emit(Events.MessageCreate, incoming("first"));
       fake.emit(Events.MessageCreate, incoming("second"));
+      await until(() => database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count === 2);
+      // Short flush so a late duplicate "first" would still show up in the exact assertions below.
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       const sessions = database.prepare("SELECT * FROM sessions ORDER BY id").all() as Array<{ id: number; conversation_id: string; initiating_external_message_id: string; project_path: string }>;
@@ -481,6 +487,8 @@ test("owned thread messages queue once without a mention and keep cross-agent me
       fake.emit(Events.MessageCreate, incoming("foreign-thread", "other-thread", "channel"));
       fake.emit(Events.MessageCreate, incoming("bot-authored", "thread", "channel", ownBot));
       fake.emit(Events.MessageCreate, incoming("wrong-user", "thread", "channel", { id: "stranger", bot: false }));
+      await until(() => instance.database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count === 3);
+      // Short flush so a late duplicate or wrongly accepted message would still show up in the exact assertions below.
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       const sessions = instance.database.prepare("SELECT id FROM sessions").all() as Array<{ id: number }>;
@@ -516,12 +524,12 @@ test("failed persistence removes the new thread so redelivery creates one bound 
       };
       instance.database.exec("CREATE TEMP TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(FAIL, 'session failed'); END");
       fake.emit(Events.MessageCreate, incoming);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await until(() => fake.deletedThreads.length === 1);
       assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
       assert.deepEqual(fake.deletedThreads, ["thread"]);
       instance.database.exec("DROP TRIGGER fail_session");
       fake.emit(Events.MessageCreate, incoming);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await until(() => instance.database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count === 1);
       assert.equal(fake.threadCount, 2);
       assert.equal(instance.database.prepare("SELECT conversation_id FROM sessions").get()?.conversation_id, "thread-2");
       assert.equal(instance.database.prepare("SELECT COUNT(*) AS count FROM messages").get()?.count, 1);
@@ -557,11 +565,9 @@ test("CLI shutdown drains an accepted request before closing SQLite", async () =
     await creating;
     process.emit("SIGTERM");
     finishThread();
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (await stat(home.lockFile).then(() => false, () => true)) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
+    await until(() => !existsSync(home.lockFile));
+    // Shutdown sets the exit code after it releases the lock; wait so it cannot land after this test restores it.
+    await until(() => process.exitCode === 0);
     assert.deepEqual(fake.deletedThreads, []);
     const restarted = await startWithTestStore(directory);
     try {
@@ -687,8 +693,7 @@ test("production SQLite startup recovers legacy approval controls and sends one 
         guildId: "guild", channelId: "thread", id: "fresh-request", author: { id: "owner", bot: false }, content: "fresh request",
         channel: { isThread: () => true, parentId: "channel" }, reference: null, mentions: { parsedUsers: new Map() },
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      assert(listMessages(again.database, session.id).some((message) => message.external_message_id === "fresh-request"));
+      await until(() => listMessages(again.database, session.id).some((message) => message.external_message_id === "fresh-request"));
       await transport.stop();
     } finally {
       await again.release();
@@ -833,12 +838,9 @@ test("CLI exits and releases the runtime lock after terminal Discord failure", a
     const fake = new FakeClient();
     await run([], new DiscordTransport("token", fake as unknown as Client), fakeRuntime, beforeReviewTime);
     fake.emit(Events.ShardDisconnect);
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (await stat(home.lockFile).then(() => false, () => true)) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
-    assert.equal(process.exitCode, 1);
+    await until(() => !existsSync(home.lockFile));
+    // Shutdown sets the exit code after it releases the lock.
+    await until(() => process.exitCode === 1);
     const restarted = await startWithTestStore(directory);
     await restarted.release();
   } finally {

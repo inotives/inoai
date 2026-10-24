@@ -18,9 +18,11 @@ import { defaultAgentProfile } from "../../agent-instance/profile.js";
 import { runRuntimeTurn } from "../../conversation/runtime-turn.js";
 
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[] };
-type Call = { argv: string[]; cwd: string; stdin: string; pid: number };
+// `stdin` is undefined until the fake has read all of stdin and installed its SIGINT handler.
+type Call = { argv: string[]; cwd: string; stdin?: string; pid: number };
 
-// A fake `claude` that records its argv, cwd, and stdin, then replays recorded stream-json lines.
+// A fake `claude` that records its call (argv, cwd, pid) before anything else, so a short timeout cannot
+// kill it unrecorded. It then records stdin and replays recorded stream-json lines.
 const fakeScript = `
 import { appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,6 +32,7 @@ const argv = process.argv.slice(2);
 const calls = join(dir, "calls.jsonl");
 let index = 0;
 try { index = readFileSync(calls, "utf8").split("\\n").filter(Boolean).length; } catch {}
+appendFileSync(calls, JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid }) + "\\n");
 const scenarios = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
 const scenario = scenarios[Math.min(index, scenarios.length - 1)];
 const flag = argv.findIndex((arg) => arg === "--session-id" || arg === "--resume");
@@ -37,7 +40,7 @@ const sid = argv[flag + 1];
 let stdin = "";
 process.stdin.on("data", (chunk) => { stdin += chunk; });
 process.stdin.on("end", () => {
-  appendFileSync(calls, JSON.stringify({ argv, cwd: process.cwd(), stdin, pid: process.pid }) + "\\n");
+  appendFileSync(join(dir, "stdin.jsonl"), JSON.stringify({ pid: process.pid, stdin }) + "\\n");
   const emit = (events) => { for (const event of events) process.stdout.write(JSON.stringify(event).replaceAll("$SID", sid) + "\\n"); };
   emit(scenario.lines ?? []);
   if (scenario.onSigint) process.on("SIGINT", () => { emit(scenario.onSigint); process.exit(0); });
@@ -53,7 +56,11 @@ async function fakeCli(scenarios: Scenario[]) {
   await chmod(executable, 0o755);
   const setScenarios = (next: Scenario[]) => writeFile(join(dir, "scenario.json"), JSON.stringify(next));
   await setScenarios(scenarios);
-  const calls = async (): Promise<Call[]> => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as Call);
+  const records = async <T>(file: string): Promise<T[]> => (await readFile(join(dir, file), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as T);
+  const calls = async (): Promise<Call[]> => {
+    const inputs = new Map((await records<{ pid: number; stdin: string }>("stdin.jsonl")).map((input) => [input.pid, input.stdin]));
+    return (await records<Call>("calls.jsonl")).map((call) => ({ ...call, stdin: inputs.get(call.pid) }));
+  };
   return { dir, executable, setScenarios, calls, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
@@ -371,7 +378,7 @@ test("a Turn whose init reports an API-key source is killed before it does work"
 test("an idle Turn times out, kills the CLI, and is not replay-safe", async () => {
   const fake = await fakeCli([{ hang: true, lines: [init, delta("thinking")] }]);
   try {
-    const runtime = new ClaudeRuntime({ executable: fake.executable, idleTimeoutMs: 200 });
+    const runtime = new ClaudeRuntime({ executable: fake.executable, idleTimeoutMs: 2_000 });
     const id = await runtime.createSession(fake.dir, "personality");
     const error = await failure(runtime.runTurn(id, "question"));
     assert.equal(error.kind, "timed_out");
@@ -466,7 +473,7 @@ test("a cancel before init is cancelled, not a replay-safe pre-start failure", a
     const runtime = new ClaudeRuntime({ executable: fake.executable });
     const id = await runtime.createSession(fake.dir, "personality");
     const pending = failure(runtime.runTurn(id, "question"));
-    for (let i = 0; i < 200 && (await fake.calls()).length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    for (let i = 0; i < 200 && (await fake.calls())[0]?.stdin === undefined; i++) await new Promise((resolve) => setTimeout(resolve, 10));
     await runtime.cancel(id);
     const error = await pending;
     assert.equal(error.kind, "cancelled");
