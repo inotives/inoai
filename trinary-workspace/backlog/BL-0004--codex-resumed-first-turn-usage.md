@@ -22,6 +22,8 @@ Codex reports only thread running totals, so the first turn of a resumed thread 
 
 - [2026-10-23] Captured from T-0003 follow-ups.
 
+- [2026-10-24] Recheck on `main` at `16b551c`: still open. Cause detail: when a turn ends without `turn/completed`, queued `tokenUsage` notices are dropped (`codex-runtime.ts:140-160`), so the saved baseline (`:123`) is stale and the next turn's consistency check (`:121`) fails; that turn records no usage.
+
 ## Open questions
 
 - None

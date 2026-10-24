@@ -2,10 +2,10 @@
 id: BL-0005
 title: Recheck runtime usage mapping on CLI upgrades
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-23T07:32:06Z
 source: T-0002, T-0003, T-0004 reviewer handoffs
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0005: Recheck runtime usage mapping on CLI upgrades

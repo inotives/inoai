@@ -42,7 +42,7 @@ None
 
 ## Discussion
 
-None
+- [2026-10-24] Recheck on `main` at `16b551c`: facts confirmed. Additions: the UI loads an icon stylesheet from `cdn-uicons.flaticon.com` (`src/ui/pages/app-shell.ts:12`), so it needs network access for icons; `pg` is used only by the optional PostgreSQL tools and could be left out of a bundle; README still describes a sibling Electron UI app (see BL-0014).
 
 ## Open questions
 

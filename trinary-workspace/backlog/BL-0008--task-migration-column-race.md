@@ -2,10 +2,10 @@
 id: BL-0008
 title: Task column migration reads columns outside its transaction
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T14:31:00Z
 source: IP-0002 T-0001 reviewer handoff 1
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0008: Task column migration reads columns outside its transaction

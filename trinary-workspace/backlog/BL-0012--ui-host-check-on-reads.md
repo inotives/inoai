@@ -2,10 +2,10 @@
 id: BL-0012
 title: Check Host on UI page and read routes
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-23T15:23:00Z
 source: IP-0002 T-0004 reviewer handoff 1
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0012: Check Host on UI page and read routes
@@ -20,7 +20,7 @@ The UI server checks Host and Origin on task writes, but GET `/` and `/api/ui-da
 
 ## Discussion
 
-None
+- [2026-10-24] Recheck on `main` at `16b551c`: still open and wider than described. Any non-Task path with any method and any Host returns the app shell, which embeds the per-launch write token (`src/ui/server.ts:138`). `/api/ui-data` answers any method because it is handled before the method is read (`:122`).
 
 ## Open questions
 

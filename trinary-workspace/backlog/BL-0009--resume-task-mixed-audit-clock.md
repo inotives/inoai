@@ -2,10 +2,10 @@
 id: BL-0009
 title: resumeTask mixes database and injected clocks in audit times
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T14:46:00Z
 source: IP-0002 T-0002 reviewer handoff 1
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0009: resumeTask mixes database and injected clocks in audit times

@@ -34,7 +34,9 @@ None
 
 ## Discussion
 
-None
+- [2026-10-24] Recheck on `main` at `16b551c`: all sub-items still open. Exact transport fallback text is "Action unavailable. Please try again." (`discord.ts:137`).
+
+- [2026-10-24] Sub-item g (`resetSession` clock) moved to IP-0004 T-0001. This item stays open for the other sub-items.
 
 ## Open questions
 

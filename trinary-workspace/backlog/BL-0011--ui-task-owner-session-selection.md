@@ -2,10 +2,10 @@
 id: BL-0011
 title: UI task creation may copy a disabled owner's session
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T15:23:00Z
 source: IP-0002 T-0004 reviewer handoff 1
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0011: UI task creation may copy a disabled owner's session
