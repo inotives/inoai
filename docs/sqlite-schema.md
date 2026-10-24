@@ -243,6 +243,40 @@ CREATE UNIQUE INDEX one_active_task_run
 CREATE INDEX task_runs_by_task
   ON task_runs(task_id, id)
   WHERE deleted_at IS NULL;
+
+CREATE TABLE task_proposals (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  transport TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('create', 'edit', 'run', 'pause', 'resume', 'cancel')),
+  task_id INTEGER REFERENCES tasks(id),
+  spec_json TEXT CHECK (spec_json IS NULL OR json_valid(spec_json)),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'confirming', 'confirmed', 'cancelled', 'expired', 'failed')),
+  expires_at INTEGER NOT NULL,
+  card_message_id TEXT,
+  card_closed_at INTEGER,
+  resolved_at INTEGER,
+  result_task_id INTEGER REFERENCES tasks(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((kind = 'create' AND task_id IS NULL) OR (kind != 'create' AND task_id IS NOT NULL)),
+  CHECK ((kind IN ('create', 'edit') AND spec_json IS NOT NULL) OR
+    (kind NOT IN ('create', 'edit') AND spec_json IS NULL)),
+  CHECK ((state IN ('pending', 'confirming') AND resolved_at IS NULL) OR
+    (state NOT IN ('pending', 'confirming') AND resolved_at IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX one_pending_task_proposal_per_conversation
+  ON task_proposals(transport, workspace_id, conversation_id)
+  WHERE state = 'pending' AND deleted_at IS NULL;
 ```
 
 ## Audit fields
@@ -262,6 +296,7 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history.
 - `tasks` binds one bounded goal to its Conversation and Agent Session. `goal` holds the instruction. A legacy Task (`schedule_kind` NULL, created by `/inoai task create`) keeps its earlier behaviour: a one-time Task has no interval or automatic due time, and a recurring interval uses whole hours stored as seconds, with the first due time one interval after creation. A scheduled Task (`schedule_kind` set) follows the rules in [Task schedules](#task-schedules). The cursor is the newest archived message consumed by the Task.
 - `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
+- `task_proposals` holds a Task create, edit, or management action that the agent proposed in chat, until the owner confirms or cancels it on its Discord card (ADR 0027). It never changes `tasks` by itself. See [Chat-proposed Tasks](#chat-proposed-tasks).
 - `approvals` remains in the schema for compatibility, but V1 creates no new pending approvals or Discord approval controls (ADR 0003). Codex approval requests are declined immediately; only a non-secret outcome Event is stored. On restart, any pending row left by an earlier local build becomes `failed`; legacy summaries and linked agent-authored request bodies are redacted, without changing user-authored Messages. Its saved data is never authority to answer or replay a lost runtime request (ADR 0001).
 
 ## Task schedules
@@ -307,6 +342,56 @@ The UI server creates a placeholder `sessions` row and the Task in one immediate
 
 When `DISCORD_TASK_CHANNEL_ID` is unset, a run of a UI-created Task whose `conversation_id` starts with `pending:ui:` makes no Discord calls. A run that has no thread posts no report. When `DISCORD_TASK_CHANNEL_ID` is set, the first run posts a starter message in that channel and opens a thread named after the title. `bindTaskConversation` then updates, in one immediate transaction, `tasks.conversation_id` and the session's `conversation_id`, `parent_conversation_id` (the task channel), and `initiating_external_message_id` (the starter). Each update is guarded on the old `pending:ui:` value and must change exactly one row; otherwise the transaction rolls back. If thread creation fails, the agent deletes the starter and thread when it can, records a `task_thread_failed` Event with detail `task=<id>; run=<id>`, and continues the run without a thread. The IDs stay pending, and the next run tries again.
 
+### Chat-proposed Tasks
+
+An owner turn in a normal conversation may end with an `inoai-task` block (ADR 0027). The conversation worker removes the block before it calls `archiveResponseChunks`, so the raw JSON is never archived or sent. A valid block creates one `task_proposals` row with `expires_at` 24 hours ahead and actor `discord:owner`.
+
+Columns:
+
+- `session_id`, `transport`, `workspace_id`, `conversation_id`: the conversation where the owner asked. The Session must be active in that conversation when the row is created.
+- `kind`: `create`, `edit`, `run`, `pause`, `resume`, or `cancel`. `task_id` is NULL only for `create`.
+- `spec_json`: the normalized Task spec, required for `create` and `edit` and NULL for the others. It holds the full text; the card shows a cut copy.
+- `card_message_id`: the Discord card. It can be written only while the row is `pending`, and it is kept after the proposal resolves.
+- `card_closed_at`: when inoai edited the card of a resolved proposal to remove its buttons. NULL while the card still has buttons.
+- `resolved_at`: NULL while `pending` or `confirming`; set for every other state.
+- `result_task_id`: the Task that a confirmed `create` made. NULL for every other outcome.
+
+States and moves:
+
+| From | To | When | Actor |
+| --- | --- | --- | --- |
+| (new) | `pending` | A valid owner block. | `discord:owner` |
+| `pending` | `confirming` | The first Create or Confirm click, while unexpired and the Session is active. | `discord:owner` |
+| `confirming` | `confirmed` or `failed` | The action ends. | `discord:owner` |
+| `pending` | `cancelled` | A Cancel click. | `discord:owner` |
+| `pending` | `expired` | 24 hours, replacement, reset, or an inactive Session at claim. | `system` |
+| `pending` | `failed` | The card send failed. | `transport:discord` |
+| `confirming` | `failed` | Startup: the process stopped during the action. | `system` |
+
+Rules:
+
+- Every move is one immediate transaction guarded on the old state, so each proposal resolves exactly once. A pending row whose `expires_at` is at or before now becomes `expired` instead of `confirming` or `cancelled`.
+- `one_pending_task_proposal_per_conversation` allows one pending row per conversation. `createTaskProposal` expires the earlier pending row in the same transaction before it inserts.
+- `resetSession` expires the Session's pending rows in its own transaction. If the archive step finds the turn already ended after a proposal was stored, the worker expires that Session's pending rows.
+- Startup (`recoverTaskProposals`) moves `confirming` rows to `failed` and expires overdue `pending` rows. While running, a sweep expires overdue rows every 60 seconds.
+- Startup rebuilds a `task_proposals` table from before `confirming` existed, copying every row (as `messages` migration does).
+- Rows are never physically deleted.
+
+Events. Details hold ids, kinds, and reason codes only, never spec text:
+
+| Event | Detail |
+| --- | --- |
+| `task_proposal_created` | `proposal=<id>; kind=<kind>; task=<id or new>` |
+| `task_proposal_rejected` | `reason=<code>` with optional `; fields=<a,b>`. Codes: `invalid_json`, `unknown_action`, `invalid_task`, `task_not_found`, `invalid_fields`, `store_failed`. No row is written. |
+| `task_proposal_confirmed` | `proposal=<id>; kind=<kind>; task=<id>`. A confirmed `create` names its new Task. |
+| `task_proposal_cancelled` | `proposal=<id>; kind=<kind>; task=<id or new>` |
+| `task_proposal_expired` | `proposal=<id>; kind=<kind>; task=<id or new>; reason=<code>`. Codes: `overdue`, `replaced`, `reset`, `session_inactive`. |
+| `task_proposal_failed` | `proposal=<id>; kind=<kind>; task=<id or new>; reason=<code>`. Codes: `card_known_pre_send_failure`, `card_uncertain_after_send_attempt`, `restart`, `invalid_spec`, `not_found`, `not_editable`, `running`, `no_run_left`, `state`, `busy`, `unavailable`, `store_failed`, `thread_failed`, `error`. |
+
+The created and rejected Events are best effort. The confirmed, cancelled, expired, and failed Events are written in the same transaction as the state change. The card's failure text is read from the `task_proposal_failed` reason.
+
+A confirmed `create` makes its Task with `created_by='discord:owner'`. A confirmed edit, pause, or resume updates the Task as `discord:owner`. A confirmed run now or cancel uses the Task runner, with its own actors, as `/inoai task run` and `/inoai task cancel` do. Without `DISCORD_TASK_CHANNEL_ID`, it creates a Session with `agent_session_id` `pending:task:<thread id>` for a new thread in the conversation's parent channel. With the task channel set, it creates the same `pending:ui:` placeholder Session as a UI-created Task, and the first run binds the thread.
+
 ### Result file
 
 The agent writes `results/<task-id>/<run-id>/result.md` for every completed and failed run whose run folder was created. This includes runs interrupted by shutdown. These runs get no `result.md`: a run that fails before its folder exists (for example "Task unavailable" or an unsafe `results/` or Task directory), a run failed by startup recovery, a cancelled run, and a run whose `result.md` path is an unsafe link. The file contains:
@@ -325,7 +410,9 @@ The UI reads `result.md` for the newest 20 runs of each listed Task, in `/api/ui
 
 The Phase 5 queue durably sets `runtime_started_at` before invoking the Agent Runtime. On restart, stale `processing` user Messages without that boundary return to `pending`; post-boundary Messages fail closed with an uncertain-outcome detail, without dropping their Session binding or replaying the turn (ADR 0002). Stale `memory_reviews` still return to `pending`. A Session processes inbound Messages FIFO, with at most one `processing` Message for that Session. Different Sessions may run independently once the Codex runtime has passed the concurrent-session check; otherwise the worker falls back to one global queue. Process a due `memory_reviews` row only when no user row is pending or processing.
 
-Reset ends the active Session and atomically fails its still-pending and processing inbound Messages plus unsent response chunks. The archived rows and the ended Session's Agent Session ID remain for audit; a later Message may create a new active Session in the same Conversation.
+`archiveResponseChunks` accepts an empty list. It then completes the turn with no `agent` row. The worker uses this for a reply that held only an `inoai-task` block. A blank chunk still throws, and a blank answer with no block still fails with `empty_answer`.
+
+Reset ends the active Session and atomically fails its still-pending and processing inbound Messages plus unsent response chunks. It also expires the Session's pending `task_proposals` rows. The archived rows and the ended Session's Agent Session ID remain for audit; a later Message may create a new active Session in the same Conversation.
 
 Task Run claims use an immediate transaction. The database index prevents a second processing Task Run in the same Agent Instance. Completion, failure, cancellation, and startup recovery set `completed_at` and update audit fields. Pause prevents new claims but lets an active run finish. `/inoai task cancel` marks an active run cancelled and ends the Task. A UI cancel ends the Task but lets an active run finish and record its result (ADR 0026). Normal Task and Task Run reads exclude soft-deleted rows.
 
