@@ -317,6 +317,21 @@ test("reset expires the Session's pending proposals in its transaction", async (
   assert.equal((await store.claimTaskProposal(pending.id, now + 1)).claimed, false);
 });
 
+test("reset uses the caller's clock for proposal expiry and the system clock without one", async (t) => {
+  const { store, session, newSession, proposal } = await fixture(t);
+  const pending = await store.createTaskProposal(proposal(), now);
+  assert.equal(await store.resetSession(session.id, "user:owner", now + 500), true);
+  const expired = (await store.getTaskProposal(pending.id))!;
+  assert.deepEqual([expired.state, expired.resolved_at, expired.updated_at], ["expired", now + 500, now + 500]);
+
+  const other = await newSession("other-thread");
+  const unclocked = await store.createTaskProposal(proposal({ session_id: other.id, conversation_id: "other-thread" }), now);
+  const before = Math.floor(Date.now() / 1000);
+  assert.equal(await store.resetSession(other.id, "user:owner"), true);
+  const resolvedAt = (await store.getTaskProposal(unclocked.id))!.resolved_at!;
+  assert.ok(resolvedAt >= before && resolvedAt <= Math.floor(Date.now() / 1000), `resolved_at ${resolvedAt}`);
+});
+
 test("startup fails leftover confirming proposals and lists resolved cards until they are closed", async (t) => {
   const { home, store, proposal } = await fixture(t);
   const stuck = await store.createTaskProposal(proposal(), now);

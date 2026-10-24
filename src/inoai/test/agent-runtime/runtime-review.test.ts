@@ -13,15 +13,17 @@ import { OpenCodeRuntime } from "../../connectors/agent-runtime/opencode-runtime
 
 // "folder": what the fake CLI leaves in ~/.claude/projects/<encoded cwd>/ (the real CLI creates none under --system-prompt).
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[]; folder?: "none" | "memory" | "jsonl" };
-type Call = { argv: string[]; cwd: string; stdin: string; pid: number };
+// `stdin` is undefined until the fake has read all of stdin and installed its SIGINT handler.
+type Call = { argv: string[]; cwd: string; stdin?: string; pid: number };
 
-// A fake `claude` that records argv, cwd, and stdin, optionally writes its project folder, then replays stream-json lines.
+// A fake `claude` that records its call (argv, cwd, pid) before anything else, so a short timeout cannot
+// kill it unrecorded. It then optionally writes its project folder, records stdin, and replays stream-json lines.
 const fakeScript = `
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const dir = dirname(fileURLToPath(import.meta.url));
-const calls = join(dir, "calls.jsonl");
+appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), pid: process.pid }) + "\\n");
 const { home, scenario } = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
 const folder = join(home, ".claude", "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"));
 if (scenario.folder === "memory" || scenario.folder === "jsonl") mkdirSync(join(folder, "memory"), { recursive: true });
@@ -29,7 +31,7 @@ if (scenario.folder === "jsonl") writeFileSync(join(folder, "session.jsonl"), "{
 let stdin = "";
 process.stdin.on("data", (chunk) => { stdin += chunk; });
 process.stdin.on("end", () => {
-  appendFileSync(calls, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin, pid: process.pid }) + "\\n");
+  appendFileSync(join(dir, "stdin.jsonl"), JSON.stringify({ pid: process.pid, stdin }) + "\\n");
   const emit = (events) => { for (const event of events) process.stdout.write(JSON.stringify(event) + "\\n"); };
   emit(scenario.lines ?? []);
   if (scenario.onSigint) process.on("SIGINT", () => { emit(scenario.onSigint); process.exit(0); });
@@ -48,8 +50,12 @@ async function fakeClaude(scenario: Scenario) {
   await chmod(executable, 0o755);
   const setScenario = (next: Scenario) => writeFile(join(dir, "config.json"), JSON.stringify({ home, scenario: next }));
   await setScenario(scenario);
-  const calls = async (): Promise<Call[]> => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as Call);
-  const reset = () => rm(join(dir, "calls.jsonl"), { force: true });
+  const records = async <T>(file: string): Promise<T[]> => (await readFile(join(dir, file), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as T);
+  const calls = async (): Promise<Call[]> => {
+    const inputs = new Map((await records<{ pid: number; stdin: string }>("stdin.jsonl")).map((input) => [input.pid, input.stdin]));
+    return (await records<Call>("calls.jsonl")).map((call) => ({ ...call, stdin: inputs.get(call.pid) }));
+  };
+  const reset = () => Promise.all([rm(join(dir, "calls.jsonl"), { force: true }), rm(join(dir, "stdin.jsonl"), { force: true })]);
   return { dir, home, executable, setScenario, calls, reset, projects: () => readdir(projects), cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
@@ -166,7 +172,7 @@ test("Claude review fails closed and replay-safe on any unsafe init or tool sign
 test("Claude review times out, kills the CLI, and cleans up", async () => {
   const fake = await fakeClaude({ hang: true, lines: [init, text("thinking")], folder: "memory" });
   try {
-    const runtime = new ClaudeRuntime({ executable: fake.executable, homeDir: fake.home, reviewTimeoutMs: 300 });
+    const runtime = new ClaudeRuntime({ executable: fake.executable, homeDir: fake.home, reviewTimeoutMs: 2_000 });
     const error = await rejection(runtime.review("p"));
     assert.equal(error.kind, "timed_out");
     assert.equal(error.replaySafe, true);
@@ -183,7 +189,7 @@ test("Claude review abort sends SIGINT and is cancelled; a pre-aborted review ne
     const runtime = new ClaudeRuntime({ executable: fake.executable, homeDir: fake.home });
     const controller = new AbortController();
     const pending = rejection(runtime.review("p", { signal: controller.signal }));
-    await until(async () => (await fake.calls()).length === 1);
+    await until(async () => (await fake.calls())[0]?.stdin !== undefined);
     controller.abort();
     const error = await pending;
     assert.equal(error.kind, "cancelled");
@@ -224,7 +230,7 @@ test("Claude close stops a running review, and a review closed while its cwd is 
     const runtime = new ClaudeRuntime({ executable: fake.executable, homeDir: fake.home, reviewTimeoutMs: 30_000 });
     const started = Date.now();
     const pending = rejection(runtime.review("p"));
-    await until(async () => (await fake.calls()).length === 1);
+    await until(async () => (await fake.calls())[0]?.stdin !== undefined);
     await runtime.close();
     const error = await pending;
     assert.equal(error.replaySafe, true);

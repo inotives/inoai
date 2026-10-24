@@ -2,10 +2,10 @@
 id: BL-0014
 title: Update leftover docs that call the UI read-only
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-23T16:20:00Z
 source: IP-0002 T-0006 worker and reviewer handoffs
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0014: Update leftover docs that call the UI read-only
@@ -25,8 +25,7 @@ IP-0002 ADR 0026 allows the UI to write Tasks. Documents outside the T-0006 list
 - Source: IP-0002 T-0006 worker handoffs 1–2 and reviewer handoffs 1–2 (local workflow records).
 
 ## Discussion
-
-None
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

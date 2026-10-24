@@ -8,7 +8,7 @@ V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCod
 | --- | --- |
 | 1–6b | Complete. Codex Memory Review remains intentionally disabled because the safety probe did not prove MCP/tool isolation. |
 | 6c | Future. One-way, redacted SQLite-to-PostgreSQL reporting and backup are not implemented. |
-| 7 | Complete. The initially proposed Electron UI was replaced by a local, read-only SPA. |
+| 7 | Complete. The initially proposed Electron UI was replaced by a local, read-only SPA. It later gained Task writes (ADR 0026). |
 | 8 | Incomplete against its original acceptance criteria. Local rotating SQLite backups and standalone macOS packaging are not implemented. |
 
 Completed follow-on work includes SQLite as the runtime source of truth, source-structure refactoring, Agent Profile and Skill Management, the SPA UI, and the Heartbeat Supervisor and setup flow. Their detailed plans are in [the archive](archived/).
@@ -313,8 +313,8 @@ holds its Runtime Home Lock. The local CLI supports live `allowlist:add`,
 through short-lived maintenance connections. Writes wait up to the 5-second
 SQLite busy timeout and return a retryable error if the database remains busy.
 Allowlist changes apply to later authorization checks; Memory changes apply to
-later prompt composition, not an already-composed Turn. UI access remains
-read-only; other live database writes and IPC are out of scope. Do not share a
+later prompt composition, not an already-composed Turn. The UI writes only
+Tasks (ADR 0026); other live database writes and IPC are out of scope. Do not share a
 runtime home between machines.
 
 **Baseline checks:**
@@ -330,21 +330,26 @@ runtime home between machines.
 
 **Status: Complete.** The delivered implementation is a local, read-only SPA,
 not the Electron design in the original plan. See the [archived SPA phase
-plan](archived/spa-agent-ui-phase-plan.md) for its reviewed scope.
+plan](archived/spa-agent-ui-phase-plan.md) for its reviewed scope. The Agent
+Tasks phase later let the UI write Tasks ([ADR 0026](adr/0026-ui-writes-tasks-directly.md));
+all other UI data stays read-only.
 
 **Purpose:** provide an operational view of one deployed Agent Instance without
 exposing credentials or requiring a central database.
 
 ### Delivered behavior
 
-The implementation serves the SPA through `inoai ui` and a local read-only API.
+The implementation serves the SPA through `inoai ui` and a local API that was read-only at delivery.
 It does not include the original Electron process, file picker, or memory-editing
 controls.
 
 - `inoai ui --connect-dir <runtime-home> [--port 8989]` serves the UI on
   `127.0.0.1`; port `8989` is the default.
 - The UI reads only the selected runtime home's SQLite database. It does not
-  read `.env` or write to SQLite.
+  read `.env`. Since ADR 0026, its only writes are Tasks.
+- Every request needs a `Host` of `127.0.0.1:<port>` or `localhost:<port>`;
+  any other Host gets 403 on every path. `/` accepts GET and HEAD,
+  `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404.
 - Overview shows the agent profile, runtime status, heartbeat history, skills,
   and tools. Conversations and Memory provide searchable, filterable tables
   with expandable details.
@@ -354,8 +359,8 @@ controls.
 **Testable outcome:** the owner can inspect one deployed Agent Instance locally
 without exposing data to the network or adding Discord noise.
 
-**Verification:** focused UI tests cover the read-only API, selected runtime
-home, rendered pages, filtering, and sanitization.
+**Verification:** focused UI tests cover the read API, Task writes, request
+checks, selected runtime home, rendered pages, filtering, and sanitization.
 
 ## Phase 8 — V1 acceptance and operational hardening
 
@@ -389,4 +394,4 @@ Automatic local rotating backups are not implemented. A future local-network bac
 
 ## Agent Tasks — implemented
 
-The Agent Tasks phase adds owner-only Discord controls, durable SQLite Task and Task Run state, and a dedicated Conversation and Agent Session for each Task. One-time Tasks run on request. Recurring Tasks use whole-hour or whole-day intervals and are checked by the in-process minute scheduler. After downtime, an overdue Task runs once; failed or interrupted runs are not retried automatically. Task-thread messages guide a later run. Requested files go to deployment-root `results/<task-id>/<run-id>/` and are uploaded to the Task thread when possible. See [Tasks in the README](../README.md#tasks) and [the SQLite schema](sqlite-schema.md#how-the-tables-work).
+The Agent Tasks phase adds owner-only Discord controls, durable SQLite Task and Task Run state, and a dedicated Conversation and Agent Session for each Task. One-time Tasks run on request. Recurring Tasks use whole-hour or whole-day intervals and are checked by the in-process minute scheduler. After downtime, an overdue Task runs once; failed or interrupted runs are not retried automatically. Task-thread messages guide a later run. Requested files go to deployment-root `results/<task-id>/<run-id>/` and are uploaded to the Task thread when possible. See [Tasks in INSTRUCTIONS.md](../INSTRUCTIONS.md#tasks) and [the SQLite schema](sqlite-schema.md#how-the-tables-work).

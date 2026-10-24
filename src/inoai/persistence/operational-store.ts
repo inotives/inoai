@@ -134,7 +134,8 @@ export interface OperationalStore {
   confirmResponseChunk(id: number, externalMessageId: string, actor?: string): Promise<boolean>;
   failResponseChunk(id: number, detail: string, actor?: string): Promise<boolean>;
   failRemainingResponseChunks(inboundMessageId: number, actor?: string): Promise<number>;
-  resetSession(sessionId: number, actor?: string): Promise<boolean>;
+  /** `now` (Unix seconds) sets the expiry time of the Session's pending Task proposals; it defaults to the system clock. */
+  resetSession(sessionId: number, actor?: string, now?: number): Promise<boolean>;
   completeMessageWithResponse(messageId: number, response: NewAgentResponse, actor?: string): Promise<{ message: MessageRecord; response: MessageRecord } | undefined>;
   createEvent(event: NewEvent, actor?: string): Promise<EventRecord>;
   listEvents(sessionId?: number): Promise<EventRecord[]>;

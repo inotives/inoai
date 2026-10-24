@@ -34,7 +34,11 @@ None
 
 ## Discussion
 
-None
+- [2026-10-24] Recheck on `main` at `16b551c`: all sub-items still open. Exact transport fallback text is "Action unavailable. Please try again." (`discord.ts:137`).
+
+- [2026-10-24] Sub-item g (`resetSession` clock) moved to IP-0004 T-0001. This item stays open for the other sub-items.
+
+- [2026-10-24] IP-0004 T-0001 reviewer follow-ups: the `/reset` control (`app.ts:365`) and the task-create rollback (`app.ts:285`) still call `resetSession` without a clock, because `start()` has no scheduler clock in scope. `resetSession` still writes Session and message `ended_at`/`updated_at` with `unixepoch()`; only proposal expiry uses `now`.
 
 ## Open questions
 

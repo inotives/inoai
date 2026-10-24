@@ -3,6 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { once } from "node:events";
+import { Worker } from "node:worker_threads";
 
 import { bootstrapRuntimeHome } from "../../../agent-instance/runtime-home.js";
 import type { Configuration } from "../../../agent-instance/config.js";
@@ -149,6 +151,49 @@ test("opening a home without Task schedule columns adds them idempotently and ke
       migrated.close();
     }
   }
+});
+
+test("opening a home re-reads Task columns inside the migration transaction", async (t) => {
+  const { home, database } = await fixture(t);
+  for (const column of scheduleColumns) database.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
+  database.close();
+  // Another connection adds half the columns. It holds the write lock until this thread has read the old column list.
+  const added = [["title", "TEXT"], ["output_spec", "TEXT"], ["timezone", "TEXT"], ["schedule_kind", "TEXT"]];
+  const started = new Int32Array(new SharedArrayBuffer(4));
+  const other = new Worker(`
+    const { workerData, parentPort } = require("node:worker_threads");
+    const { DatabaseSync } = require("node:sqlite");
+    const database = new DatabaseSync(workerData.file);
+    database.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
+    for (const [name, type] of workerData.added) database.exec("ALTER TABLE tasks ADD COLUMN " + name + " " + type);
+    parentPort.postMessage("locked");
+    Atomics.wait(workerData.started, 0, 0, 10000);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    database.exec("COMMIT");
+    database.close();
+  `, { eval: true, workerData: { file: home.databaseFile, added, started } });
+  const exited = once(other, "exit");
+  await once(other, "message");
+  Atomics.store(started, 0, 1);
+  Atomics.notify(started, 0);
+  const migrated = openDatabase(home);
+  try {
+    const names = (migrated.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name);
+    for (const name of scheduleColumns) assert.equal(names.filter((candidate) => candidate === name).length, 1, name);
+  } finally {
+    migrated.close();
+    await exited;
+  }
+});
+
+test("resumeTask writes the injected now to updated_at", async (t) => {
+  const { store, session } = await fixture(t);
+  const task = await store.createTask({ goal: "legacy report", task_type: "recurring", interval_seconds: 3600,
+    conversation_id: "thread", session_id: session.id, next_due_at: 900 }, "task:create");
+  assert.equal(await store.pauseTask(task.id, "task:pause"), true);
+  assert.equal(await store.resumeTask(task.id, "task:resume", 12_345), true);
+  const row = (await store.getTask(task.id))!;
+  assert.deepEqual([row.state, row.updated_at, row.updated_by], ["active", 12_345, "task:resume"]);
 });
 
 test("createTask persists schedule columns from toTaskColumns within the existing CHECK constraints", async (t) => {

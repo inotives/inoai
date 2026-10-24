@@ -2,10 +2,10 @@
 id: BL-0005
 title: Recheck runtime usage mapping on CLI upgrades
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-23T07:32:06Z
 source: T-0002, T-0003, T-0004 reviewer handoffs
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0005: Recheck runtime usage mapping on CLI upgrades
@@ -21,6 +21,7 @@ The token and cost mappings rely on version-specific CLI behaviour: Claude 2.1.3
 ## Discussion
 
 - [2026-10-23] Captured from T-0004 follow-ups.
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

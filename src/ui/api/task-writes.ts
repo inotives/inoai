@@ -97,7 +97,7 @@ export function createUiTask(home: RuntimeHome, input: unknown, now = Math.floor
   return withTaskDatabase(home, (database) => {
     const taskId = transaction(database, () => {
       const owner = database.prepare(`SELECT s.user_id, s.transport, s.workspace_id, s.agent_provider, s.project_path FROM sessions s
-        JOIN users u ON u.id = s.user_id AND u.role = 'owner' AND u.deleted_at IS NULL
+        JOIN users u ON u.id = s.user_id AND u.role = 'owner' AND u.state = 'active' AND u.deleted_at IS NULL
         WHERE s.deleted_at IS NULL ORDER BY s.id DESC LIMIT 1`).get() as
         { user_id: number; transport: string; workspace_id: string; agent_provider: string; project_path: string } | undefined;
       if (!owner) throw new TaskWriteError(409, noSessionMessage);

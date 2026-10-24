@@ -256,7 +256,7 @@ export class TaskProposalCards {
       const task = await this.store.createTask({ ...columns, conversation_id: threadId, session_id: session.id }, actor);
       return { ok: true, taskId: task.id };
     } catch {
-      if (sessionId) await this.store.resetSession(sessionId, "task:create-failed").catch(() => undefined);
+      if (sessionId) await this.store.resetSession(sessionId, "task:create-failed", this.now()).catch(() => undefined);
       if (threadId) await this.transport.deleteConversation(threadId).catch(() => undefined);
       if (starterId && parent) await this.transport.deleteMessage?.(parent, starterId).catch(() => undefined);
       return { ok: false, reason: "thread_failed" };

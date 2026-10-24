@@ -65,7 +65,7 @@ External or shared information made available through indexing, retrieval, and p
 _Avoid_: Memory, transcript
 
 **Manual Memory Entry**:
-An important Memory item created directly through inoai's local management CLI or Electron UI, without waiting for a Recap.
+An important Memory item created directly through inoai's local management CLI (`memory add`), without waiting for a Recap. The UI does not write Memory.
 _Avoid_: Chat command, transcript item
 
 **Analytics Sink**:

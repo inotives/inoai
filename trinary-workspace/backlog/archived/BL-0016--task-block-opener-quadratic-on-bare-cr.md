@@ -2,10 +2,10 @@
 id: BL-0016
 title: Task block opener is quadratic on a fence run before a bare CR
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T23:42:00Z
 source: IP-0003 T-0003 reviewer handoff 3
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0016: Task block opener is quadratic on a fence run before a bare CR
@@ -28,7 +28,8 @@ In `src/inoai/tasks/task-block.ts`, `openerPattern` ends with `(.*)$`. `.` does 
 
 ## Discussion
 
-None
+- [2026-10-24] Recheck on `main` at `16b551c`: still open (944 ms at 50,000 characters, 3,694 ms at 100,000). The comment at `task-block.ts:26` says every pattern is linear; that is wrong for `openerPattern`.
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

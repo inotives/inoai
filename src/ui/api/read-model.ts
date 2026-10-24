@@ -61,7 +61,7 @@ function timestamp(value: number | null): string {
 
 function redact(value: string): string {
   return value
-    .replace(/(DISCORD_BOT_TOKEN|DISCORD_OWNER_USER_ID|DISCORD_GUILD_ID|DISCORD_STATUS_CHANNEL_ID|API_KEY|TOKEN|PASSWORD)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/(DISCORD_BOT_TOKEN|DISCORD_OWNER_USER_ID|DISCORD_GUILD_ID|DISCORD_STATUS_CHANNEL_ID|DISCORD_TASK_CHANNEL_ID|API_KEY|TOKEN|PASSWORD)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
     .replace(/\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]");
 }

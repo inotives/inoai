@@ -23,8 +23,9 @@ export type TaskListRow = TaskScheduleRow & { id: number; state: string; task_ty
 const listLimit = 20;
 const textLimit = 60;
 // Line prefix: indentation, "> " quote markers, and list markers. Then a fence of 3+ backticks or tildes and its info.
-// Every pattern here is anchored and unambiguous, so long lines cost linear time.
-const openerPattern = /^((?:[ \t>]|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t]))*)(`{3,}|~{3,})(.*)$/;
+// The info part `[^]*` matches any character, including a bare CR or U+2028, so the match never backtracks into the
+// fence run. With the other patterns anchored and unambiguous, long lines cost linear time.
+const openerPattern = /^((?:[ \t>]|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t]))*)(`{3,}|~{3,})([^]*)$/;
 const tagPattern = /(?<![\w-])inoai-task(?![\w-])/gi;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

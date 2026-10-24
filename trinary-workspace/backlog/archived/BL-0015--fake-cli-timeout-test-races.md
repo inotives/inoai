@@ -2,10 +2,10 @@
 id: BL-0015
 title: Fake-CLI timeout tests race under parallel load
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T17:05:00Z
 source: IP-0002 T-0007 worker handoff 1
-promoted_to: null
+promoted_to: IP-0004
 ---
 
 # BL-0015: Fake-CLI timeout tests race under parallel load
@@ -32,7 +32,8 @@ Also: `transport.test.ts` uses fixed `setTimeout(resolve, 10|20)` sleeps before 
 
 ## Discussion
 
-None
+- [2026-10-24] Recheck on `main` at `16b551c`: still open. The two runtime tests are unchanged (`runtime-review.test.ts:169`, `claude-runtime.test.ts:374`). `transport.test.ts` line numbers moved: fixed sleeps before assertions at :292, :404, :484, :519, :524, :690; 100 × 10 ms lock loops at :560 and :836. The loops at :1002-1011 and :1083-1092 are already deadline-based.
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 
