@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { bootstrapRuntimeHome } from "../../../agent-instance/runtime-home.js";
 import type { Configuration } from "../../../agent-instance/config.js";
-import { databaseBusyTimeoutMs, openDatabase, resolveTaskProposal, type NewTaskProposal } from "../../../connectors/persistence/sqlite/legacy-database.js";
+import { claimTaskProposal, databaseBusyTimeoutMs, openDatabase, resolveTaskProposal, type NewTaskProposal } from "../../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../../connectors/persistence/sqlite/operational-store.js";
 
 const now = Math.floor(Date.now() / 1000);
@@ -178,6 +178,170 @@ test("startup expires overdue pending proposals and keeps current ones pending",
     assert.deepEqual([expired.state, expired.updated_by, expired.created_by], ["expired", "system", "discord:owner"]);
     assert.ok(expired.resolved_at! >= now);
     assert.equal((await reopened.getTaskProposal(current.id))!.state, "pending");
+  } finally {
+    await reopened.close();
+  }
+});
+
+// The T-0001 table, before `confirming` and `card_closed_at`.
+const t0001TaskProposals = `CREATE TABLE task_proposals (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  transport TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('create', 'edit', 'run', 'pause', 'resume', 'cancel')),
+  task_id INTEGER REFERENCES tasks(id),
+  spec_json TEXT CHECK (spec_json IS NULL OR json_valid(spec_json)),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'confirmed', 'cancelled', 'expired', 'failed')),
+  expires_at INTEGER NOT NULL,
+  card_message_id TEXT,
+  resolved_at INTEGER,
+  result_task_id INTEGER REFERENCES tasks(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((kind = 'create' AND task_id IS NULL) OR (kind != 'create' AND task_id IS NOT NULL)),
+  CHECK ((kind IN ('create', 'edit') AND spec_json IS NOT NULL) OR (kind NOT IN ('create', 'edit') AND spec_json IS NULL)),
+  CHECK ((state = 'pending' AND resolved_at IS NULL) OR (state != 'pending' AND resolved_at IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE UNIQUE INDEX one_pending_task_proposal_per_conversation ON task_proposals(transport, workspace_id, conversation_id)
+  WHERE state = 'pending' AND deleted_at IS NULL;`;
+
+test("an existing T-0001 home gains the confirming state without data loss", async (t) => {
+  const { home, store, session, newSession } = await fixture(t);
+  const task = await store.createTask({ goal: "made", task_type: "one_time", conversation_id: "thread", session_id: session.id });
+  const other = await newSession("other-thread");
+  await store.close();
+  const legacy = new DatabaseSync(home.databaseFile);
+  legacy.exec(`DROP INDEX one_pending_task_proposal_per_conversation; DROP TABLE task_proposals; ${t0001TaskProposals}`);
+  legacy.prepare(`INSERT INTO task_proposals (session_id,transport,workspace_id,conversation_id,kind,task_id,spec_json,state,expires_at,
+    card_message_id,resolved_at,result_task_id,created_at,created_by,updated_at,updated_by) VALUES
+    (?,'discord','guild','thread','create',NULL,?,'confirmed',?,'card-1',?,?,?,'discord:owner',?,'discord:owner'),
+    (?,'discord','guild','other-thread','pause',?,NULL,'pending',?,'card-2',NULL,NULL,?,'discord:owner',?,'discord:owner')`)
+    .run(session.id, spec, now + 86_400, now + 5, task.id, now, now + 5, other.id, task.id, now + 86_400, now, now);
+  const rows = legacy.prepare("SELECT * FROM task_proposals ORDER BY id").all();
+  legacy.close();
+
+  for (let open = 0; open < 2; open += 1) {
+    const reopened = openDatabase(home);
+    try {
+      const migrated = reopened.prepare("SELECT * FROM task_proposals ORDER BY id").all() as Array<Record<string, unknown>>;
+      assert.deepEqual(migrated.map(({ card_closed_at: _closed, ...row }) => row), rows.map((row) => ({ ...row })));
+      assert.deepEqual(migrated.map((row) => row.card_closed_at), [null, null]);
+      const table = reopened.prepare("SELECT sql FROM sqlite_master WHERE name='task_proposals'").get() as { sql: string };
+      assert.match(table.sql, /'confirming'/);
+      assert.ok(reopened.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='one_pending_task_proposal_per_conversation'").get());
+      assert.deepEqual(reopened.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally {
+      reopened.close();
+    }
+  }
+  const migratedStore = createSqliteOperationalStore(openDatabase(home));
+  try {
+    const claimed = await migratedStore.claimTaskProposal(2, now + 10);
+    assert.deepEqual([claimed.claimed, claimed.proposal!.state, claimed.proposal!.resolved_at], [true, "confirming", null]);
+    await assert.rejects(migratedStore.createTaskProposal({ session_id: other.id, transport: "discord", workspace_id: "guild",
+      conversation_id: "other-thread", kind: "run", task_id: task.id, spec_json: "{}", expires_at: now + 100 }, now + 11), /CHECK constraint/);
+  } finally {
+    await migratedStore.close();
+  }
+});
+
+test("claim moves pending to confirming once, and finish ends it once with events", async (t) => {
+  const { home, store, session, proposal } = await fixture(t);
+  const task = await store.createTask({ goal: "made", task_type: "one_time", conversation_id: "thread", session_id: session.id });
+  const created = await store.createTaskProposal(proposal(), now);
+  const results = await Promise.all([store.claimTaskProposal(created.id, now + 1), store.claimTaskProposal(created.id, now + 1)]);
+  assert.deepEqual(results.map(({ claimed }) => claimed), [true, false]);
+  const other = new DatabaseSync(home.databaseFile);
+  try {
+    other.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${databaseBusyTimeoutMs}`);
+    assert.equal(claimTaskProposal(other, created.id, now + 1).claimed, false);
+  } finally {
+    other.close();
+  }
+  const claimed = (await store.getTaskProposal(created.id))!;
+  assert.deepEqual([claimed.state, claimed.resolved_at, claimed.updated_by], ["confirming", null, "discord:owner"]);
+  assert.equal((await store.resolveTaskProposal(created.id, "cancelled", now + 2)).resolved, false);
+  assert.equal((await store.expireOverdueTaskProposals(now + 100_000)), 0);
+  assert.equal((await store.getTaskProposal(created.id))!.state, "confirming");
+
+  const finished = await store.finishTaskProposal(created.id, "confirmed", now + 3, "discord:owner", task.id);
+  assert.deepEqual([finished.finished, finished.proposal!.state, finished.proposal!.result_task_id, finished.proposal!.resolved_at],
+    [true, "confirmed", task.id, now + 3]);
+  assert.equal((await store.finishTaskProposal(created.id, "failed", now + 4)).finished, false);
+
+  const failing = await store.createTaskProposal(proposal(), now + 5);
+  await store.claimTaskProposal(failing.id, now + 6);
+  await store.finishTaskProposal(failing.id, "failed", now + 7, "discord:owner", task.id, "thread_failed");
+  assert.equal((await store.getTaskProposal(failing.id))!.result_task_id, null);
+  const events = (await store.listEvents(session.id)).filter((event) => event.event_type.startsWith("task_proposal_"));
+  assert.deepEqual(events.map((event) => [event.event_type, event.detail]), [
+    ["task_proposal_confirmed", `proposal=${created.id}; kind=create; task=${task.id}`],
+    ["task_proposal_failed", `proposal=${failing.id}; kind=create; task=new; reason=thread_failed`],
+  ]);
+});
+
+test("claim expires an overdue proposal or one whose Session is no longer active", async (t) => {
+  const { database, store, newSession, proposal } = await fixture(t);
+  const overdue = await store.createTaskProposal(proposal({ expires_at: now + 10 }), now);
+  const late = await store.claimTaskProposal(overdue.id, now + 10);
+  assert.deepEqual([late.claimed, late.proposal!.state, late.proposal!.updated_by], [false, "expired", "system"]);
+
+  const other = await newSession("other-thread");
+  const orphan = await store.createTaskProposal(proposal({ session_id: other.id, conversation_id: "other-thread" }), now);
+  database.prepare("UPDATE sessions SET state='ended', ended_at=? WHERE id=?").run(now, other.id);
+  const inactive = await store.claimTaskProposal(orphan.id, now + 1);
+  assert.deepEqual([inactive.claimed, inactive.proposal!.state, inactive.proposal!.resolved_at], [false, "expired", now + 1]);
+  const events = (await store.listEvents()).filter((event) => event.event_type === "task_proposal_expired").map((event) => event.detail);
+  assert.deepEqual(events, [`proposal=${overdue.id}; kind=create; task=new; reason=overdue`,
+    `proposal=${orphan.id}; kind=create; task=new; reason=session_inactive`]);
+});
+
+test("reset expires the Session's pending proposals in its transaction", async (t) => {
+  const { store, session, newSession, proposal } = await fixture(t);
+  const other = await newSession("other-thread");
+  const pending = await store.createTaskProposal(proposal(), now);
+  const elsewhere = await store.createTaskProposal(proposal({ session_id: other.id, conversation_id: "other-thread" }), now);
+  assert.equal(await store.resetSession(session.id, "user:owner"), true);
+  const expired = (await store.getTaskProposal(pending.id))!;
+  assert.deepEqual([expired.state, expired.updated_by], ["expired", "system"]);
+  assert.equal((await store.getTaskProposal(elsewhere.id))!.state, "pending");
+  assert.deepEqual((await store.listEvents(session.id)).filter((event) => event.event_type === "task_proposal_expired").map((event) => event.detail),
+    [`proposal=${pending.id}; kind=create; task=new; reason=reset`]);
+  assert.equal((await store.claimTaskProposal(pending.id, now + 1)).claimed, false);
+});
+
+test("startup fails leftover confirming proposals and lists resolved cards until they are closed", async (t) => {
+  const { home, store, proposal } = await fixture(t);
+  const stuck = await store.createTaskProposal(proposal(), now);
+  await store.setTaskProposalCardMessage(stuck.id, "card-1", now);
+  await store.claimTaskProposal(stuck.id, now + 1);
+  const replacing = await store.createTaskProposal(proposal(), now + 2);
+  await store.setTaskProposalCardMessage(replacing.id, "card-2", now + 2);
+  const newest = await store.createTaskProposal(proposal(), now + 3);
+  await store.close();
+
+  const reopened = createSqliteOperationalStore(openDatabase(home));
+  try {
+    const failed = (await reopened.getTaskProposal(stuck.id))!;
+    assert.deepEqual([failed.state, failed.updated_by], ["failed", "system"]);
+    assert.ok(failed.resolved_at! >= now);
+    assert.equal((await reopened.getTaskProposal(newest.id))!.state, "pending");
+    const cards = await reopened.listOpenTaskProposalCards();
+    assert.deepEqual(cards.map((card) => [card.id, card.state, card.card_message_id, card.replaced]),
+      [[stuck.id, "failed", "card-1", false], [replacing.id, "expired", "card-2", true]]);
+    assert.equal(await reopened.closeTaskProposalCard(stuck.id, now + 4), true);
+    assert.equal(await reopened.closeTaskProposalCard(stuck.id, now + 5), false);
+    assert.equal(await reopened.closeTaskProposalCard(newest.id, now + 5), false);
+    assert.deepEqual((await reopened.listOpenTaskProposalCards()).map((card) => card.id), [replacing.id]);
+    assert.ok((await reopened.listEvents()).some((event) => event.event_type === "task_proposal_failed"
+      && event.detail === `proposal=${stuck.id}; kind=create; task=new; reason=restart`));
   } finally {
     await reopened.close();
   }

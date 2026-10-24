@@ -240,3 +240,28 @@ test("fence variants never reach the archive or delivered chunks", async () => {
     assert.equal(fixture.proposals[0].proposal.kind, "pause");
   });
 });
+
+test("a reset after the proposal is stored expires it and posts no card", async () => {
+  let current: Fixture | undefined;
+  const expiredSessions: number[] = [];
+  await withFixture(async (fixture) => {
+    current = fixture;
+    const result = await fixture.turn("reset race", `Planned.\n${block(create)}`);
+    assert.equal(result.state, "failed");
+    assert.deepEqual(result.replies, []);
+    assert.equal(fixture.proposals.length, 0);
+    assert.equal((await fixture.store.getTaskProposal(1))!.state, "expired");
+    assert.deepEqual(expiredSessions, [fixture.conversation.id]);
+  }, { store: {
+    listTasks: () => current!.store.listTasks(),
+    async createTaskProposal(proposal, at, actor) {
+      const created = await current!.store.createTaskProposal(proposal, at, actor);
+      await current!.store.resetSession(proposal.session_id, "user:owner");
+      return created;
+    },
+    async expireSessionTaskProposals(sessionId, at, actor) {
+      expiredSessions.push(sessionId);
+      return current!.store.expireSessionTaskProposals(sessionId, at, actor);
+    },
+  } });
+});

@@ -31,10 +31,10 @@ const proposalStoreFailedNote = "Task card not created: the proposal could not b
 
 /** Chat-proposed Tasks: owner turns in normal conversations get the Task block instruction and may create proposals. */
 export type ChatTaskOptions = {
-  store: Pick<TaskOperationsStore, "listTasks" | "createTaskProposal">;
+  store: Pick<TaskOperationsStore, "listTasks" | "createTaskProposal"> & Partial<Pick<TaskOperationsStore, "expireSessionTaskProposals">>;
   ownerUserId: number;
   ownerTimeZone: string;
-  /** Receives each new pending proposal after the answer is archived. T-0004 delivers the card. */
+  /** Receives each new pending proposal after its answer chunks leave the delivery queue, so the card follows them. */
   onProposal?: (proposal: TaskProposalRecord, message: MessageRecord) => Promise<void> | void;
   now?: () => number;
 };
@@ -67,6 +67,7 @@ export class ConversationWorker {
   private pumpPromise: Promise<void> | undefined;
   private wakeRequested = false;
   private taskReserved = false;
+  private readonly cardsAfterDelivery = new Map<number, { proposal: TaskProposalRecord; message: MessageRecord }>();
 
   constructor(
     private readonly database: OperationalStore,
@@ -311,11 +312,32 @@ export class ConversationWorker {
     }
     const text = note ? (extracted.answer ? `${extracted.answer}\n\n${note}` : note) : extracted.answer;
     const archived = await this.database.archiveResponseChunks(message.id, text ? splitFinalAnswer(text) : [], "conversation-worker");
-    if (!proposal || !archived) return;
+    if (!proposal) return;
+    if (!archived) {
+      // A reset ended the turn after the proposal was stored; its card is never posted.
+      await this.chatTasks?.store.expireSessionTaskProposals?.(session.id, this.now(), "system").catch(() => undefined);
+      return;
+    }
+    if (this.transport) this.cardsAfterDelivery.set(message.id, { proposal, message });
+    else await this.sendCard(proposal, message);
+  }
+
+  private async sendCard(proposal: TaskProposalRecord, message: MessageRecord): Promise<void> {
     try {
       await this.chatTasks?.onProposal?.(proposal, message);
     } catch {
       // Card delivery owns its own failure handling; the turn already has its archived answer.
+    }
+  }
+
+  // Posts each waiting card once no answer chunk of its turn is still waiting for delivery.
+  private async sendDeliveredCards(): Promise<void> {
+    for (const [inboundId, entry] of [...this.cardsAfterDelivery]) {
+      if (this.stopping) return;
+      const rows = await this.database.listMessages(entry.message.session_id);
+      if (rows.some((row) => row.direction === "agent" && row.in_reply_to_message_id === inboundId && row.delivery_state === "pending")) continue;
+      this.cardsAfterDelivery.delete(inboundId);
+      await this.sendCard(entry.proposal, entry.message);
     }
   }
 
@@ -354,5 +376,6 @@ export class ConversationWorker {
           event_type: "response_delivery_failed", detail: error instanceof KnownDeliveryFailure ? "known_pre_send_failure" : "uncertain_after_send_attempt" }, "transport:discord");
       }
     }
+    await this.sendDeliveredCards();
   }
 }

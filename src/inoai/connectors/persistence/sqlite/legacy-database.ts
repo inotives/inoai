@@ -1,11 +1,11 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import type { Configuration } from "../../../agent-instance/config.js";
 import { inspectRuntimeHomeLock, resolveRuntimeHome, type RuntimeHome } from "../../../agent-instance/runtime-home.js";
-import { nextRunAt, taskSpecFromRow } from "../../../tasks/schedule.js";
+import { nextRunAt, taskSpecFromRow, toTaskColumns, type TaskColumns, type TaskSpec } from "../../../tasks/schedule.js";
 
 export const databaseBusyTimeoutMs = 5_000;
 
@@ -206,7 +206,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_task_run ON task_runs(state)
   WHERE state = 'processing' AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS task_runs_by_task ON task_runs(task_id, id) WHERE deleted_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS task_proposals (
+${taskProposalsTable("IF NOT EXISTS task_proposals")}
+CREATE UNIQUE INDEX IF NOT EXISTS one_pending_task_proposal_per_conversation ON task_proposals(transport, workspace_id, conversation_id)
+  WHERE state = 'pending' AND deleted_at IS NULL;
+`;
+
+export class UnsafeDatabasePathError extends Error {
+  constructor(databaseFile: string) {
+    super(`Database must be inoai.sqlite inside the selected runtime home: ${databaseFile}`);
+    this.name = "UnsafeDatabasePathError";
+  }
+}
+
+// `confirming` is a claimed Create or management confirm whose side effects are running. `card_closed_at` records the
+// card edit that removed its buttons after the proposal left pending or confirming.
+function taskProposalsTable(target: string): string {
+  return `CREATE TABLE ${target} (
   id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   transport TEXT NOT NULL,
@@ -215,9 +230,10 @@ CREATE TABLE IF NOT EXISTS task_proposals (
   kind TEXT NOT NULL CHECK (kind IN ('create', 'edit', 'run', 'pause', 'resume', 'cancel')),
   task_id INTEGER REFERENCES tasks(id),
   spec_json TEXT CHECK (spec_json IS NULL OR json_valid(spec_json)),
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'confirmed', 'cancelled', 'expired', 'failed')),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'confirming', 'confirmed', 'cancelled', 'expired', 'failed')),
   expires_at INTEGER NOT NULL,
   card_message_id TEXT,
+  card_closed_at INTEGER,
   resolved_at INTEGER,
   result_task_id INTEGER REFERENCES tasks(id),
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -228,18 +244,35 @@ CREATE TABLE IF NOT EXISTS task_proposals (
   deleted_by TEXT,
   CHECK ((kind = 'create' AND task_id IS NULL) OR (kind != 'create' AND task_id IS NOT NULL)),
   CHECK ((kind IN ('create', 'edit') AND spec_json IS NOT NULL) OR (kind NOT IN ('create', 'edit') AND spec_json IS NULL)),
-  CHECK ((state = 'pending' AND resolved_at IS NULL) OR (state != 'pending' AND resolved_at IS NOT NULL)),
+  CHECK ((state IN ('pending', 'confirming') AND resolved_at IS NULL) OR (state NOT IN ('pending', 'confirming') AND resolved_at IS NOT NULL)),
   CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS one_pending_task_proposal_per_conversation ON task_proposals(transport, workspace_id, conversation_id)
-  WHERE state = 'pending' AND deleted_at IS NULL;
-`;
+);`;
+}
 
-export class UnsafeDatabasePathError extends Error {
-  constructor(databaseFile: string) {
-    super(`Database must be inoai.sqlite inside the selected runtime home: ${databaseFile}`);
-    this.name = "UnsafeDatabasePathError";
+/** Rebuilds a T-0001 `task_proposals` table to allow `confirming` and add `card_closed_at`. Keeps every row. */
+function migrateTaskProposals(database: DatabaseSync): void {
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_proposals'").get() as { sql: string } | undefined;
+  if (!table || table.sql.includes("'confirming'")) return;
+  database.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
+  try {
+    database.exec(`${taskProposalsTable("task_proposals_v2")}
+    INSERT INTO task_proposals_v2 (id, session_id, transport, workspace_id, conversation_id, kind, task_id, spec_json, state,
+      expires_at, card_message_id, resolved_at, result_task_id, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by)
+    SELECT id, session_id, transport, workspace_id, conversation_id, kind, task_id, spec_json, state,
+      expires_at, card_message_id, resolved_at, result_task_id, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
+    FROM task_proposals;
+    DROP TABLE task_proposals;
+    ALTER TABLE task_proposals_v2 RENAME TO task_proposals;
+    CREATE UNIQUE INDEX one_pending_task_proposal_per_conversation ON task_proposals(transport, workspace_id, conversation_id)
+      WHERE state = 'pending' AND deleted_at IS NULL;`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
   }
+  if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("Task proposal migration broke a foreign key");
 }
 
 function migrateMessages(database: DatabaseSync): void {
@@ -330,10 +363,11 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     database.exec(initialSchema);
     migrateMessages(database);
     migrateTasks(database);
+    migrateTaskProposals(database);
     recoverStaleWork(database);
     recoverTaskRuns(database);
     recoverLegacyApprovals(database);
-    expireOverdueTaskProposals(database, Math.floor(Date.now() / 1000), "system");
+    recoverTaskProposals(database, Math.floor(Date.now() / 1000));
     return database;
   } catch (error) {
     database.close();
@@ -537,15 +571,20 @@ export type TaskProposalRecord = AuditColumns & {
   kind: TaskProposalKind;
   task_id: number | null;
   spec_json: string | null;
-  state: "pending" | "confirmed" | "cancelled" | "expired" | "failed";
+  state: "pending" | "confirming" | "confirmed" | "cancelled" | "expired" | "failed";
   expires_at: number;
   card_message_id: string | null;
+  card_closed_at: number | null;
   resolved_at: number | null;
   result_task_id: number | null;
 };
 export type NewTaskProposal = Pick<TaskProposalRecord, "session_id" | "transport" | "workspace_id" | "conversation_id"
   | "kind" | "task_id" | "spec_json" | "expires_at">;
 export type TaskProposalOutcome = "confirmed" | "cancelled" | "failed";
+/** A resolved proposal whose card still shows buttons. `replaced` is true when a newer proposal expired it. */
+export type OpenTaskProposalCard = TaskProposalRecord & { card_message_id: string; replaced: boolean };
+export type TaskEditResult = "edited" | "not_found" | "not_editable" | "running" | "no_run_left";
+export type PendingTaskOwner = Pick<SessionRecord, "user_id" | "transport" | "workspace_id" | "agent_provider" | "project_path">;
 
 export type NewTask = Pick<TaskRecord, "goal" | "task_type" | "conversation_id" | "session_id">
   & Partial<Pick<TaskRecord, "interval_seconds" | "next_due_at" | "message_cursor" | "title" | "output_spec" | "timezone"
@@ -777,27 +816,48 @@ export function getTaskProposal(database: DatabaseSync, id: number): TaskProposa
   return activeRow<TaskProposalRecord>(database, "SELECT * FROM task_proposals WHERE id=? AND deleted_at IS NULL", id);
 }
 
-/** Stores a pending proposal and expires any earlier pending proposal in the same conversation, in one transaction. */
-export function createTaskProposal(database: DatabaseSync, proposal: NewTaskProposal, now: number, actor = "discord:owner"): TaskProposalRecord {
+function inTransaction<T>(database: DatabaseSync, operation: () => T): T {
   database.exec("BEGIN IMMEDIATE");
   try {
-    if (!database.prepare(`SELECT 1 FROM sessions WHERE id=? AND transport=? AND workspace_id=? AND conversation_id=?
-      AND state='active' AND deleted_at IS NULL`).get(proposal.session_id, proposal.transport, proposal.workspace_id, proposal.conversation_id)) {
-      throw new Error("Task proposal Session is not active in its Conversation");
-    }
-    database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by='system'
-      WHERE transport=? AND workspace_id=? AND conversation_id=? AND state='pending' AND deleted_at IS NULL`)
-      .run(now, now, proposal.transport, proposal.workspace_id, proposal.conversation_id);
-    const result = database.prepare(`INSERT INTO task_proposals (session_id,transport,workspace_id,conversation_id,kind,task_id,spec_json,
-      expires_at,created_at,created_by,updated_at,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(proposal.session_id, proposal.transport,
-      proposal.workspace_id, proposal.conversation_id, proposal.kind, proposal.task_id, proposal.spec_json, proposal.expires_at, now, actor, now, actor);
-    const row = getTaskProposal(database, Number(result.lastInsertRowid))!;
+    const result = operation();
     database.exec("COMMIT");
-    return row;
+    return result;
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
   }
+}
+
+type ProposalEventRow = Pick<TaskProposalRecord, "id" | "session_id" | "kind" | "task_id">;
+
+// Event details hold only ids, kinds, and reason codes; never spec text.
+function recordProposalEvent(database: DatabaseSync, row: ProposalEventRow, state: string, actor: string, reason?: string): void {
+  createEvent(database, { session_id: row.session_id, message_id: null, event_type: `task_proposal_${state}`,
+    detail: `proposal=${row.id}; kind=${row.kind}; task=${row.task_id ?? "new"}${reason ? `; reason=${reason}` : ""}` }, actor);
+}
+
+// Expires matching pending proposals and records one event each. Call inside the caller's transaction.
+function expireProposalsWhere(database: DatabaseSync, where: string, values: SQLInputValue[], now: number, actor: string, reason: string): number {
+  const rows = database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by=?
+    WHERE ${where} AND state='pending' AND deleted_at IS NULL RETURNING id, session_id, kind, task_id`).all(now, now, actor, ...values) as ProposalEventRow[];
+  for (const row of rows) recordProposalEvent(database, row, "expired", actor, reason);
+  return rows.length;
+}
+
+/** Stores a pending proposal and expires any earlier pending proposal in the same conversation, in one transaction. */
+export function createTaskProposal(database: DatabaseSync, proposal: NewTaskProposal, now: number, actor = "discord:owner"): TaskProposalRecord {
+  return inTransaction(database, () => {
+    if (!database.prepare(`SELECT 1 FROM sessions WHERE id=? AND transport=? AND workspace_id=? AND conversation_id=?
+      AND state='active' AND deleted_at IS NULL`).get(proposal.session_id, proposal.transport, proposal.workspace_id, proposal.conversation_id)) {
+      throw new Error("Task proposal Session is not active in its Conversation");
+    }
+    expireProposalsWhere(database, "transport=? AND workspace_id=? AND conversation_id=?",
+      [proposal.transport, proposal.workspace_id, proposal.conversation_id], now, "system", "replaced");
+    const result = database.prepare(`INSERT INTO task_proposals (session_id,transport,workspace_id,conversation_id,kind,task_id,spec_json,
+      expires_at,created_at,created_by,updated_at,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(proposal.session_id, proposal.transport,
+      proposal.workspace_id, proposal.conversation_id, proposal.kind, proposal.task_id, proposal.spec_json, proposal.expires_at, now, actor, now, actor);
+    return getTaskProposal(database, Number(result.lastInsertRowid))!;
+  });
 }
 
 export function setTaskProposalCardMessage(database: DatabaseSync, id: number, cardMessageId: string, now: number, actor = "transport:discord"): boolean {
@@ -810,31 +870,121 @@ export function setTaskProposalCardMessage(database: DatabaseSync, id: number, c
  * reports the current state. An overdue pending proposal becomes `expired` instead.
  */
 export function resolveTaskProposal(database: DatabaseSync, id: number, outcome: TaskProposalOutcome, now: number,
-  actor = "discord:owner", resultTaskId: number | null = null): { resolved: boolean; proposal: TaskProposalRecord | undefined } {
-  database.exec("BEGIN IMMEDIATE");
-  try {
-    const resolved = database.prepare(`UPDATE task_proposals SET state=?,resolved_at=?,result_task_id=?,updated_at=?,updated_by=?
-      WHERE id=? AND state='pending' AND expires_at>? AND deleted_at IS NULL`)
-      .run(outcome, now, outcome === "confirmed" ? resultTaskId : null, now, actor, id, now).changes === 1;
-    if (!resolved) database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by='system'
-      WHERE id=? AND state='pending' AND expires_at<=? AND deleted_at IS NULL`).run(now, now, id, now);
-    const proposal = getTaskProposal(database, id);
-    database.exec("COMMIT");
-    return { resolved, proposal };
-  } catch (error) {
-    database.exec("ROLLBACK");
-    throw error;
-  }
+  actor = "discord:owner", resultTaskId: number | null = null, reason?: string): { resolved: boolean; proposal: TaskProposalRecord | undefined } {
+  return inTransaction(database, () => {
+    const row = database.prepare(`UPDATE task_proposals SET state=?,resolved_at=?,result_task_id=?,updated_at=?,updated_by=?
+      WHERE id=? AND state='pending' AND expires_at>? AND deleted_at IS NULL RETURNING id, session_id, kind, task_id`)
+      .get(outcome, now, outcome === "confirmed" ? resultTaskId : null, now, actor, id, now) as ProposalEventRow | undefined;
+    if (row) recordProposalEvent(database, { ...row, task_id: row.task_id ?? (outcome === "confirmed" ? resultTaskId : null) }, outcome, actor, reason);
+    else expireProposalsWhere(database, "id=? AND expires_at<=?", [id, now], now, "system", "overdue");
+    return { resolved: row !== undefined, proposal: getTaskProposal(database, id) };
+  });
+}
+
+/**
+ * Claims a pending, unexpired proposal for confirmation exactly once (`pending` to `confirming`).
+ * The proposal's Session must still be active in its conversation; otherwise the proposal expires.
+ */
+export function claimTaskProposal(database: DatabaseSync, id: number, now: number, actor = "discord:owner"): { claimed: boolean; proposal: TaskProposalRecord | undefined } {
+  return inTransaction(database, () => {
+    const claimed = database.prepare(`UPDATE task_proposals SET state='confirming',updated_at=?,updated_by=?
+      WHERE id=? AND state='pending' AND expires_at>? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM sessions s
+        WHERE s.id=task_proposals.session_id AND s.conversation_id=task_proposals.conversation_id AND s.state='active' AND s.deleted_at IS NULL)`)
+      .run(now, actor, id, now).changes === 1;
+    if (!claimed) {
+      expireProposalsWhere(database, "id=? AND expires_at<=?", [id, now], now, "system", "overdue");
+      expireProposalsWhere(database, "id=?", [id], now, "system", "session_inactive");
+    }
+    return { claimed, proposal: getTaskProposal(database, id) };
+  });
+}
+
+/** Ends a claimed proposal (`confirming` to `confirmed` or `failed`) exactly once. */
+export function finishTaskProposal(database: DatabaseSync, id: number, outcome: "confirmed" | "failed", now: number,
+  actor = "discord:owner", resultTaskId: number | null = null, reason?: string): { finished: boolean; proposal: TaskProposalRecord | undefined } {
+  return inTransaction(database, () => {
+    const row = database.prepare(`UPDATE task_proposals SET state=?,resolved_at=?,result_task_id=?,updated_at=?,updated_by=?
+      WHERE id=? AND state='confirming' AND deleted_at IS NULL RETURNING id, session_id, kind, task_id`)
+      .get(outcome, now, outcome === "confirmed" ? resultTaskId : null, now, actor, id) as ProposalEventRow | undefined;
+    if (row) recordProposalEvent(database, { ...row, task_id: row.task_id ?? (outcome === "confirmed" ? resultTaskId : null) }, outcome, actor, reason);
+    return { finished: row !== undefined, proposal: getTaskProposal(database, id) };
+  });
+}
+
+/** Startup recovery: a proposal left in `confirming` failed with the process; overdue pending proposals expire. */
+export function recoverTaskProposals(database: DatabaseSync, now: number, actor = "system"): void {
+  inTransaction(database, () => {
+    const rows = database.prepare(`UPDATE task_proposals SET state='failed',resolved_at=?,updated_at=?,updated_by=?
+      WHERE state='confirming' AND deleted_at IS NULL RETURNING id, session_id, kind, task_id`).all(now, now, actor) as ProposalEventRow[];
+    for (const row of rows) recordProposalEvent(database, row, "failed", actor, "restart");
+    expireProposalsWhere(database, "expires_at<=?", [now], now, actor, "overdue");
+  });
 }
 
 export function expireOverdueTaskProposals(database: DatabaseSync, now: number, actor = "system"): number {
-  return Number(database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by=?
-    WHERE state='pending' AND expires_at<=? AND deleted_at IS NULL`).run(now, now, actor, now).changes);
+  return inTransaction(database, () => expireProposalsWhere(database, "expires_at<=?", [now], now, actor, "overdue"));
 }
 
 export function expireSessionTaskProposals(database: DatabaseSync, sessionId: number, now: number, actor = "system"): number {
-  return Number(database.prepare(`UPDATE task_proposals SET state='expired',resolved_at=?,updated_at=?,updated_by=?
-    WHERE session_id=? AND state='pending' AND deleted_at IS NULL`).run(now, now, actor, sessionId).changes);
+  return inTransaction(database, () => expireProposalsWhere(database, "session_id=?", [sessionId], now, actor, "reset"));
+}
+
+/** Resolved proposals whose card still has buttons, oldest first. */
+export function listOpenTaskProposalCards(database: DatabaseSync): OpenTaskProposalCard[] {
+  return (database.prepare(`SELECT p.*, (p.state='expired' AND EXISTS (SELECT 1 FROM task_proposals n
+      WHERE n.transport=p.transport AND n.workspace_id=p.workspace_id AND n.conversation_id=p.conversation_id
+      AND n.id>p.id AND n.created_at=p.resolved_at AND n.deleted_at IS NULL)) AS replaced
+    FROM task_proposals p WHERE p.state NOT IN ('pending','confirming') AND p.card_message_id IS NOT NULL
+      AND p.card_closed_at IS NULL AND p.deleted_at IS NULL ORDER BY p.id`).all() as Array<Omit<OpenTaskProposalCard, "replaced"> & { replaced: number }>)
+    .map((row) => ({ ...row, replaced: row.replaced === 1 }));
+}
+
+/** Records that a resolved proposal's card was edited to remove its buttons. */
+export function closeTaskProposalCard(database: DatabaseSync, id: number, now: number, actor = "transport:discord"): boolean {
+  return database.prepare(`UPDATE task_proposals SET card_closed_at=?,updated_at=?,updated_by=?
+    WHERE id=? AND card_closed_at IS NULL AND state NOT IN ('pending','confirming') AND deleted_at IS NULL`).run(now, now, actor, id).changes === 1;
+}
+
+/**
+ * Replaces an active or paused Task's spec and recomputes its next run (IP-0002 edit rules).
+ * A Task with a processing run is not edited.
+ */
+export function editTask(database: DatabaseSync, taskId: number, spec: TaskSpec, now: number, actor: string): TaskEditResult {
+  return inTransaction(database, () => {
+    const task = getTask(database, taskId);
+    if (!task) return "not_found";
+    if (task.state !== "active" && task.state !== "paused") return "not_editable";
+    if (database.prepare("SELECT 1 FROM task_runs WHERE task_id=? AND state='processing' AND deleted_at IS NULL").get(taskId)) return "running";
+    const { runs } = database.prepare(`SELECT COUNT(*) AS runs FROM task_runs
+      WHERE task_id=? AND state IN ('completed','failed') AND deleted_at IS NULL`).get(taskId) as { runs: number };
+    const next = nextRunAt(spec, now, runs);
+    if (next === null) return "no_run_left";
+    const columns = toTaskColumns(spec, now);
+    database.prepare(`UPDATE tasks SET goal=?,task_type=?,interval_seconds=?,next_due_at=?,title=?,output_spec=?,timezone=?,
+      schedule_kind=?,schedule_time=?,schedule_days=?,ends_at=?,max_runs=?,updated_at=?,updated_by=? WHERE id=?`).run(
+      columns.goal, columns.task_type, columns.interval_seconds, next, columns.title, columns.output_spec, columns.timezone,
+      columns.schedule_kind, columns.schedule_time, columns.schedule_days, columns.ends_at, columns.max_runs, now, actor, taskId);
+    return "edited";
+  });
+}
+
+/**
+ * Creates a `pending:ui:` placeholder Session and its Task. The Task's first run opens its thread in the
+ * task channel (`bindTaskConversation`). Call inside the caller's transaction.
+ */
+export function insertPendingTask(database: DatabaseSync, owner: PendingTaskOwner, columns: TaskColumns, actor: string): TaskRecord {
+  const id = randomUUID();
+  const conversationId = `pending:ui:${id}`;
+  const session = createSession(database, {
+    user_id: owner.user_id, transport: owner.transport, workspace_id: owner.workspace_id,
+    parent_conversation_id: "pending:ui", conversation_id: conversationId, initiating_external_message_id: conversationId,
+    agent_provider: owner.agent_provider, agent_session_id: `pending:task:${id}`, project_path: owner.project_path,
+  }, actor);
+  return createTask(database, { ...columns, conversation_id: conversationId, session_id: session.id }, actor);
+}
+
+export function createPendingTask(database: DatabaseSync, owner: PendingTaskOwner, columns: TaskColumns, actor: string): TaskRecord {
+  return inTransaction(database, () => insertPendingTask(database, owner, columns, actor));
 }
 
 export function recoverLegacyApprovals(database: DatabaseSync): void {
@@ -1115,6 +1265,7 @@ export function resetSession(database: DatabaseSync, sessionId: number, actor = 
       database.prepare(`UPDATE messages SET delivery_state = 'failed', failure_detail = 'Delivery cancelled by reset',
         updated_at = unixepoch(), updated_by = ?
         WHERE session_id = ? AND direction = 'agent' AND delivery_state = 'pending' AND deleted_at IS NULL`).run(actor, sessionId);
+      expireProposalsWhere(database, "session_id=?", [sessionId], Math.floor(Date.now() / 1000), "system", "reset");
     }
     database.exec("COMMIT");
     return changed === 1;
