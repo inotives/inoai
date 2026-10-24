@@ -33,6 +33,7 @@ Also: `transport.test.ts` uses fixed `setTimeout(resolve, 10|20)` sleeps before 
 ## Discussion
 
 - [2026-10-24] Recheck on `main` at `16b551c`: still open. The two runtime tests are unchanged (`runtime-review.test.ts:169`, `claude-runtime.test.ts:374`). `transport.test.ts` line numbers moved: fixed sleeps before assertions at :292, :404, :484, :519, :524, :690; 100 × 10 ms lock loops at :560 and :836. The loops at :1002-1011 and :1083-1092 are already deadline-based.
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

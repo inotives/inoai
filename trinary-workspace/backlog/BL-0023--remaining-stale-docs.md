@@ -28,7 +28,9 @@ Doc drift left outside IP-0004 T-0004 scope:
 
 ## Discussion
 
-None
+- [2026-10-24] IP-0004 T-0005 (README restructure) takes the README layout tree, the `docs/repository-structure.md` trees, and `CONTEXT.md:68`. The other items stay here.
+- [2026-10-24] IP-0004 T-0005 worker follow-ups: the `INSTRUCTIONS.md` Heartbeat "Isolated acceptance checks" command names test paths that do not exist (heartbeat tests are in `dist/inoai/test/heartbeat/`); `src/platform/README.md` and `src/persistence/README.md` describe removed files; `npm test` globs `dist/platform/*.test.js`, which matches nothing; the deployment tree lists `backups/`, which nothing creates.
+- [2026-10-24] IP-0004 T-0005 reviewer: `docs/adr/0009-opencode-uses-its-configured-provider.md:3` says the README documents the OpenCode data flow; it now lives in `INSTRUCTIONS.md#opencode`.
 
 ## Open questions
 

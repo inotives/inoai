@@ -25,8 +25,7 @@ IP-0002 ADR 0026 allows the UI to write Tasks. Documents outside the T-0006 list
 - Source: IP-0002 T-0006 worker handoffs 1–2 and reviewer handoffs 1–2 (local workflow records).
 
 ## Discussion
-
-None
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

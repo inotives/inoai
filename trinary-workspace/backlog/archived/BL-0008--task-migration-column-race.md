@@ -26,8 +26,7 @@ promoted_to: IP-0004
 - Fix idea: re-read the column list inside the transaction.
 
 ## Discussion
-
-None
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

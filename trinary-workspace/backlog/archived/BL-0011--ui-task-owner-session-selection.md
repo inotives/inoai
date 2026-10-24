@@ -26,8 +26,7 @@ UI task creation copies user, workspace, and provider from the most recent owner
 - Fix idea: add `AND u.state = 'active'`.
 
 ## Discussion
-
-None
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 

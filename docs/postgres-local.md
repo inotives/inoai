@@ -88,7 +88,7 @@ npm run postgres:test -- --connect-dir .robin-xai-test
 
 The retained PostgreSQL store and integration tests exercise leases in
 `inoai_control.agent_instance_leases`. Those leases do not control the current
-SQLite runtime or its [Heartbeat Supervisor](../INSTRUCTIONS.md).
+SQLite runtime or its [Heartbeat Supervisor](../INSTRUCTIONS.md#heartbeat-supervisor).
 
 One core process owns each runtime home and holds its local `inoai.lock`; do not
 share a runtime home between machines. The supported allowlist and Memory CLI

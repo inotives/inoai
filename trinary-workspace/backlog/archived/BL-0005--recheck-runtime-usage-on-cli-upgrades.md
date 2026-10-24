@@ -21,6 +21,7 @@ The token and cost mappings rely on version-specific CLI behaviour: Claude 2.1.3
 ## Discussion
 
 - [2026-10-23] Captured from T-0004 follow-ups.
+- [2026-10-24] Delivered by IP-0004 on `chore/cleanups`; archived to `backlog/archived/`.
 
 ## Open questions
 
