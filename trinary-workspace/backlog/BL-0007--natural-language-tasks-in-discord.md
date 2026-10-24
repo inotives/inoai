@@ -2,10 +2,10 @@
 id: BL-0007
 title: Natural-language task creation and management in Discord
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-23T14:04:28Z
 source: human request
-promoted_to: null
+promoted_to: IP-0003
 ---
 
 # BL-0007: Natural-language task creation and management in Discord
@@ -28,6 +28,8 @@ promoted_to: null
   - Proposed tasks must be stored durably until confirmed: either a `draft` task state (needs a tasks table rebuild) or a `task_proposals` table. Decide when this feature is planned.
   - Tasks created from Discord use an owner time-zone setting in the agent's `.env`.
   - Possible extra: stopping a run that is already in progress (needs the running agent).
+
+- [2026-10-23] Promoted to IP-0003 on branch `feat/discord-nl-tasks` (owner: "lets start. create a new branch."). The feature README is now canonical.
 
 ## Open questions
 

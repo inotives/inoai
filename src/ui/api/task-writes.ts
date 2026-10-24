@@ -1,14 +1,13 @@
 // Task-only writes from the local UI. Each write opens a short-lived SQLite
 // connection with the 5-second busy timeout (ADR 0025) and closes it in `finally`.
 import { DatabaseSync } from "node:sqlite";
-import { randomUUID } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import {
-  createSession, createTask, databaseBusyTimeoutMs, getTask, pauseTask, resumeTask,
+  databaseBusyTimeoutMs, editTask, getTask, insertPendingTask, pauseTask, resumeTask,
 } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
-import { nextRunAt, toTaskColumns, validateTaskSpec, type TaskSpec } from "../../inoai/tasks/schedule.js";
+import { toTaskColumns, validateTaskSpec, type TaskSpec } from "../../inoai/tasks/schedule.js";
 import { readTasks, type UiTask } from "./read-model.js";
 
 export const uiActor = "ui:owner";
@@ -102,14 +101,7 @@ export function createUiTask(home: RuntimeHome, input: unknown, now = Math.floor
         WHERE s.deleted_at IS NULL ORDER BY s.id DESC LIMIT 1`).get() as
         { user_id: number; transport: string; workspace_id: string; agent_provider: string; project_path: string } | undefined;
       if (!owner) throw new TaskWriteError(409, noSessionMessage);
-      const id = randomUUID();
-      const conversationId = `pending:ui:${id}`;
-      const session = createSession(database, {
-        user_id: owner.user_id, transport: owner.transport, workspace_id: owner.workspace_id,
-        parent_conversation_id: "pending:ui", conversation_id: conversationId, initiating_external_message_id: conversationId,
-        agent_provider: owner.agent_provider, agent_session_id: `pending:task:${id}`, project_path: owner.project_path,
-      }, uiActor);
-      return createTask(database, { ...columns, conversation_id: conversationId, session_id: session.id }, uiActor).id;
+      return insertPendingTask(database, owner, columns, uiActor).id;
     });
     return uiTask(database, taskId);
   });
@@ -118,21 +110,12 @@ export function createUiTask(home: RuntimeHome, input: unknown, now = Math.floor
 /** Replaces the task's spec and recomputes its next run. Only active or paused tasks without a running run. */
 export function editUiTask(home: RuntimeHome, taskId: number, input: unknown, now = Math.floor(Date.now() / 1000)): UiTask {
   const spec = validSpec(input, now);
-  const columns = toTaskColumns(spec, now);
   return withTaskDatabase(home, (database) => {
-    transaction(database, () => {
-      const task = existingTask(database, taskId);
-      if (task.state !== "active" && task.state !== "paused") throw new TaskWriteError(409, "Only active or paused tasks can be edited.");
-      if (hasProcessingRun(database, taskId)) throw new TaskWriteError(409, "A run is in progress. Try again after it finishes.");
-      const { runs } = database.prepare(`SELECT COUNT(*) AS runs FROM task_runs
-        WHERE task_id=? AND state IN ('completed','failed') AND deleted_at IS NULL`).get(taskId) as { runs: number };
-      const next = nextRunAt(spec, now, runs);
-      if (next === null) throw new TaskWriteError(400, "Invalid task.", { schedule: "The schedule has no run left after the runs so far." });
-      database.prepare(`UPDATE tasks SET goal=?,task_type=?,interval_seconds=?,next_due_at=?,title=?,output_spec=?,timezone=?,
-        schedule_kind=?,schedule_time=?,schedule_days=?,ends_at=?,max_runs=?,updated_at=?,updated_by=? WHERE id=?`).run(
-        columns.goal, columns.task_type, columns.interval_seconds, next, columns.title, columns.output_spec, columns.timezone,
-        columns.schedule_kind, columns.schedule_time, columns.schedule_days, columns.ends_at, columns.max_runs, now, uiActor, taskId);
-    });
+    const result = editTask(database, taskId, spec, now, uiActor);
+    if (result === "not_found") throw new TaskWriteError(404, "Task not found.");
+    if (result === "not_editable") throw new TaskWriteError(409, "Only active or paused tasks can be edited.");
+    if (result === "running") throw new TaskWriteError(409, "A run is in progress. Try again after it finishes.");
+    if (result === "no_run_left") throw new TaskWriteError(400, "Invalid task.", { schedule: "The schedule has no run left after the runs so far." });
     return uiTask(database, taskId);
   });
 }

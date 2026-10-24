@@ -10,10 +10,13 @@ import {
   failRemainingResponseChunks, failResponseChunk, getSession, listEvents, listMemories, listMessages,
   listPendingResponseChunks, markRuntimeStarted, messagesForMemoryReview, recoverStaleWork, rebindAgentSession,
   resetSession, softDeleteMemory, upsertUser, legacyApprovalNotices, claimLegacyApprovalNotice, resolveLegacyApprovalNotice,
+  createTaskProposal, expireOverdueTaskProposals, expireSessionTaskProposals, getTaskProposal, resolveTaskProposal, setTaskProposalCardMessage,
+  claimTaskProposal, finishTaskProposal, listOpenTaskProposalCards, closeTaskProposalCard, editTask, createPendingTask,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
-import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord } from "./legacy-database.js";
+import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord, OpenTaskProposalCard, TaskEditResult, PendingTaskOwner } from "./legacy-database.js";
+import type { TaskColumns, TaskSpec } from "../../../tasks/schedule.js";
 
 export interface TaskOperationsStore {
   createTask(task: NewTask, actor?: string): Promise<TaskRecord>;
@@ -29,6 +32,18 @@ export interface TaskOperationsStore {
   cancelTask(taskId: number, now: number, actor?: string): Promise<boolean>;
   bindTaskConversation(taskId: number, binding: { conversationId: string; parentConversationId: string; initiatingExternalMessageId: string }, now: number, actor?: string): Promise<void>;
   recoverTaskRuns(actor?: string, now?: number): Promise<void>;
+  createTaskProposal(proposal: NewTaskProposal, now: number, actor?: string): Promise<TaskProposalRecord>;
+  getTaskProposal(id: number): Promise<TaskProposalRecord | undefined>;
+  setTaskProposalCardMessage(id: number, cardMessageId: string, now: number, actor?: string): Promise<boolean>;
+  resolveTaskProposal(id: number, outcome: TaskProposalOutcome, now: number, actor?: string, resultTaskId?: number | null, reason?: string): Promise<{ resolved: boolean; proposal: TaskProposalRecord | undefined }>;
+  expireOverdueTaskProposals(now: number, actor?: string): Promise<number>;
+  expireSessionTaskProposals(sessionId: number, now: number, actor?: string): Promise<number>;
+  claimTaskProposal(id: number, now: number, actor?: string): Promise<{ claimed: boolean; proposal: TaskProposalRecord | undefined }>;
+  finishTaskProposal(id: number, outcome: "confirmed" | "failed", now: number, actor?: string, resultTaskId?: number | null, reason?: string): Promise<{ finished: boolean; proposal: TaskProposalRecord | undefined }>;
+  listOpenTaskProposalCards(): Promise<OpenTaskProposalCard[]>;
+  closeTaskProposalCard(id: number, now: number, actor?: string): Promise<boolean>;
+  editTask(taskId: number, spec: TaskSpec, now: number, actor: string): Promise<TaskEditResult>;
+  createPendingTask(owner: PendingTaskOwner, columns: TaskColumns, actor: string): Promise<TaskRecord>;
 }
 
 export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore {
@@ -58,6 +73,18 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async cancelTask(taskId, now, actor) { return cancelTask(database, taskId, now, actor); },
     async bindTaskConversation(taskId, binding, now, actor) { bindTaskConversation(database, taskId, binding, now, actor); },
     async recoverTaskRuns(actor, now) { recoverTaskRuns(database, actor, now); },
+    async createTaskProposal(proposal, now, actor) { return createTaskProposal(database, proposal, now, actor); },
+    async getTaskProposal(id) { return getTaskProposal(database, id); },
+    async setTaskProposalCardMessage(id, cardMessageId, now, actor) { return setTaskProposalCardMessage(database, id, cardMessageId, now, actor); },
+    async resolveTaskProposal(id, outcome, now, actor, resultTaskId, reason) { return resolveTaskProposal(database, id, outcome, now, actor, resultTaskId, reason); },
+    async expireOverdueTaskProposals(now, actor) { return expireOverdueTaskProposals(database, now, actor); },
+    async expireSessionTaskProposals(sessionId, now, actor) { return expireSessionTaskProposals(database, sessionId, now, actor); },
+    async claimTaskProposal(id, now, actor) { return claimTaskProposal(database, id, now, actor); },
+    async finishTaskProposal(id, outcome, now, actor, resultTaskId, reason) { return finishTaskProposal(database, id, outcome, now, actor, resultTaskId, reason); },
+    async listOpenTaskProposalCards() { return listOpenTaskProposalCards(database); },
+    async closeTaskProposalCard(id, now, actor) { return closeTaskProposalCard(database, id, now, actor); },
+    async editTask(taskId, spec, now, actor) { return editTask(database, taskId, spec, now, actor); },
+    async createPendingTask(owner, columns, actor) { return createPendingTask(database, owner, columns, actor); },
     async claimLegacyApprovalNotice(id) { return claimLegacyApprovalNotice(database, id); },
     async resolveLegacyApprovalNotice(id, messageId) { resolveLegacyApprovalNotice(database, id, messageId); },
     async recoverStaleWork(actor = "startup-recovery") {

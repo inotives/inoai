@@ -302,6 +302,8 @@ ORDER BY id;
 
 ## Tasks
 
+The owner creates and manages Tasks with `/inoai task` commands, by asking in chat ([Tasks from chat](#tasks-from-chat)), or in the local UI ([Tasks in the UI](#tasks-in-the-ui)).
+
 The configured owner can create a Task in any accessible guild text channel or an existing Task thread. The bot creates a dedicated thread, Conversation, and Agent Session for it. A one-time Task waits for `/inoai task run`; a recurring Task first becomes due one interval after creation. Use the slash command options shown by Discord, for example:
 
 ```text
@@ -323,6 +325,26 @@ The in-process scheduler checks for due Tasks at startup and about once per minu
 For requested files, the agent is directed to write under the selected runtime home's `results/<task-id>/<run-id>/`. Each run gets a new directory, so earlier output remains. inoai posts the run summary and relative file paths in the Task thread and uploads a copy of each produced file to Discord. If an upload fails, the local file remains and the thread receives its relative path. Keep these files in your runtime-home backup plan; SQLite stores the paths and run history, not the file contents.
 
 A completed or failed run also gets `results/<task-id>/<run-id>/result.md`, written by inoai, once its run folder exists. It holds the run times and state, the instruction, the expected output, the full answer or a safe failure reason, and the list of other files in the run folder. It stays local: inoai does not upload it to Discord. A run that fails before its run folder exists, a run failed by restart recovery, and a cancelled run have no `result.md`.
+
+### Tasks from chat
+
+You can also ask for a Task in an ordinary conversation with the agent, for example "every weekday at 9, check the failing CI jobs and give me a short summary". The agent replies and inoai posts a task card in the thread. Nothing is saved until you click the card (ADR 0027).
+
+- A new-task card shows the title, instruction, expected output, schedule, next three runs, time zone, where reports go, and when the card expires. Long text is cut on the card; the full text is saved.
+- **Create** saves the Task. **Cancel** discards the card. A later click creates nothing; it shows the card's state.
+- To change a proposal, reply in chat. The agent posts a revised card, and the old card says "Replaced by a newer card."
+- You can also ask to edit, run now, pause, resume, or cancel an existing Task, for example "pause the CI summary". The card shows the action and the Task; click **Confirm** to apply it. These follow the same rules as the UI and `/inoai task …`. Cancel ends the Task and stops a run in progress, as `/inoai task cancel` does.
+- Ask "what tasks do I have". The agent answers from the list of up to 20 active and paused Tasks that inoai gives it on your turns. No card is posted.
+- A card expires after 24 hours, when a newer card replaces it, when you run `/inoai reset`, or at startup if it is overdue. An expired or resolved card loses its buttons and shows its state.
+- Only the owner can use these. The agent gets task instructions only on your turns in normal conversations started by a mention; messages in Task threads stay guidance notes. Other users' clicks get a private refusal and change nothing.
+- Discord-created Tasks use the optional `OWNER_TIMEZONE` from the runtime home's `.env`, for example `OWNER_TIMEZONE=Asia/Singapore`. When it is blank or unset, the host time zone is used. An unknown zone fails configuration. The card always shows the zone.
+
+Where reports go:
+
+- **`DISCORD_TASK_CHANNEL_ID` unset:** Create opens a thread named after the title in the conversation's parent channel. The card links to it, and every run report goes there.
+- **`DISCORD_TASK_CHANNEL_ID` set:** the first run opens a thread named after the title in the task channel, as for UI-created Tasks. Later reports go there.
+
+Known limits: a card waiting to be posted is lost if inoai restarts, and its proposal waits until it expires or is replaced. A crash during Create can leave a thread without a Task; the card says the creation failed. A failed card edit is not retried, so a later click on a replaced card may say "Expired" instead of "Replaced by a newer card." A task block that the agent shows as an example inside another code block becomes a real card. `/inoai task …` remains available as a fallback.
 
 ### Tasks in the UI
 

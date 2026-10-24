@@ -1,12 +1,12 @@
-import { ChannelType, Client, Events, GatewayIntentBits, MessageFlags, SlashCommandBuilder } from "discord.js";
-import type { Message } from "discord.js";
+import { ButtonStyle, ChannelType, Client, ComponentType, Events, GatewayIntentBits, MessageFlags, SlashCommandBuilder } from "discord.js";
+import type { APIActionRowComponent, APIButtonComponentWithCustomId, ButtonInteraction, Message } from "discord.js";
 
 import type { Configuration } from "../../agent-instance/config.js";
 import { KnownDeliveryFailure } from "../../conversation/transport-port.js";
-import type { ConversationTransport } from "../../conversation/transport-port.js";
-import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../../transport/ports.js";
+import type { ConversationTransport, MessageButton } from "../../conversation/transport-port.js";
+import type { ButtonClick, ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../../transport/ports.js";
 
-export type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../../transport/ports.js";
+export type { ButtonClick, ChatTransport, IncomingMessage, MessageButton, ThreadControl, TransportHealth } from "../../transport/ports.js";
 
 export { KnownDeliveryFailure } from "../../conversation/transport-port.js";
 
@@ -14,6 +14,7 @@ export class DiscordTransport implements ChatTransport {
   private state: TransportHealth["state"] = "idle";
   private started = false;
   private cancelStartup: (() => void) | null = null;
+  private buttonHandler: ((click: ButtonClick) => Promise<void>) | null = null;
 
   constructor(private readonly token: string, private readonly client: Client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -67,6 +68,10 @@ export class DiscordTransport implements ChatTransport {
       });
     });
     this.client.on(Events.InteractionCreate, (interaction) => {
+      if (this.state === "ready" && !interaction.isChatInputCommand() && interaction.isButton() && interaction.customId.startsWith("inoai:")) {
+        void this.handleButton(interaction);
+        return;
+      }
       if (this.state !== "ready" || !onControl || !interaction.isChatInputCommand() || interaction.commandName !== "inoai") return;
       const command = interaction.options.getSubcommand(false);
       const group = interaction.options.getSubcommandGroup(false);
@@ -104,6 +109,33 @@ export class DiscordTransport implements ChatTransport {
       throw error;
     } finally {
       this.cancelStartup = null;
+    }
+  }
+
+  onButtonClick(handler: (click: ButtonClick) => Promise<void>): void {
+    this.buttonHandler = handler;
+  }
+
+  private async handleButton(interaction: ButtonInteraction): Promise<void> {
+    let responded = false;
+    try {
+      if (!this.buttonHandler) throw new Error("No button handler");
+      await this.buttonHandler({
+        customId: interaction.customId, workspaceId: interaction.guildId, conversationId: interaction.channelId,
+        messageId: interaction.message.id, externalUserId: interaction.user.id,
+        replyEphemeral: async (text) => {
+          responded = true;
+          await interaction.reply({ content: text.slice(0, 1900), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+        },
+        updateMessage: async (text, buttons = []) => {
+          responded = true;
+          await interaction.update({ content: text.slice(0, 1900), components: buttonRows(buttons), allowedMentions: { parse: [] } });
+        },
+      });
+      if (!responded) throw new Error("Button click was not answered");
+    } catch {
+      const failure = { content: "Action unavailable. Please try again.", flags: MessageFlags.Ephemeral } as const;
+      await (responded ? interaction.followUp(failure) : interaction.reply(failure)).catch(() => undefined);
     }
   }
 
@@ -168,6 +200,25 @@ export class DiscordTransport implements ChatTransport {
     return message.id;
   }
 
+  async sendMessageWithButtons(conversationId: string, text: string, buttons: MessageButton[]): Promise<string> {
+    if (buttons.length < 1 || buttons.length > 5) throw new KnownDeliveryFailure("A button message needs 1-5 buttons");
+    let channel;
+    try { channel = await this.client.channels.fetch(conversationId); }
+    catch { throw new KnownDeliveryFailure("Discord conversation could not be fetched before send"); }
+    if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
+    const message = await channel.send({ content: text.slice(0, 1900), components: buttonRows(buttons), allowedMentions: { parse: [] } });
+    return message.id;
+  }
+
+  async editMessage(conversationId: string, messageId: string, text: string, buttons: MessageButton[] = []): Promise<void> {
+    if (buttons.length > 5) throw new RangeError("A message row holds at most 5 buttons");
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel?.isTextBased()) throw new Error("Discord conversation is not text based");
+    const message = await channel.messages.fetch(messageId);
+    if (message.author.id !== this.client.user?.id) throw new Error("Cannot edit another author's message");
+    await message.edit({ content: text.slice(0, 1900), components: buttonRows(buttons), allowedMentions: { parse: [] } });
+  }
+
   async uploadFile(conversationId: string, filePath: string, name: string): Promise<string> {
     const channel = await this.client.channels.fetch(conversationId);
     if (!channel?.isSendable()) throw new KnownDeliveryFailure("Discord conversation is not sendable");
@@ -202,6 +253,15 @@ export class DiscordTransport implements ChatTransport {
   health(): TransportHealth {
     return { state: this.state, botUserId: this.client.user?.id ?? null };
   }
+}
+
+const buttonStyles = { primary: ButtonStyle.Primary, secondary: ButtonStyle.Secondary, success: ButtonStyle.Success, danger: ButtonStyle.Danger } as const;
+
+function buttonRows(buttons: MessageButton[]): APIActionRowComponent<APIButtonComponentWithCustomId>[] {
+  if (!buttons.length) return [];
+  return [{ type: ComponentType.ActionRow, components: buttons.map((button) => ({
+    type: ComponentType.Button, style: buttonStyles[button.style], label: button.label, custom_id: button.customId,
+  })) }];
 }
 
 export function createChatTransport(configuration: Configuration, client?: Client): ChatTransport {

@@ -14,6 +14,7 @@ import type { MemoryRecord } from "./memory/ports.js";
 import { ConversationWorker } from "./conversation/conversation-worker.js";
 import { TaskRunExecutor } from "./conversation/task-run-executor.js";
 import { TaskScheduler } from "./conversation/task-scheduler.js";
+import { TaskProposalCards } from "./conversation/task-proposal-cards.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
@@ -121,6 +122,7 @@ export async function startTransport(
   worker?: ConversationWorker,
   operationalStore?: OperationalStore & Partial<TaskOperationsStore>,
   taskRunner?: TaskRunExecutor,
+  taskCards?: TaskProposalCards,
 ): Promise<ChatTransport> {
   const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
@@ -362,8 +364,17 @@ export async function startTransport(
     const cancelling = worker.cancelSession(session.id);
     if (!await store.resetSession(session.id)) { await cancelling; await request.respond(denied); return; }
     await cancelling;
+    void taskCards?.sweep();
     await request.respond("Session reset. Queued work was cancelled; archived history remains. The next message starts a fresh session. Active work may have an uncertain outcome.");
   };
+  // Task card clicks use the same owner check as the /inoai task controls; other users get a private refusal.
+  transport.onButtonClick?.(async (click) => {
+    if (instance.closing || !taskCards) { await click.replyEphemeral("Task cards are unavailable right now."); return; }
+    const owner = click.workspaceId === instance.configuration.discordGuildId && click.externalUserId === instance.configuration.discordOwnerUserId
+      ? await store.findUser("discord", click.workspaceId, click.externalUserId) : undefined;
+    if (!owner || owner.id !== instance.owner.id) { await click.replyEphemeral("Only the owner can use this task card."); return; }
+    await taskCards.handleClick(click);
+  });
   try {
     await transport.start(receive, async () => {
       if (transport.health().state !== "ready") throw new Error("Discord disconnected before startup announcement");
@@ -391,6 +402,7 @@ export async function startTransport(
         event_type: "startup_online",
         detail: `discord message ${messageId}`,
       }, "transport:discord");
+      void taskCards?.sweep();
     }, onFailure, control);
     worker?.wake();
     return transport;
@@ -695,13 +707,16 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     await instance.release();
     throw error;
   }
+  let taskCards: TaskProposalCards | undefined;
   const worker = new ConversationWorker(instance.store!, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {
     console.error("Conversation worker failed; stopping to preserve queue state");
     void shutdown(1).catch((failure: unknown) => {
       console.error(failure instanceof Error ? failure.message : failure);
       process.exitCode = 1;
     });
-  }, transport);
+  }, transport, { store: instance.store! as OperationalStore & TaskOperationsStore, ownerUserId: instance.owner.id,
+    ownerTimeZone: instance.configuration.ownerTimeZone, onProposal: (proposal) => taskCards?.deliver(proposal),
+    now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000) });
   // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
   // chat always runs first.
   const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {
@@ -716,6 +731,12 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   const taskScheduler = new TaskScheduler(instance.store! as TaskOperationsStore, taskRunner,
     supplied.schedulerClock, () => console.error("Task scheduler failed; due Tasks stay queued"));
   taskRunner.onSettled(() => { void taskScheduler.poke(); });
+  if (instance.store?.claimTaskProposal) {
+    taskCards = new TaskProposalCards(instance.store as OperationalStore & TaskOperationsStore, transport, {
+      ownerUserId: instance.owner.id, agentProvider: instance.configuration.agentProvider,
+      projectPath: dirname(instance.runtimeHome.directory), taskChannelId: instance.configuration.discordTaskChannelId,
+      taskRunner, clock: supplied.schedulerClock });
+  }
   worker.onQueueChange(() => { void scheduler.poke(); void taskScheduler.poke(); });
   const concurrentSessionsValidated = await probeConcurrency();
   let keepAlive: NodeJS.Timeout | undefined;
@@ -727,6 +748,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       try {
         instance.closing = true;
         await Promise.allSettled([...instance.pendingIngestion]);
+        await taskCards?.stop();
         await transport.stop();
         await taskScheduler.stop();
         // Abort an active review and let it settle before the worker closes the runtime.
@@ -765,11 +787,12 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         console.error(failure instanceof Error ? failure.message : failure);
         process.exitCode = 1;
       });
-    }, worker, undefined, taskRunner);
+    }, worker, undefined, taskRunner, taskCards);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();
     if (instance.store?.listTasks) taskScheduler.start();
+    taskCards?.start();
     if (!suppliedRuntime) console.log(`${runtime.displayName} cross-session concurrency: ${concurrentSessionsValidated ? "enabled" : "unavailable; using global FIFO"}`);
   } catch (error) {
     await shutdown(1);

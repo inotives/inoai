@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 
+import { normalizeTimeZone } from "../tasks/schedule.js";
+
 const requiredKeys = [
   "DISCORD_BOT_TOKEN",
   "DISCORD_GUILD_ID",
@@ -33,6 +35,8 @@ export type Configuration = {
   claudeModel?: string;
   memoryReviewTime: string;
   memoryReviewMaxChars: number;
+  /** IANA time zone for Discord-created Tasks: `OWNER_TIMEZONE`, or the host time zone when unset. */
+  ownerTimeZone: string;
 };
 
 export class ConfigurationError extends Error {
@@ -69,6 +73,9 @@ export function validateConfiguration(values: Record<string, string | undefined>
   if (values.MEMORY_REVIEW_MAX_CHARS && (!Number.isSafeInteger(limit) || limit <= 0)) {
     issues.push("MEMORY_REVIEW_MAX_CHARS must be a positive integer");
   }
+  const ownerTimeZoneValue = values.OWNER_TIMEZONE?.trim() || undefined;
+  const ownerTimeZone = ownerTimeZoneValue ? normalizeTimeZone(ownerTimeZoneValue) : Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!ownerTimeZone) issues.push("OWNER_TIMEZONE must be a known IANA time zone, for example Asia/Singapore");
   if (issues.length > 0) throw new ConfigurationError(issues);
 
   return {
@@ -83,6 +90,7 @@ export function validateConfiguration(values: Record<string, string | undefined>
     ...(claudeModel ? { claudeModel } : {}),
     memoryReviewTime: values.MEMORY_REVIEW_TIME!,
     memoryReviewMaxChars: limit,
+    ownerTimeZone: ownerTimeZone!,
   };
 }
 

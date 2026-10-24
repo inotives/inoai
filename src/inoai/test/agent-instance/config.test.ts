@@ -140,3 +140,26 @@ test("accepts an optional task channel and rejects a malformed one", () => {
     return true;
   });
 });
+
+test("resolves OWNER_TIMEZONE when absent, blank, valid, or invalid", async () => {
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.equal(validateConfiguration(validValues).ownerTimeZone, hostZone);
+  assert.equal(validateConfiguration({ ...validValues, OWNER_TIMEZONE: "" }).ownerTimeZone, hostZone);
+  assert.equal(validateConfiguration({ ...validValues, OWNER_TIMEZONE: "   " }).ownerTimeZone, hostZone);
+  assert.equal(validateConfiguration({ ...validValues, OWNER_TIMEZONE: " Asia/Singapore " }).ownerTimeZone, "Asia/Singapore");
+  for (const value of ["Mars/Olympus", "+08:00", "not a zone"]) {
+    assert.throws(() => validateConfiguration({ ...validValues, OWNER_TIMEZONE: value }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /OWNER_TIMEZONE must be a known IANA time zone/);
+      return true;
+    });
+  }
+  const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const envFile = join(directory, ".env");
+    await writeFile(envFile, [...Object.entries(validValues).map(([key, value]) => `${key}=${value}`), "# OWNER_TIMEZONE=Asia/Tokyo", "OWNER_TIMEZONE=Europe/London"].join("\n"));
+    assert.equal((await loadConfiguration(envFile)).ownerTimeZone, "Europe/London");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

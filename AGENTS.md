@@ -26,6 +26,7 @@ task. Follow the skill's task cycle and human acceptance gate.
 - Read `CONTEXT.md` for domain terms and `docs/archived/plan-review.md` for accepted historical decisions; check the current ADRs for authoritative decisions.
 - For the Agent Tasks phase, read the approved feature and task READMEs in `trinary-workspace/` before changing code.
 - For SPA UI decisions, also read `docs/archived/spa-agent-ui-phase-plan.md`, `docs/adr/0021-health-timeline-history.md`, and `docs/adr/0026-ui-writes-tasks-directly.md`.
+- For chat-proposed Tasks, read `docs/adr/0027-chat-proposed-tasks.md`.
 - Do not start live SPA data-bound tasks until the fixture-driven prototype has
   explicit human approval in its task handoff.
 
@@ -66,6 +67,7 @@ conditions, actions, and expected results clearly.
 - Prefer project-local commands and documentation over global memory.
 - Treat SQLite as the durable source of truth. Preserve audit fields and use soft deletion; do not introduce physical deletes for persisted records.
 - Keep per-Session turns FIFO. Never process two turns for the same Agent Session concurrently.
+- Chat-proposed Tasks need an owner click on their confirm card (ADR 0027). Store a proposal in `task_proposals` and change `tasks` only on confirm. Accept `inoai-task` blocks only from owner turns in normal conversations. Never archive or post the raw block.
 - Preserve the configured CLI's skills, MCP servers, sandbox, and approval policy. Never silently elevate permissions.
 - Every bot ignores bot-authored messages. Cross-agent mentions inside a thread are not handoffs.
 - Keep secrets out of SQLite, logs, Discord, UI data, and committed files.

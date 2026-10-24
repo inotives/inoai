@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { DatabaseSync } from "node:sqlite";
-import { ChannelType, Events, MessageFlags } from "discord.js";
+import { ButtonStyle, ChannelType, ComponentType, Events, MessageFlags } from "discord.js";
 import type { Client } from "discord.js";
 
 import type { AgentRuntime } from "../../agent-runtime/ports.js";
-import { createChatTransport, DiscordTransport } from "../../connectors/discord/discord.js";
-import type { IncomingMessage } from "../../connectors/discord/discord.js";
+import { createChatTransport, DiscordTransport, KnownDeliveryFailure } from "../../connectors/discord/discord.js";
+import type { ButtonClick, IncomingMessage } from "../../connectors/discord/discord.js";
 import { archiveMessage, claimLegacyApprovalNotice, createSession, legacyApprovalNotices, listEvents, listMessages, openDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { run, start, startTransport } from "../../../index.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
@@ -177,6 +177,120 @@ test("Discord Task command maps options and disables mentions in its private rep
   await until(() => replies.length === 2);
   assert.deepEqual(controls, [{ command: "task-create", goal: "Write a report", type: "recurring", interval: 172800, channel: "channel" }]);
   assert.deepEqual(replies, [{ flags: MessageFlags.Ephemeral }, { content: "<@everyone> Task created", allowedMentions: { parse: [] } }]);
+  await transport.stop();
+});
+
+test("Discord sends and edits button messages without mentions", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  await transport.start(() => undefined);
+  const row = { type: ComponentType.ActionRow, components: [
+    { type: ComponentType.Button, style: ButtonStyle.Success, label: "Create", custom_id: "inoai:proposal:7:create" },
+    { type: ComponentType.Button, style: ButtonStyle.Secondary, label: "Cancel", custom_id: "inoai:proposal:7:cancel" },
+  ] };
+  assert.equal(await transport.sendMessageWithButtons("thread", "Create this Task?", [
+    { label: "Create", style: "success", customId: "inoai:proposal:7:create" },
+    { label: "Cancel", style: "secondary", customId: "inoai:proposal:7:cancel" },
+  ]), "sent-1");
+  assert.deepEqual(fake.sent[0], { content: "Create this Task?", components: [row], allowedMentions: { parse: [] } });
+  await assert.rejects(transport.sendMessageWithButtons("thread", "none", []), KnownDeliveryFailure);
+  await assert.rejects(transport.sendMessageWithButtons("thread", "many", Array.from({ length: 6 }, (_, index) =>
+    ({ label: `${index}`, style: "primary" as const, customId: `inoai:${index}` }))), KnownDeliveryFailure);
+  assert.equal(fake.sent.length, 1);
+
+  await transport.editMessage("thread", "sent-1", "Task created.");
+  await transport.editMessage("thread", "sent-1", "Still open.", [{ label: "Create", style: "primary", customId: "inoai:proposal:7:create" }]);
+  assert.deepEqual(fake.editedApprovals, ["sent-1", "sent-1"]);
+  assert.deepEqual(fake.sent.slice(1), [
+    { content: "Task created.", components: [], allowedMentions: { parse: [] } },
+    { content: "Still open.", components: [{ type: ComponentType.ActionRow, components: [
+      { type: ComponentType.Button, style: ButtonStyle.Primary, label: "Create", custom_id: "inoai:proposal:7:create" }] }],
+      allowedMentions: { parse: [] } },
+  ]);
+  await transport.stop();
+});
+
+function buttonInteraction(customId: string, replies: unknown[]) {
+  return {
+    isChatInputCommand: () => false, isButton: () => true, customId,
+    guildId: "guild", channelId: "thread", message: { id: "card" }, user: { id: "owner" },
+    reply: async (options: unknown) => { replies.push({ reply: options }); },
+    update: async (options: unknown) => { replies.push({ update: options }); },
+    followUp: async (options: unknown) => { replies.push({ followUp: options }); },
+  };
+}
+
+test("inoai button clicks reach the callback and other interactions do not", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const clicks: unknown[] = [];
+  const controls: string[] = [];
+  const replies: unknown[] = [];
+  transport.onButtonClick(async (click: ButtonClick) => {
+    const { replyEphemeral: _reply, updateMessage: _update, ...ids } = click;
+    clicks.push(ids);
+    if (click.customId.endsWith("refuse")) await click.replyEphemeral("<@everyone> Only the owner can use this.");
+    else await click.updateMessage("Task created.");
+  });
+  await transport.start(() => undefined, undefined, undefined, async (control) => { controls.push(control.command); await control.respond("ok"); });
+
+  fake.emit(Events.InteractionCreate, buttonInteraction("inoai:proposal:7:refuse", replies));
+  fake.emit(Events.InteractionCreate, buttonInteraction("inoai:proposal:7:create", replies));
+  await until(() => replies.length === 2);
+  assert.deepEqual(clicks, [
+    { customId: "inoai:proposal:7:refuse", workspaceId: "guild", conversationId: "thread", messageId: "card", externalUserId: "owner" },
+    { customId: "inoai:proposal:7:create", workspaceId: "guild", conversationId: "thread", messageId: "card", externalUserId: "owner" },
+  ]);
+  assert.deepEqual(replies, [
+    { reply: { content: "<@everyone> Only the owner can use this.", flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } } },
+    { update: { content: "Task created.", components: [], allowedMentions: { parse: [] } } },
+  ]);
+
+  fake.emit(Events.InteractionCreate, buttonInteraction("other:button", replies));
+  fake.emit(Events.InteractionCreate, { ...buttonInteraction("inoai:select", replies), isButton: () => false });
+  fake.emit(Events.InteractionCreate, {
+    isChatInputCommand: () => true, commandName: "inoai", options: { getSubcommand: () => "status", getSubcommandGroup: () => null },
+    guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel", ownerId: "inoai" }, user: { id: "owner" },
+    deferReply: async (options: unknown) => { (replies as unknown[]).push({ defer: options }); },
+    editReply: async (options: unknown) => { (replies as unknown[]).push({ edit: options }); },
+  });
+  await until(() => replies.length === 4);
+  assert.deepEqual(controls, ["status"]);
+  assert.equal(clicks.length, 2);
+  assert.deepEqual(replies.slice(2), [{ defer: { flags: MessageFlags.Ephemeral } }, { edit: { content: "ok", allowedMentions: { parse: [] } } }]);
+  await transport.stop();
+});
+
+test("failed or unanswered button callbacks reply with a private error", async () => {
+  const failure = { content: "Action unavailable. Please try again.", flags: MessageFlags.Ephemeral };
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  await transport.start(() => undefined);
+  const replies: unknown[] = [];
+  fake.emit(Events.InteractionCreate, buttonInteraction("inoai:no-handler", replies));
+  await until(() => replies.length === 1);
+  assert.deepEqual(replies, [{ reply: failure }]);
+
+  transport.onButtonClick(async (click) => {
+    if (click.customId === "inoai:throw") throw new Error("store unavailable");
+    if (click.customId === "inoai:throw-after-update") { await click.updateMessage("Working."); throw new Error("late failure"); }
+  });
+  replies.length = 0;
+  fake.emit(Events.InteractionCreate, buttonInteraction("inoai:throw", replies));
+  await until(() => replies.length === 1);
+  fake.emit(Events.InteractionCreate, buttonInteraction("inoai:silent", replies));
+  await until(() => replies.length === 2);
+  fake.emit(Events.InteractionCreate, buttonInteraction("inoai:throw-after-update", replies));
+  await until(() => replies.length === 4);
+  assert.deepEqual(replies, [
+    { reply: failure }, { reply: failure },
+    { update: { content: "Working.", components: [], allowedMentions: { parse: [] } } }, { followUp: failure },
+  ]);
+
+  const rejecting = { ...buttonInteraction("inoai:throw", replies), reply: async () => { throw new Error("interaction expired"); } };
+  assert.doesNotThrow(() => fake.emit(Events.InteractionCreate, rejecting));
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  assert.equal(transport.health().state, "ready");
   await transport.stop();
 });
 
@@ -555,7 +669,7 @@ test("production SQLite startup recovers legacy approval controls and sends one 
       assert.equal(typeof recovered.database.prepare("SELECT resolution_message_id FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.resolution_message_id, "number");
       assert.equal(listMessages(recovered.database, session.id).filter((message) => message.body.includes("Please make a fresh request")).length, 1);
       assert.equal(fake.listenerCount(Events.InteractionCreate), 1);
-      fake.emit(Events.InteractionCreate, { customId: "approve:lost-json-rpc", isChatInputCommand: () => false });
+      fake.emit(Events.InteractionCreate, { customId: "approve:lost-json-rpc", isChatInputCommand: () => false, isButton: () => true });
       assert.equal(recovered.database.prepare("SELECT state FROM approvals WHERE runtime_approval_id = 'lost-json-rpc'").get()?.state, "failed");
       await transport.stop();
     } finally {

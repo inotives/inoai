@@ -1,4 +1,6 @@
-import type { ConversationTransport } from "../conversation/transport-port.js";
+import type { ConversationTransport, MessageButton } from "../conversation/transport-port.js";
+
+export type { MessageButton } from "../conversation/transport-port.js";
 
 export type IncomingMessage = {
   transport: "discord";
@@ -35,9 +37,24 @@ export type ThreadControl = {
   respond(text: string): Promise<void>;
 };
 
+/** A click on a button whose custom id starts with `inoai:`. */
+export type ButtonClick = {
+  customId: string;
+  workspaceId: string | null;
+  conversationId: string;
+  messageId: string;
+  externalUserId: string;
+  /** Replies privately to the clicking user. */
+  replyEphemeral(text: string): Promise<void>;
+  /** Acknowledges the click by replacing the message text. Omitted or empty buttons remove its buttons. */
+  updateMessage(text: string, buttons?: MessageButton[]): Promise<void>;
+};
+
 export interface ChatTransport extends ConversationTransport {
   start(onIncomingMessage: (message: IncomingMessage) => void, onReady?: () => void | Promise<void>, onFailure?: (error: Error) => void, onControl?: (control: ThreadControl) => Promise<void>): Promise<void>;
   registerThreadControls?(guildId: string): Promise<void>;
+  /** Sets the callback for `inoai:` button clicks. A click must call replyEphemeral or updateMessage once. */
+  onButtonClick?(handler: (click: ButtonClick) => Promise<void>): void;
   stop(): Promise<void>;
   createConversation(parentConversationId: string, initialMessageId: string, name: string): Promise<string>;
   deleteConversation(conversationId: string): Promise<void>;
