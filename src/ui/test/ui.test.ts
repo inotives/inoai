@@ -154,6 +154,23 @@ test("UI data reads the selected SQLite home and redacts secret-like content", a
   }
 });
 
+test("UI data redacts the Discord Task channel ID", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-task-channel-test-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".robin-xai-test");
+  const database = openDatabase(home);
+  database.prepare("INSERT INTO users (transport, workspace_id, external_user_id) VALUES ('discord', 'w', 'owner')").run();
+  database.prepare("INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id, agent_provider, agent_session_id, project_path) VALUES (1, 'discord', 'w', 'p', 'c', 'e', 'codex', 's', ?)").run(deploymentDirectory);
+  database.prepare("INSERT INTO messages (session_id, transport, workspace_id, external_message_id, direction, body) VALUES (1, 'discord', 'w', 'e', 'user', ?)").run("DISCORD_TASK_CHANNEL_ID=987654321");
+  database.close();
+  try {
+    const data = await loadUiData(home);
+    assert.equal(data.messages[0]?.body, "DISCORD_TASK_CHANNEL_ID=[redacted]");
+    assert.equal(JSON.stringify(data).includes("987654321"), false);
+  } finally {
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
 type RawReply = { status: number; text: string; allow?: string };
 
 function rawRequest(port: number, method: string, path: string, headers: Record<string, string> = {}, payload?: string): Promise<RawReply> {

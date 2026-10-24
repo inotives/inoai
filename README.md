@@ -40,9 +40,9 @@ It drives the CLI you already use instead of calling a model API. Codex runs on 
 - Permission requests fail closed with a fixed notice. Discord **Approve** / **Reject** buttons are deferred.
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
 - Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
-- A separate macOS Electron app (Phase 7) reads the selected local SQLite database; SQLite is the core runtime's source of truth.
+- A local UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks; SQLite is the core runtime's source of truth.
 
-Status: Conversation workers, Codex, Claude CLI, OpenCode, Daily Memory Review (Claude homes only in V1), and Tasks are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink, Electron app, and V1 hardening remain.
+Status: Conversation workers, Codex, Claude CLI, OpenCode, Daily Memory Review (Claude homes only in V1), Tasks, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
 
 ## Core Model
 
@@ -51,7 +51,6 @@ Deploy inoai into the folder it should assist. Each hidden runtime directory is 
 ```text
 my-project/
 ├── inoai                      # portable core executable
-├── inoai-ui.app/              # sibling Electron analytics app
 ├── .inoai-connect/            # general Codex agent (default runtime home)
 │   ├── .env
 │   ├── agent.md
@@ -63,7 +62,7 @@ my-project/
 ├── .inoai-connect-opencode/   # OpenCode CLI adapter (Phase 5b)
 ```
 
-On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process writes each runtime-home database; the UI and read-only tools may inspect it. The UI may also create, edit, and control Tasks through short-lived writes (ADR 0026). Stop the core before using local commands that write Memory or the allowlist. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
+On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process owns each runtime home and holds its lock. The UI reads the database and writes only Tasks, through short-lived connections (ADR 0026). While the core runs, the local `allowlist:add`, `allowlist:disable`, `memory add`, and `memory delete` commands also write through short-lived connections (ADR 0025); do not stop the core for them. A write waits up to 5 seconds for SQLite; if it reports a retryable busy error, run the command again. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
 
 The local `inoai.lock` is a `0600` JSON record containing the owning process
 PID, its macOS process start time, and a release token. If startup finds an
@@ -273,7 +272,7 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
 | `npm run allowlist:add -- --connect-dir .robin-xai-test --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
 | `npm run allowlist:disable -- --connect-dir .robin-xai-test --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
-| `npm start -- ui` | Launch the sibling Electron UI for the selected runtime home (Phase 7 reads local SQLite). |
+| `npm start -- ui` | Serve the local UI page for the selected runtime home on `127.0.0.1`, port 8989 by default (`--port` selects another). |
 | `npm run postgres:migrate -- --url <url>` | Advanced: apply PostgreSQL administrator migrations. |
 | `npm run postgres:provision -- <options>` | Advanced: generate PostgreSQL provisioning SQL. |
 | `npm run postgres:test -- --connect-dir <home>` | Advanced: check an explicitly configured PostgreSQL connection without starting Discord. |
@@ -290,7 +289,9 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel.
 
 Allowlist commands use the selected runtime home's SQLite database and
-never print credentials. Stop the core before running these write commands.
+never print credentials. They can run while the core is running (ADR 0025). A
+write waits up to 5 seconds for SQLite; if it reports a retryable busy error,
+run the command again. Changes apply to later authorization checks.
 The configured owner cannot be changed by these commands. Inspect changes in the local SQLite `users` table with:
 
 ```sql
@@ -373,6 +374,8 @@ Schedule kinds, all in the Task's time zone:
 
 Repeating kinds accept an optional stop date ("Until") and an optional run limit. When either is reached, the Task becomes completed. Failed runs count toward the run limit, and the Task moves to its next scheduled time; a failed one-time Task ends completed. On a daylight saving change, a skipped local time runs at the first valid time after the gap, and a repeated local time runs once.
 
+The UI server listens on `127.0.0.1` only. Every request needs a `Host` header of `127.0.0.1:<port>` or `localhost:<port>`, with the port included; any other Host gets 403 on every path. The page `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. Task writes pass further checks (ADR 0026).
+
 The UI writes only Tasks. It never reads `.env`, and it hides credential-shaped text. If a field shows hidden values, re-enter that text before you save an edit; the form refuses to save the hidden placeholder. Changes made while the agent is stopped take effect when it next starts. The UI does not create or upgrade the database; start the agent once first.
 
 A UI-created Task has no Discord thread unless you set the optional `DISCORD_TASK_CHANNEL_ID` in the runtime home's `.env` to a channel ID (digits only). When it is set, the first run creates a thread named after the Task title in that channel and later run reports go there. The bot needs permission to post and create threads in it. Do not use the `DISCORD_STATUS_CHANNEL_ID` channel: inoai ignores messages in threads of the status channel, so Task thread guidance would be dropped.
@@ -436,7 +439,7 @@ When it runs:
 - A failed review is retried after 1, 2, and 4 hours, then waits for the next day's run.
 - `MEMORY_REVIEW_MAX_CHARS` sets how much text the model reads at a time; long ranges are split into chronological parts.
 
-Reviews are silent: they never post to Discord. Until the Phase 7 UI, inspect Memory with `npm start -- memory list`; Recaps (`memory_reviews`) and the non-secret `memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, and `memory_review_skipped` Events are in the runtime home's SQLite database.
+Reviews are silent: they never post to Discord. Inspect Memory in the local UI or with `npm start -- memory list`; Recaps (`memory_reviews`) and the non-secret `memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, and `memory_review_skipped` Events are in the runtime home's SQLite database.
 
 Runtime support:
 
@@ -461,11 +464,27 @@ A review sends archived Message text, current Memory, and recent Recaps to the r
 6.  Daily Memory Review
 6b. Codex Memory Review verification
 6c. Future PostgreSQL central reporting/backup sink
-7.  Separate Electron analytics UI        (next)
+7.  Local SPA operations UI
 8.  V1 acceptance and operational hardening
 ```
 
 See [docs/implementation-phases.md](docs/implementation-phases.md). Deferred after V1: Slack and Telegram adapters; remote UI access and cross-instance Memory sharing; multi-step Task loops and calendar schedules; cross-machine backups and Windows/Linux release packages.
+
+## Upgrading agent CLIs
+
+Token and cost numbers depend on what each CLI reports. The adapters in `src/inoai/connectors/agent-runtime/` map them to one shared meaning. When a CLI version changes, recheck these points against a real Turn before you trust the numbers:
+
+- **Claude** (`claude-runtime.ts`): the `result` event's `usage`. Input must still be `input_tokens` + `cache_creation_input_tokens`, with `cache_read_input_tokens` reported apart as cached input. `total_cost_usd` must still be cumulative for a resumed session; inoai keeps it only for a Turn that starts a new session.
+- **Codex** (`codex-runtime.ts`): the `thread/tokenUsage/updated` notice. `total` must still be the thread's running total and `last` the last model call, so each new total equals the previous total plus `last`. `inputTokens` must still include `cachedInputTokens`, and `outputTokens` must include `reasoningOutputTokens`.
+- **OpenCode** (`opencode-runtime.ts`): undocumented internals. Each `step_finish` event of `opencode run --format json --standalone` must still carry that step's own `tokens` and `cost`, with input excluding cache reads and writes and output excluding reasoning. Also recheck `--standalone` and the `opencode api --standalone GET /api/session/<id>` session check.
+
+After a check, run `npm test` and update the versions below. Usage mapping last verified with:
+
+| CLI | Usage mapping verified | Installed on 2026-10-24 |
+| --- | --- | --- |
+| Claude Code | 2.1.309 | 2.1.310 (not rechecked) |
+| Codex CLI | 0.163.0 | 0.163.0 |
+| OpenCode | 2.0.26 | 2.0.26 |
 
 ## Development
 
@@ -537,7 +556,7 @@ inoai/
 │   │   approval-relay.ts                      # compatibility entry points for transport modules
 │   ├── postgres*.ts, operational-store.ts    # persistence compatibility entry points
 │   ├── database.ts                           # SQLite compatibility entry point
-│   ├── ui.ts                                 # Electron UI launcher
+│   ├── ui.ts                                 # local UI launcher
 │   └── test/
 ├── .agents/skills/trinary-agents/            # Project-local Trinary workflow skill
 ├── AGENTS.md

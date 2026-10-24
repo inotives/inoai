@@ -97,8 +97,8 @@ maintenance connection. SQLite serializes writes: a maintenance write waits up
 to 5 seconds, then reports a retryable busy error. Retry it manually. Allowlist
 changes apply to later authorization checks; Memory changes apply to later
 prompt composition and do not alter an already-composed Turn. `memory list` is
-read-only. The UI remains read-only; other live database writes, IPC, and
-direct SQLite edits are not supported. Startup reclaims only locks proven
+read-only. The UI writes only Tasks (ADR 0026); other live database writes,
+IPC, and direct SQLite edits are not supported. Startup reclaims only locks proven
 stale by process identity. WAL/SHM files are normal SQLite artifacts, not
 stale locks.
 

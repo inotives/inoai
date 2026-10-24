@@ -86,5 +86,5 @@ The UI redacts credential-shaped text in Task titles, instructions, expected out
 - SQLite stays the source of truth. No request queue, IPC channel, or new table is needed.
 - A busy write can block the UI server for up to 5 seconds. This is acceptable for a local single-owner UI.
 - A UI-created Task keeps the agent provider that it copied from the latest owner session at creation. After any `AGENT_PROVIDER` change, its runs fail with "Task Agent Session unavailable"; talking to the agent does not fix that Task. A Task created after the change but before a new owner session exists also copies the old provider. The owner talks to the agent under the new provider, then creates the Task again.
-- Read requests keep their existing behaviour. The page and `/api/ui-data` do not check `Host`; only writes do.
+- Read requests keep their existing behaviour. The page and `/api/ui-data` do not check `Host`; only writes do. Superseded by IP-0004: every request now needs a `Host` of `127.0.0.1:<port>` or `localhost:<port>`, and any other Host gets 403 on every path. `/` accepts GET and HEAD, `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404.
 - All other UI data, including Memory, the allowlist, and sessions, stays read-only. Any further UI write needs a new decision.

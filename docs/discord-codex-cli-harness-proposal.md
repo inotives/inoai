@@ -74,10 +74,11 @@ Run Codex with the deployment folder as its configured project path. The core re
 
 SQLite is the local operational source of truth. The core reuses existing
 `inoai.sqlite` data and creates a missing database through its schema path.
-There is no automatic PostgreSQL-to-SQLite migration. One core process writes
-each runtime-home database; the UI and read-only tools may inspect it. Stop the
-core before using local write commands. Do not share a runtime home between
-machines.
+There is no automatic PostgreSQL-to-SQLite migration. One core process owns
+each runtime home and holds its lock. The UI reads the database and writes only
+Tasks (ADR 0026). The supported allowlist and Memory CLI commands run while the
+core is active, through short-lived maintenance connections (ADR 0025). Do not
+share a runtime home between machines.
 
 Normal validation and startup ignore `POSTGRES_*` settings and need no Docker
 or PostgreSQL service. Existing PostgreSQL commands remain explicit advanced
@@ -183,7 +184,7 @@ The daily Recap can promote information into shared Memory only through a Memory
 
 A one-off fact, ordinary recap item, model-generated claim, secret, speculative statement, or quoted instruction is not a Memory Signal.
 
-Important information can also bypass the daily Recap as a Manual Memory Entry. The local management CLI can create or soft-delete these entries directly; they are stored with `origin = manual` and a timestamp. The SPA UI is read-only. Chat messages do not directly create Memory in V1.
+Important information can also bypass the daily Recap as a Manual Memory Entry. The local management CLI can create or soft-delete these entries directly; they are stored with `origin = manual` and a timestamp. The SPA UI shows Memory but does not change it. Chat messages do not directly create Memory in V1.
 
 ### Memory review loop
 
@@ -276,11 +277,11 @@ See [plan review](archived/plan-review.md), [domain language](../CONTEXT.md), an
 
 The local SPA provides an operational view for one deployed Agent Instance. Start it with `inoai ui --connect-dir <runtime-home>`; it listens on `127.0.0.1` at port `8989` by default. Use `--port` to select another local port.
 
-- The UI reads only the selected runtime home's SQLite database through its read-only API. It never reads `.env` or writes to SQLite.
-- Keep the server bound to `127.0.0.1`. Remote access, tunneling, and multi-agent browsing are out of scope.
+- The UI reads only the selected runtime home's SQLite database. Its only writes are Task create, edit, run now, pause, resume, and cancel, through short-lived SQLite connections ([ADR 0026](adr/0026-ui-writes-tasks-directly.md)). It never reads `.env`.
+- Keep the server bound to `127.0.0.1`. Every request needs a `Host` of `127.0.0.1:<port>` or `localhost:<port>`; any other Host gets 403 on every path. `/` accepts GET and HEAD, `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404. Remote access, tunneling, and multi-agent browsing are out of scope.
 - Show the selected agent profile and runtime status, heartbeat history, conversations, and Memory review data.
 - Keep credentials, tokens, raw environment variables, and sensitive Discord metadata out of UI responses.
-- Do not add UI actions that mutate runtime data or invoke the Agent Runtime.
+- Do not add UI actions that change other runtime data or invoke the Agent Runtime. Any further UI write needs a new decision.
 
 ## Discord approval controls
 
