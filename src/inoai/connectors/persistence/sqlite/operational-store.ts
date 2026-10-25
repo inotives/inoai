@@ -10,6 +10,7 @@ import {
   failRemainingResponseChunks, failResponseChunk, getSession, listEvents, listMemories, listMessages,
   listPendingResponseChunks, markRuntimeStarted, messagesForMemoryReview, recoverStaleWork, rebindAgentSession,
   resetSession, softDeleteMemory, upsertUser, legacyApprovalNotices, claimLegacyApprovalNotice, resolveLegacyApprovalNotice,
+  createCommandApproval, setCommandApprovalCard, resolveCommandApproval,
   createTaskProposal, expireOverdueTaskProposals, expireSessionTaskProposals, getTaskProposal, resolveTaskProposal, setTaskProposalCardMessage,
   claimTaskProposal, finishTaskProposal, listOpenTaskProposalCards, closeTaskProposalCard, editTask, createPendingTask,
 } from "./legacy-database.js";
@@ -59,6 +60,9 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     }
   }
   const store: OperationalStore & TaskOperationsStore = {
+    async createCommandApproval(sessionId, runtimeApprovalId, expiresAt) { return createCommandApproval(database, sessionId, runtimeApprovalId, expiresAt); },
+    async setCommandApprovalCard(approvalId, messageId) { return setCommandApprovalCard(database, approvalId, messageId); },
+    async resolveCommandApproval(approvalId, state) { return resolveCommandApproval(database, approvalId, state); },
     async legacyApprovalNotices() { return legacyApprovalNotices(database); },
     async createTask(task, actor) { return createTask(database, task, actor); },
     async getTask(id) { return getTask(database, id); },

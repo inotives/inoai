@@ -106,7 +106,7 @@ Completed follow-on work includes SQLite as the runtime source of truth, source-
 2. Verify local Codex authentication before accepting work.
 3. Start, continue, cancel, and stream an Agent Session from the configured project path.
 4. Preserve the Codex CLI's configured skills, MCP servers, and permission/sandbox policy; do not add a wrapper-level tool allowlist or approval bypass.
-5. Fail closed on every Codex approval request in V1: return a protocol-correct decline, record only a non-secret outcome, and tell the owner that the action needs local Codex. Do not post **Approve**/**Reject** buttons, persist raw request details, add a command allowlist, or silently change Codex's configured sandbox/approval policy. Codex CLI `0.157.1` does not provide a complete safe preview for these Discord prompts. Do not replay an interrupted turn after restart.
+5. For a Codex command approval with a complete safe command and working directory, offer the configured owner one-time **Approve**/**Reject** controls bound to the live request. Decline malformed, unsafe, network-specific, file-change, and other permission requests through the protocol and give a fixed safe notice. Do not persist raw request details, add a command allowlist, change the configured sandbox/approval policy, or replay an interrupted turn after restart. The command-only exception is defined in ADR 0003.
 6. Record runtime failures as Events without exposing credentials or raw tool traces.
 7. Retry a failed or timed-out turn up to three times with bounded backoff only when the runtime turn never started or is proven to have had no side effects. If execution may have begun and its outcome is uncertain, fail closed after that attempt and ask for a fresh request; publish at most one concise Discord failure and no duplicate answer.
 
@@ -117,7 +117,8 @@ Completed follow-on work includes SQLite as the runtime source of truth, source-
 - Startup succeeds with ChatGPT CLI authentication and no `OPENAI_API_KEY`/`CODEX_API_KEY`.
 - A normal question returns a streamed answer.
 - A configured local skill or read-only MCP tool is available to the Codex session.
-- Every current Codex approval method receives a protocol-correct decline without hanging the turn; the owner gets a fixed safe notice, and no actionable Discord controls or pending approval row is created.
+- A supported command request shows the exact command and working directory without truncation. Only an owner click on that live card sends one-time `accept` or `decline`; wrong-context, duplicate, expired, and stale clicks cannot approve.
+- File-change, network-specific, generic permission, malformed, secret-like, and unsupported approvals receive a protocol-correct decline and a fixed safe notice without an actionable card.
 - A command containing a token-shaped literal is never copied into SQLite, logs, or Discord. Legacy saved pending approvals are failed closed on restart and their saved previews redacted; the interrupted turn is not replayed. Recovery records one safe Event and claims its Discord notice before sending, so a crash can omit the notice but cannot duplicate it.
 - Expired authentication and exhausted usage become clear local/Discord-safe failure states.
 - A pre-start failure may retry at most three times with bounded backoff and emits one failure notice if exhausted.
@@ -384,7 +385,7 @@ original acceptance scope remain unimplemented.
 
 - Disconnect/reconnect Discord without duplicate online messages or duplicate Message processing.
 - Stop the process during a runtime turn and recover safely on restart.
-- Confirm a tool action requiring approval is declined through the selected runtime's protocol, produces only a fixed safe Discord notice, and is never silently elevated or exposed as an actionable Discord control.
+- Confirm a supported Codex command approval shows the exact command and working directory to the owner, then accepts or declines only that live request after the owner clicks its card. Confirm unsafe or unsupported Codex approvals, and Claude/OpenCode permission prompts, still fail closed with a fixed safe notice and no actionable control.
 - Restore each rotated local backup and confirm archived Conversations, Recaps, and Memory remain available. **Not currently testable; backup creation is not implemented.**
 - Run the packaged macOS core in an empty deployment folder; it initializes only the selected runtime home and serves the SPA with `inoai ui`. **Not currently testable; packaging is not implemented.**
 

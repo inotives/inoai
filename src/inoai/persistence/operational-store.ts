@@ -1,5 +1,6 @@
 import type {
   EventRecord,
+  ApprovalRecord,
   MemoryRecord,
   MemoryReviewRecord,
   MessageQueueMode,
@@ -110,6 +111,9 @@ async function transaction<T>(pool: Pool, work: (client: PoolClient) => Promise<
 /** Async persistence boundary used by the conversation, review, and Manual Memory layers. */
 export interface OperationalStore {
   recoverStaleWork(actor?: string): Promise<void>;
+  createCommandApproval?(sessionId: number, runtimeApprovalId: string, expiresAt: number): Promise<ApprovalRecord>;
+  setCommandApprovalCard?(approvalId: number, messageId: number): Promise<boolean>;
+  resolveCommandApproval?(approvalId: number, state: "approved" | "rejected" | "expired" | "failed"): Promise<boolean>;
   legacyApprovalNotices?(): Promise<Array<{ id: number; session_id: number; conversation_id: string; transport: "discord"; workspace_id: string; external_message_id: string | null }>>;
   claimLegacyApprovalNotice?(id: number): Promise<boolean>;
   resolveLegacyApprovalNotice?(id: number, messageId: number): Promise<void>;

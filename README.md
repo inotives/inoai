@@ -37,7 +37,7 @@ It drives the CLI you already use instead of calling a model API. Codex runs on 
 
 - An `@inoai` mention starts a dedicated Discord thread, and follow-ups in that thread continue the same Agent Session.
 - SQLite records users, sessions, messages, events, approvals, daily Recaps, and shared Memory, with audit fields and soft deletion in each runtime home.
-- Permission requests fail closed with a fixed notice. Discord **Approve** / **Reject** buttons are deferred.
+- A complete, safe Codex command request can show owner-only Discord **Approve** / **Reject** buttons for that one live request. File changes, network or extra permission requests, malformed previews, and Claude/OpenCode prompts still fail closed.
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
 - Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
 - A local UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks; SQLite is the core runtime's source of truth.

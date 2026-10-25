@@ -510,6 +510,24 @@ export type ApprovalRecord = AuditColumns & {
   state: "pending" | "approved" | "rejected" | "expired" | "failed";
 };
 
+export const commandApprovalSummary = "Codex command approval (preview shown only in Discord)";
+
+export function createCommandApproval(database: DatabaseSync, sessionId: number, runtimeApprovalId: string, expiresAt: number): ApprovalRecord {
+  const result = database.prepare(`INSERT INTO approvals (session_id, runtime_approval_id, summary, expires_at, created_by, updated_by)
+    VALUES (?, ?, ?, ?, 'runtime:codex', 'runtime:codex')`).run(sessionId, runtimeApprovalId, commandApprovalSummary, expiresAt);
+  return activeRow<ApprovalRecord>(database, "SELECT * FROM approvals WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
+}
+
+export function setCommandApprovalCard(database: DatabaseSync, approvalId: number, messageId: number): boolean {
+  return database.prepare(`UPDATE approvals SET request_message_id = ?, updated_at = unixepoch(), updated_by = 'transport:discord'
+    WHERE id = ? AND state = 'pending' AND request_message_id IS NULL AND deleted_at IS NULL`).run(messageId, approvalId).changes === 1;
+}
+
+export function resolveCommandApproval(database: DatabaseSync, approvalId: number, state: "approved" | "rejected" | "expired" | "failed"): boolean {
+  return database.prepare(`UPDATE approvals SET state = ?, updated_at = unixepoch(), updated_by = 'runtime:codex'
+    WHERE id = ? AND state = 'pending' AND deleted_at IS NULL`).run(state, approvalId).changes === 1;
+}
+
 export type MemoryRecord = AuditColumns & {
   id: number;
   body: string;
@@ -997,17 +1015,18 @@ export function recoverLegacyApprovals(database: DatabaseSync): void {
     // but remove its preview before any Discord recovery or UI read can expose it.
     database.prepare(`UPDATE messages SET body = 'Legacy approval request redacted', updated_at = unixepoch(), updated_by = 'startup-recovery'
       WHERE id IN (SELECT request_message_id FROM approvals WHERE request_message_id IS NOT NULL)
-        AND direction = 'agent' AND body != 'Legacy approval request redacted'`).run();
+        AND direction = 'agent' AND body NOT IN ('Legacy approval request redacted', 'Codex command approval card')`).run();
     database.prepare(`UPDATE approvals SET summary = 'Legacy approval request redacted', updated_at = unixepoch(),
       updated_by = CASE WHEN state = 'failed' AND updated_by = 'startup-recovery' THEN updated_by ELSE 'startup-redaction' END
-      WHERE summary != 'Legacy approval request redacted'`).run();
-    const pending = database.prepare("SELECT id, session_id FROM approvals WHERE state = 'pending' AND deleted_at IS NULL").all() as Array<{ id: number; session_id: number }>;
+      WHERE summary NOT IN ('Legacy approval request redacted', ?)`).run(commandApprovalSummary);
+    const pending = database.prepare("SELECT id, session_id, summary FROM approvals WHERE state = 'pending' AND deleted_at IS NULL").all() as Array<{ id: number; session_id: number; summary: string }>;
     const fail = database.prepare(`UPDATE approvals SET state = 'failed', updated_at = unixepoch(), updated_by = 'startup-recovery'
       WHERE id = ? AND state = 'pending' AND deleted_at IS NULL`);
     for (const row of pending) {
       fail.run(row.id);
       createEvent(database, { session_id: row.session_id, message_id: null,
-        event_type: "legacy_approval_failed", detail: "saved approval cannot resume; fresh request required" }, "startup-recovery");
+        event_type: row.summary === commandApprovalSummary ? "approval_failed_restart" : "legacy_approval_failed",
+        detail: "saved approval cannot resume; fresh request required" }, "startup-recovery");
     }
     database.exec("COMMIT");
   } catch (error) {

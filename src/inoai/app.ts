@@ -123,6 +123,7 @@ export async function startTransport(
   operationalStore?: OperationalStore & Partial<TaskOperationsStore>,
   taskRunner?: TaskRunExecutor,
   taskCards?: TaskProposalCards,
+  approvalRelay?: ApprovalRelay,
 ): Promise<ChatTransport> {
   const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
@@ -367,13 +368,18 @@ export async function startTransport(
     void taskCards?.sweep();
     await request.respond("Session reset. Queued work was cancelled; archived history remains. The next message starts a fresh session. Active work may have an uncertain outcome.");
   };
-  // Task card clicks use the same owner check as the /inoai task controls; other users get a private refusal.
+  // Cards share the configured owner check; each handler also checks its original message and conversation.
   transport.onButtonClick?.(async (click) => {
-    if (instance.closing || !taskCards) { await click.replyEphemeral("Task cards are unavailable right now."); return; }
+    const approvalClick = click.customId.startsWith("inoai:approval:");
+    if (instance.closing || (approvalClick ? !approvalRelay : !taskCards)) { await click.replyEphemeral("This card is unavailable right now."); return; }
     const owner = click.workspaceId === instance.configuration.discordGuildId && click.externalUserId === instance.configuration.discordOwnerUserId
       ? await store.findUser("discord", click.workspaceId, click.externalUserId) : undefined;
-    if (!owner || owner.id !== instance.owner.id) { await click.replyEphemeral("Only the owner can use this task card."); return; }
-    await taskCards.handleClick(click);
+    if (!owner || owner.id !== instance.owner.id) {
+      await click.replyEphemeral(approvalClick ? "Only the owner can use this approval card." : "Only the owner can use this task card.");
+      return;
+    }
+    if (approvalClick) await approvalRelay!.handleClick(click);
+    else await taskCards!.handleClick(click);
   });
   try {
     await transport.start(receive, async () => {
@@ -686,7 +692,10 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         case "codex": {
           const server = await CodexAppServer.connect();
           runtime = createCodexRuntime(server);
-          approvalRelay = new ApprovalRelay(instance.store!, server, transport);
+          approvalRelay = new ApprovalRelay(instance.store!, server, transport, {
+            workspaceId: instance.configuration.discordGuildId,
+            externalUserId: instance.configuration.discordOwnerUserId,
+          });
           probeConcurrency = probeCodexConcurrency;
           break;
         }
@@ -787,7 +796,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         console.error(failure instanceof Error ? failure.message : failure);
         process.exitCode = 1;
       });
-    }, worker, undefined, taskRunner, taskCards);
+    }, worker, undefined, taskRunner, taskCards, approvalRelay);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();
