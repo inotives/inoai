@@ -115,7 +115,7 @@ inoai/
     │   └── test/                     # backend tests by capability
     ├── ui/                           # local UI page (`npm start -- ui`)
     │   ├── README.md
-    │   ├── server.ts                 # local HTTP server on 127.0.0.1
+    │   ├── server.ts                 # HTTP server on loopback or one selected private LAN address
     │   ├── api/                      # SQLite read model and Task writes (ADR 0026)
     │   ├── common/                   # UI-only options
     │   ├── pages/                    # page rendering
@@ -131,7 +131,7 @@ inoai/
 - `src/inoai/connectors/persistence/sqlite/` owns the SQLite schema and persisted state for the core; `src/inoai/conversation/conversation-worker.ts` owns per-Session FIFO execution.
 - `src/inoai/agent-runtime/ports.ts` and `src/inoai/transport/ports.ts` are the provider seams. Concrete adapters live under `src/inoai/connectors/`.
 - `src/inoai/` never imports `src/ui/`. `npm run architecture:check` enforces this and allows only `index.ts` directly under `src/`.
-- The UI is a separate application: a local page served by `inoai ui` on `127.0.0.1`. It opens the SQLite file of the selected `.inoai-connect*` home through short-lived connections. It reads that data and writes only Tasks (ADR 0026). It never reads `.env` and never sends Discord credentials or raw runtime tool output to the page. Every request needs a `Host` of `127.0.0.1:<port>` or `localhost:<port>`; any other Host gets 403. `/` accepts GET and HEAD, `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404. `--connect-dir` selects the Agent Instance.
+- The UI is a separate application: `inoai ui` serves it on `127.0.0.1` by default, or on one private LAN IPv4 address selected with `--host`. It opens the SQLite file of the selected `.inoai-connect*` home through short-lived connections. It reads that data and writes only Tasks (ADR 0026). It never reads `.env` and never sends Discord credentials or raw runtime tool output to the page. Every request needs the bound address and port in `Host`; the loopback default also accepts `localhost:<port>`. Any other Host gets 403. `/` accepts GET and HEAD, `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404. `--connect-dir` selects the Agent Instance. LAN mode has no password; any device that can reach the selected address can read data and change Tasks.
 
 ## Keep out of v1
 

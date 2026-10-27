@@ -4,7 +4,7 @@ import { resolveRuntimeHome, type RuntimeHome } from "../inoai/agent-instance/ru
 import { loadUiData } from "./api/read-model.js";
 import { applyUiTaskAction, createUiTask, editUiTask, TaskWriteError, type TaskAction } from "./api/task-writes.js";
 import { renderAppShell } from "./pages/app-shell.js";
-import { UI_DEFAULT_PORT } from "./common/options.js";
+import { UI_DEFAULT_HOST, UI_DEFAULT_PORT } from "./common/options.js";
 
 export type UiServer = { server: Server; port: number };
 
@@ -41,8 +41,7 @@ function tokenMatches(supplied: string | string[] | undefined, token: string): b
   return typeof supplied === "string" && timingSafeEqual(digest(supplied), digest(token));
 }
 
-function checkWriteRequest(request: IncomingMessage, port: number, token: string): void {
-  const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+function checkWriteRequest(request: IncomingMessage, hosts: string[], token: string): void {
   const forbidden = (reason: string) => new RequestRejected(403, reason, "Forbidden.");
   if (!hosts.includes(request.headers.host ?? "")) throw forbidden("host");
   if (!hosts.some((host) => request.headers.origin === `http://${host}`)) throw forbidden("origin");
@@ -96,9 +95,9 @@ function logRejection(method: string, path: string, reason: string): void {
 }
 
 async function handleTaskWrite(request: IncomingMessage, response: ServerResponse<IncomingMessage>, home: RuntimeHome,
-  route: TaskRoute, port: number, token: string, method: string, path: string): Promise<void> {
+  route: TaskRoute, hosts: string[], token: string, method: string, path: string): Promise<void> {
   try {
-    checkWriteRequest(request, port, token);
+    checkWriteRequest(request, hosts, token);
     const body = await readJsonBody(request);
     const task = route.kind === "create" ? createUiTask(home, body)
       : route.kind === "edit" ? editUiTask(home, route.id, body)
@@ -119,15 +118,16 @@ async function handleTaskWrite(request: IncomingMessage, response: ServerRespons
   }
 }
 
-export async function launchUi(launchDirectory: string, connectDirectory?: string, port = UI_DEFAULT_PORT): Promise<UiServer> {
+export async function launchUi(launchDirectory: string, connectDirectory?: string, port = UI_DEFAULT_PORT, host = UI_DEFAULT_HOST): Promise<UiServer> {
   const home = resolveRuntimeHome(launchDirectory, connectDirectory);
   const token = randomBytes(32).toString("hex");
   let boundPort = port;
   const server = createServer(async (request, response) => {
     const method = request.method ?? "GET";
     const path = (request.url ?? "/").split("?")[0]!;
+    const hosts = host === UI_DEFAULT_HOST ? [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`] : [`${host}:${boundPort}`];
     // Every path needs the server's own Host, so a DNS-rebinding page cannot read the page, token, or data.
-    if (![`127.0.0.1:${boundPort}`, `localhost:${boundPort}`].includes(request.headers.host ?? "")) {
+    if (!hosts.includes(request.headers.host ?? "")) {
       if (path === "/api/tasks" || path.startsWith("/api/tasks/")) logRejection(method, path, "host");
       response.setHeader("connection", "close");
       respondJson(response, 403, { error: "Forbidden." });
@@ -152,12 +152,12 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
       respondJson(response, rejected.status, { error: rejected.publicMessage });
       return;
     }
-    if (route) { await handleTaskWrite(request, response, home, route, boundPort, token, method, path); return; }
+    if (route) { await handleTaskWrite(request, response, home, route, hosts, token, method, path); return; }
     respondJson(response, 404, { error: "Not found." });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", (error) => { server.close(); reject(error); });
-    server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+    server.listen(port, host, () => { server.removeListener("error", reject); resolve(); });
   });
   const address = server.address();
   if (address && typeof address === "object") boundPort = address.port;

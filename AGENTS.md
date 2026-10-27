@@ -45,7 +45,7 @@ status, dependencies, or canonical handoff files.
 - Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, SQLite archive, Memory, approvals, and lock file.
 - Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), and OpenCode (Phase 5b) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
 - The SPA UI reads the selected runtime home's SQLite file and Task `result.md` files. Its only writes are Task create, edit, run now, pause, resume, and cancel, through short-lived SQLite connections (ADR 0026). Everything else is read-only. It must never read `.env` or expose credentials.
-- The UI server listens on `127.0.0.1` only. Any request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets 403 on every path. `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404.
+- The UI server listens on `127.0.0.1` by default. An explicit `--host` may bind it to one private LAN IPv4 address. Every request must use the bound address and port in `Host`; the loopback default also accepts `localhost:<port>`. Other hosts get 403 on every path. `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. LAN mode has no password, so any device that can reach it can read UI data and change Tasks.
 
 ### Live SQLite maintenance
 
@@ -126,4 +126,4 @@ This file is repository guidance, not an agent persona. The core copies a defaul
 
 ## V1 boundaries
 
-V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. The SPA UI is local-only and writes only Tasks (ADR 0026). The Agent Tasks phase is active. IP-0003 delivered chat-proposed Tasks (ADR 0027) and was accepted on 2026-10-24. Defer remote UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
+V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. The SPA UI writes only Tasks (ADR 0026) and stays on loopback unless explicitly bound to a private LAN address. The Agent Tasks phase is active. IP-0003 delivered chat-proposed Tasks (ADR 0027) and was accepted on 2026-10-24. Defer Internet UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.

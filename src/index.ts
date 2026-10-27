@@ -11,7 +11,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const command = args[0] === "ui"
     ? (() => {
         const options = parseUiOptions(args.slice(1));
-        return launchUi(process.cwd(), options.connectDirectory, options.port);
+        return launchUi(process.cwd(), options.connectDirectory, options.port, options.host);
       })()
     : run(args);
   void command.catch((error: unknown) => {

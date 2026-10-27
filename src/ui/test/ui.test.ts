@@ -1,19 +1,26 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
 import { bootstrapRuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import { loadUiData } from "../api/read-model.js";
 import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
 import { launchUi } from "../server.js";
-import { parseUiOptions, UI_DEFAULT_PORT } from "../common/options.js";
+import { parseUiOptions, UI_DEFAULT_HOST, UI_DEFAULT_PORT } from "../common/options.js";
 
 test("UI options default to port 8989 and accept a selected runtime", () => {
-  assert.deepEqual(parseUiOptions(["--connect-dir", ".robin-xai-test"]), { connectDirectory: ".robin-xai-test", port: UI_DEFAULT_PORT });
-  assert.deepEqual(parseUiOptions(["--connect-dir", ".inoai-connect-test", "--port", "9001"]), { connectDirectory: ".inoai-connect-test", port: 9001 });
+  assert.deepEqual(parseUiOptions(["--connect-dir", ".robin-xai-test"]), { connectDirectory: ".robin-xai-test", port: UI_DEFAULT_PORT, host: UI_DEFAULT_HOST });
+  assert.deepEqual(parseUiOptions(["--connect-dir", ".inoai-connect-test", "--port", "9001", "--host", "192.168.50.120"]),
+    { connectDirectory: ".inoai-connect-test", port: 9001, host: "192.168.50.120" });
+  assert.equal(parseUiOptions(["--host", "10.0.0.2"]).host, "10.0.0.2");
+  assert.equal(parseUiOptions(["--host", "172.31.1.2"]).host, "172.31.1.2");
   assert.throws(() => parseUiOptions(["--port", "0"]), /Usage/);
+  for (const host of ["0.0.0.0", "8.8.8.8", "localhost", "::1", "192.168.50.120:9001", "192.168.1.999"]) {
+    assert.throws(() => parseUiOptions(["--host", host]), /Usage/, host);
+  }
+  assert.throws(() => parseUiOptions(["--host"]), /Usage/);
 });
 
 test("local UI binds to loopback and serves the dark ring console", async () => {
@@ -173,9 +180,10 @@ test("UI data redacts the Discord Task channel ID", async () => {
 
 type RawReply = { status: number; text: string; allow?: string };
 
-function rawRequest(port: number, method: string, path: string, headers: Record<string, string> = {}, payload?: string): Promise<RawReply> {
+function rawRequest(port: number, method: string, path: string, headers: Record<string, string> = {}, payload?: string,
+  connectHost = "127.0.0.1"): Promise<RawReply> {
   return new Promise((resolve, reject) => {
-    const outgoing = request({ host: "127.0.0.1", port, path, method, headers }, (reply) => {
+    const outgoing = request({ host: connectHost, port, path, method, headers }, (reply) => {
       let text = "";
       reply.setEncoding("utf8");
       reply.on("data", (chunk) => { text += chunk; });
@@ -249,6 +257,47 @@ test("UI checks Host on every path, methods on page and data routes, and 404s un
     }
   } finally {
     warn.mock.restore();
+    await new Promise<void>((resolve) => ui.server.close(() => resolve()));
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
+const lanHost = Object.values(networkInterfaces()).flat().find((entry) => entry?.family === "IPv4" && !entry.internal
+  && /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(entry.address))?.address;
+
+test("UI binds a selected LAN address and keeps Host, Origin, and token checks", { skip: !lanHost }, async () => {
+  assert.ok(lanHost);
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-lan-test-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  const database = openDatabase(home);
+  database.prepare("INSERT INTO users (transport, workspace_id, external_user_id, role) VALUES ('discord', 'guild', 'owner', 'owner')").run();
+  database.prepare(`INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id,
+    agent_provider, agent_session_id, project_path) VALUES (1, 'discord', 'guild', 'channel', 'thread-1', 'm-1', 'claude', 'agent-1', ?)`).run(deploymentDirectory);
+  database.close();
+  const ui = await launchUi(deploymentDirectory, ".inoai-connect-test", 0, lanHost);
+  const host = `${lanHost}:${ui.port}`;
+  const body = JSON.stringify({ title: "LAN task", instruction: "Summarize CI", expectedOutput: "Markdown",
+    schedule: { kind: "interval", hours: 2 }, timezone: "Asia/Singapore" });
+  try {
+    const address = ui.server.address();
+    assert.ok(address && typeof address === "object");
+    assert.equal(address.address, lanHost);
+    const page = await rawRequest(ui.port, "GET", "/", {}, undefined, lanHost);
+    assert.equal(page.status, 200);
+    const token = /<meta name="inoai-ui-token" content="([0-9a-f]{64})">/.exec(page.text)?.[1];
+    assert.ok(token);
+    const data = await rawRequest(ui.port, "GET", "/api/ui-data", {}, undefined, lanHost);
+    assert.equal(data.status, 200);
+    assert.ok(JSON.parse(data.text).profile);
+    const rejected = await rawRequest(ui.port, "GET", "/", { host: `evil.example:${ui.port}` }, undefined, lanHost);
+    assert.equal(rejected.status, 403);
+    assert.equal(rejected.text.includes(token), false);
+    const headers = { host, origin: `http://${host}`, "content-type": "application/json", "x-inoai-token": token };
+    assert.equal((await rawRequest(ui.port, "POST", "/api/tasks", { ...headers, origin: `http://localhost:${ui.port}` }, body, lanHost)).status, 403);
+    assert.equal((await rawRequest(ui.port, "POST", "/api/tasks", { ...headers, "x-inoai-token": "wrong" }, body, lanHost)).status, 403);
+    assert.equal((await rawRequest(ui.port, "POST", "/api/tasks", { ...headers, "content-type": "text/plain" }, body, lanHost)).status, 403);
+    assert.equal((await rawRequest(ui.port, "POST", "/api/tasks", headers, body, lanHost)).status, 201);
+  } finally {
     await new Promise<void>((resolve) => ui.server.close(() => resolve()));
     await rm(deploymentDirectory, { recursive: true, force: true });
   }
