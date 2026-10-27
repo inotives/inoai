@@ -1,6 +1,6 @@
 # inoai implementation phases
 
-V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or accept remote UI access.
+V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or remote UI access. A later opt-in phase adds UI access from one selected private LAN address; Internet UI access remains out of scope.
 
 ## Delivery status
 

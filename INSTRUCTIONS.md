@@ -225,7 +225,7 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
 | `npm run allowlist:add -- --connect-dir .robin-xai-test --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
 | `npm run allowlist:disable -- --connect-dir .robin-xai-test --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
-| `npm start -- ui` | Serve the local UI page for the selected runtime home on `127.0.0.1`, port 8989 by default (`--port` selects another). |
+| `npm start -- ui` | Serve the UI for the selected runtime home on `127.0.0.1`, port 8989 by default. `--port` selects another port; `--host` can select one private LAN IPv4 address. |
 | `npm run postgres:migrate -- --url <url>` | Advanced: apply PostgreSQL administrator migrations. |
 | `npm run postgres:provision -- <options>` | Advanced: generate PostgreSQL provisioning SQL. |
 | `npm run postgres:test -- --connect-dir <home>` | Advanced: check an explicitly configured PostgreSQL connection without starting Discord. |
@@ -327,7 +327,9 @@ Schedule kinds, all in the Task's time zone:
 
 Repeating kinds accept an optional stop date ("Until") and an optional run limit. When either is reached, the Task becomes completed. Failed runs count toward the run limit, and the Task moves to its next scheduled time; a failed one-time Task ends completed. On a daylight saving change, a skipped local time runs at the first valid time after the gap, and a repeated local time runs once.
 
-The UI server listens on `127.0.0.1` only. Every request needs a `Host` header of `127.0.0.1:<port>` or `localhost:<port>`, with the port included; any other Host gets 403 on every path. The page `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. Task writes pass further checks (ADR 0026).
+The UI server listens on `127.0.0.1` by default. Every request needs a `Host` header of `127.0.0.1:<port>` or `localhost:<port>`, with the port included; any other Host gets 403 on every path. To serve one private LAN interface, run `npm start -- ui --connect-dir .inoai-connect-robin --port 1133 --host 192.168.50.120` and open `http://192.168.50.120:1133` from a device on that LAN. Replace the address if this machine's LAN address changes. `--host` rejects wildcard, public, and hostname values. On a LAN bind, only `<selected-address>:<port>` is accepted as `Host`. The page `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. Task writes pass further checks (ADR 0026).
+
+LAN mode has no password or TLS. Any device that can reach the selected address and port can read UI data and use the page's Task write token to change Tasks. Use it only on a trusted LAN. The token and same-origin checks block cross-site writes, not another LAN visitor.
 
 The UI writes only Tasks. It never reads `.env`, and it hides credential-shaped text. If a field shows hidden values, re-enter that text before you save an edit; the form refuses to save the hidden placeholder. Changes made while the agent is stopped take effect when it next starts. The UI does not create or upgrade the database; start the agent once first.
 

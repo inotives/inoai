@@ -40,7 +40,7 @@ It drives the CLI you already use instead of calling a model API. Codex runs on 
 - A complete, safe Codex command request can show owner-only Discord **Approve** / **Reject** buttons for that one live request. File changes, network or extra permission requests, malformed previews, and Claude/OpenCode prompts still fail closed.
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
 - Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
-- A local UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks; SQLite is the core runtime's source of truth.
+- A UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks. It binds to loopback by default or one selected private LAN address with `--host`; SQLite is the core runtime's source of truth.
 
 Status: Conversation workers, Codex, Claude CLI, OpenCode, Daily Memory Review (Claude homes only in V1), Tasks, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
 
@@ -73,4 +73,4 @@ For Claude, OpenCode, skills, Tasks, the local UI, the Heartbeat Supervisor, and
 | [docs/postgres-local.md](docs/postgres-local.md) | Advanced PostgreSQL tools. |
 | [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines. |
 
-Deferred after V1: Slack and Telegram adapters; remote UI access and cross-instance Memory sharing; multi-step Task loops and calendar schedules; cross-machine backups and Windows/Linux release packages.
+Deferred after V1: Slack and Telegram adapters; Internet UI access and cross-instance Memory sharing; multi-step Task loops and calendar schedules; cross-machine backups and Windows/Linux release packages.
