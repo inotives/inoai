@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 
 import { normalizeTimeZone } from "../tasks/schedule.js";
 
@@ -26,6 +27,7 @@ export type Configuration = {
   postgresUrl?: string;
   postgresIsolationMode?: "application";
   agentInstanceId: string;
+  projectDirectory?: string;
   postgresPoolMax?: number;
   postgresConnectTimeoutMs?: number;
   postgresIdleTimeoutMs?: number;
@@ -55,6 +57,8 @@ export function validateConfiguration(values: Record<string, string | undefined>
     issues.push("AGENT_PROVIDER must be codex, claude, or opencode");
   }
   const agentInstanceId = values.AGENT_INSTANCE_ID?.trim();
+  const projectDirectory = values.PROJECT_DIRECTORY?.trim() || undefined;
+  if (projectDirectory && !isAbsolute(projectDirectory)) issues.push("PROJECT_DIRECTORY must be an absolute path");
   if (agentInstanceId && (!/^agent-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agentInstanceId) || agentInstanceId.length > 63)) {
     issues.push("AGENT_INSTANCE_ID must be a lowercase agent- slug of at most 63 characters");
   }
@@ -87,6 +91,7 @@ export function validateConfiguration(values: Record<string, string | undefined>
     chatProvider: "discord",
     agentProvider: values.AGENT_PROVIDER as Configuration["agentProvider"],
     agentInstanceId: agentInstanceId!,
+    ...(projectDirectory ? { projectDirectory } : {}),
     ...(claudeModel ? { claudeModel } : {}),
     memoryReviewTime: values.MEMORY_REVIEW_TIME!,
     memoryReviewMaxChars: limit,

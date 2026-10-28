@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { isSea } from "node:sea";
 import { promisify } from "node:util";
 import {
   bootstrapRuntimeHome,
@@ -245,7 +246,7 @@ export async function preflightHeartbeatSetup(
   if ((supplied.platform ?? process.platform) !== "darwin") throw new Error("Heartbeat setup requires macOS");
 
   const checkout = resolve(repository);
-  const executable = join(checkout, "dist", "index.js");
+  const executable = isSea() ? process.execPath : join(checkout, "dist", "index.js");
   const executableExists = supplied.entrypointExists ?? defaultEntrypointExists;
   if (!(await executableExists(executable))) {
     throw new Error("Heartbeat setup requires the compiled dist/index.js entrypoint; run npm run build");

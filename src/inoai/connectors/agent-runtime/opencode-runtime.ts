@@ -19,7 +19,7 @@ type Attempt = { spawnFailed: boolean; timedOut: boolean; authentication: boolea
 
 // Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
 export type OpenCodePermissionDenialListener = (sessionId: string, count: number) => void;
-export type OpenCodeRuntimeOptions = { executable?: string; idleTimeoutMs?: number; onPermissionDenied?: OpenCodePermissionDenialListener };
+export type OpenCodeRuntimeOptions = { executable?: string; idleTimeoutMs?: number; onPermissionDenied?: OpenCodePermissionDenialListener; signal?: AbortSignal };
 
 const newSessionPrefix = "inoai-new:";
 // OpenCode session IDs reach argv and the API path, so only this shape is ever used, streamed or resumed.
@@ -57,7 +57,7 @@ export class OpenCodeRuntime implements AgentRuntime {
   static async connect(options: OpenCodeRuntimeOptions = {}): Promise<OpenCodeRuntime> {
     const executable = options.executable ?? "opencode";
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(executable, ["--version"], { stdio: "ignore" });
+      const child = spawn(executable, ["--version"], { stdio: "ignore", signal: options.signal });
       const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
       child.once("error", () => { clearTimeout(timer); reject(new Error("OpenCode CLI is unavailable")); });
       child.once("close", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("OpenCode CLI is unavailable")); });

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isSea } from "node:sea";
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -87,19 +88,21 @@ async function selectPackage(root: string, skill: string | undefined): Promise<s
 }
 
 function runRemote(cwd: string, source: string, skill: string | undefined): Promise<void> {
-  const args = ["--yes", "skills", "add", source];
+  const args = isSea() ? ["--internal-skills", "add", source] : ["--yes", "skills", "add", source];
   if (skill) args.push("--skill", skill);
   args.push("--agent", "codex", "-y");
   return new Promise((resolveProcess, reject) => {
-    const child = spawn("npx", args, {
+    const child = spawn(isSea() ? process.execPath : "npx", args, {
       cwd,
       env: { ...process.env, DISABLE_TELEMETRY: "1" },
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
+    let stdout = "";
+    child.stdout?.on("data", (chunk: Buffer) => { stdout = `${stdout}${chunk}`.slice(-4000); });
     child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk}`.slice(-2000); });
     child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolveProcess() : reject(new SkillAcquisitionError(`Remote skill acquisition failed (${code}): ${stderr.trim()}`)));
+    child.once("close", (code) => code === 0 ? resolveProcess() : reject(new SkillAcquisitionError(/spawn git ENOENT/i.test(stdout) ? "Git is required for this skill source. Install the macOS Command Line Tools (xcode-select --install), then retry." : `Remote skill acquisition failed (${code}): ${stderr.trim()}`)));
   });
 }
 

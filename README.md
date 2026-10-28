@@ -46,7 +46,12 @@ Status: Conversation workers, Codex, Claude CLI, OpenCode, Daily Memory Review (
 
 ## Quick Start (Codex)
 
-You need Node.js 22 or newer on macOS, a Discord bot, and a signed-in `codex` CLI.
+On Apple Silicon, the [standalone macOS CLI](INSTRUCTIONS.md#standalone-macos-cli)
+runs without installing Node or cloning this repository. It guides you through
+creating an agent and starts the agent and UI together.
+
+For a source checkout, you need Node.js 22 or newer on macOS, a Discord bot,
+and a signed-in `codex` CLI.
 
 ```bash
 npm install

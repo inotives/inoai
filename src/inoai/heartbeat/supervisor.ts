@@ -3,6 +3,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isSea } from "node:sea";
 import { HEARTBEAT_INTERVAL_MS, HealthPolicy, type HealthResult, type ProbeTimer } from "./health.js";
 
 export const CHILD_STOP_TIMEOUT_MS = 10_000;
@@ -36,7 +37,7 @@ export function localHeartbeatLog(directory = join(homedir(), "Library", "Logs",
 }
 
 export function spawnInoai(connectDirectory: string, cwd: string, createChild: (command: string, args: string[], options: { cwd: string; shell: false; stdio: "ignore" }) => SupervisorChild = spawn): SupervisorChild {
-  return createChild(process.execPath, [fileURLToPath(new URL("../../index.js", import.meta.url)), "--connect-dir", connectDirectory],
+  return createChild(process.execPath, [...(isSea() ? [] : [fileURLToPath(new URL("../../index.js", import.meta.url))]), "--connect-dir", connectDirectory],
     { cwd, shell: false, stdio: "ignore" });
 }
 

@@ -1,7 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { Configuration } from "../../../agent-instance/config.js";
 import { inspectRuntimeHomeLock, resolveRuntimeHome, type RuntimeHome } from "../../../agent-instance/runtime-home.js";
@@ -414,7 +414,7 @@ function validateMaintenanceDatabase(database: DatabaseSync): void {
 export async function withMaintenanceDatabase<T>(home: RuntimeHome, operation: (database: DatabaseSync) => T | Promise<T>): Promise<T> {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
-  const selectedHome = resolveRuntimeHome(dirname(directory), basename(directory));
+  const selectedHome = resolveRuntimeHome(dirname(directory), `direct:${directory}`);
   if (directory !== selectedHome.directory || databaseFile !== selectedHome.databaseFile
     || resolve(home.lockFile) !== selectedHome.lockFile
     || !lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()

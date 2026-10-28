@@ -35,13 +35,16 @@ export class CodexAppServer {
     process.on("exit", () => { this.fail("Codex app-server exited"); this.exitDone(); });
   }
 
-  static async connect(options: { spawnProcess?: () => ChildProcessWithoutNullStreams; timeoutMs?: number } = {}): Promise<CodexAppServer> {
+  static async connect(options: { spawnProcess?: () => ChildProcessWithoutNullStreams; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<CodexAppServer> {
     const env = { ...process.env };
     delete env.OPENAI_API_KEY;
     delete env.CODEX_API_KEY;
     const child = options.spawnProcess?.() ?? spawn("codex", ["app-server", "--stdio"], { stdio: ["pipe", "pipe", "pipe"], env });
     const client = new CodexAppServer(child);
+    const abort = () => { void client.close().catch(() => undefined); };
+    options.signal?.addEventListener("abort", abort, { once: true });
     try {
+      if (options.signal?.aborted) { abort(); throw new Error("Codex startup cancelled"); }
       await client.request("initialize", { clientInfo: { name: "inoai", title: "inoai", version: "0.1.0" } }, options.timeoutMs);
       client.send({ method: "initialized", params: {} });
       let account: { account?: { type?: string } };
@@ -56,6 +59,8 @@ export class CodexAppServer {
     } catch (error) {
       await client.close();
       throw error;
+    } finally {
+      options.signal?.removeEventListener("abort", abort);
     }
   }
 

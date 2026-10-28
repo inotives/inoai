@@ -8,6 +8,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:standalone": "node scripts/build-standalone.mjs",
+    "test:standalone": "npm run build && npm run build:standalone && node scripts/test-standalone.mjs",
     "postgres:migrate": "npm run build && node dist/postgres-migrations.js",
     "postgres:provision": "npm run build && node dist/postgres-provision.js",
     "postgres:test": "npm run build && node dist/postgres-connection-test.js",
@@ -23,10 +25,13 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.0.0"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "skills": "1.7.4"
   }
 }

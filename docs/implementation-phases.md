@@ -9,7 +9,7 @@ V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCod
 | 1–6b | Complete. Codex Memory Review remains intentionally disabled because the safety probe did not prove MCP/tool isolation. |
 | 6c | Future. One-way, redacted SQLite-to-PostgreSQL reporting and backup are not implemented. |
 | 7 | Complete. The initially proposed Electron UI was replaced by a local, read-only SPA. It later gained Task writes (ADR 0026). |
-| 8 | Incomplete against its original acceptance criteria. Local rotating SQLite backups and standalone macOS packaging are not implemented. |
+| 8 | Incomplete against its original acceptance criteria. Local rotating SQLite backups are not implemented. An Apple Silicon standalone CLI build is available. |
 
 Completed follow-on work includes SQLite as the runtime source of truth, source-structure refactoring, Agent Profile and Skill Management, the SPA UI, and the Heartbeat Supervisor and setup flow. Their detailed plans are in [the archive](archived/).
 
@@ -366,7 +366,7 @@ checks, selected runtime home, rendered pages, filtering, and sanitization.
 ## Phase 8 — V1 acceptance and operational hardening
 
 **Status: Incomplete.** Runtime recovery and heartbeat work has been delivered,
-but local rotating backups and standalone macOS packaging from this phase's
+but local rotating backups from this phase's
 original acceptance scope remain unimplemented.
 
 **Purpose:** verify that the assembled system behaves predictably under expected failures.
@@ -377,7 +377,7 @@ original acceptance scope remain unimplemented.
 2. Verify restart behavior for Discord reconnect, SQLite recovery, and unfinished worker state.
 3. Verify that a tool action requiring approval follows the configured Codex, Claude, or OpenCode policy without inoai bypassing it.
 4. Create a local, SQLite-consistent daily backup after the recap pass and keep three rotating snapshots outside Git. **Not implemented.**
-5. Package the core for macOS and verify a fresh deployment-folder bootstrap; verify `inoai ui` serves the selected runtime home's SPA. **Packaging not implemented.**
+5. Package the core for macOS and verify a fresh deployment-folder bootstrap; verify `inoai ui` serves the selected runtime home's SPA. An Apple Silicon standalone build is available.
 
 **Testable outcome:** inoai can run continuously as a locally deployable personal Discord assistant with durable archive and daily silent Memory Review.
 
@@ -387,7 +387,7 @@ original acceptance scope remain unimplemented.
 - Stop the process during a runtime turn and recover safely on restart.
 - Confirm a supported Codex command approval shows the exact command and working directory to the owner, then accepts or declines only that live request after the owner clicks its card. Confirm unsafe or unsupported Codex approvals, and Claude/OpenCode permission prompts, still fail closed with a fixed safe notice and no actionable control.
 - Restore each rotated local backup and confirm archived Conversations, Recaps, and Memory remain available. **Not currently testable; backup creation is not implemented.**
-- Run the packaged macOS core in an empty deployment folder; it initializes only the selected runtime home and serves the SPA with `inoai ui`. **Not currently testable; packaging is not implemented.**
+- Run the packaged macOS core with a fresh agent folder and verify that it serves the SPA. See the standalone CLI instructions for the current setup flow.
 
 ## Deferred backup direction
 
