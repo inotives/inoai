@@ -5,12 +5,15 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
 import { bootstrapRuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
+import { normalizeDirectoryArgs } from "../../inoai/agent-instance/direct-directory.js";
 import { loadUiData } from "../api/read-model.js";
 import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
 import { launchUi } from "../server.js";
 import { parseUiOptions, UI_DEFAULT_HOST, UI_DEFAULT_PORT } from "../common/options.js";
 
 test("UI options default to port 8989 and accept a selected runtime", () => {
+  assert.deepEqual(parseUiOptions(normalizeDirectoryArgs(["--dir", "/tmp/agent", "--port", "1234"])),
+    { connectDirectory: "direct:/tmp/agent", port: 1234, host: UI_DEFAULT_HOST });
   assert.deepEqual(parseUiOptions(["--connect-dir", ".robin-xai-test"]), { connectDirectory: ".robin-xai-test", port: UI_DEFAULT_PORT, host: UI_DEFAULT_HOST });
   assert.deepEqual(parseUiOptions(["--connect-dir", ".inoai-connect-test", "--port", "9001", "--host", "192.168.50.120"]),
     { connectDirectory: ".inoai-connect-test", port: 9001, host: "192.168.50.120" });

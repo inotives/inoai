@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -58,6 +58,33 @@ async function until(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<
   }
   if (await check()) return;
   throw new Error("Condition did not become true");
+}
+
+for (const configured of [false, true]) {
+  test(`new conversation and Task sessions use ${configured ? "configured working folder" : "legacy home parent"}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inoai-working-folder-"));
+    try {
+      const project = join(directory, "working");
+      await mkdir(project);
+      const home = await bootstrapRuntimeHome(directory);
+      await writeFile(home.envFile, `${env}\n${configured ? `PROJECT_DIRECTORY=${project}\n` : ""}`);
+      const instance = await start(directory);
+      try {
+        const transport = new TaskTransport();
+        await startTransport(instance, undefined, transport);
+        transport.emit({ transport: "discord", workspaceId: "guild", conversationId: "channel",
+          parentConversationId: null, externalMessageId: "message-1", externalUserId: "owner", body: "Hello",
+          replyToExternalMessageId: null, mentionedUserIds: [], mentionedBotUserIds: ["inoai"], botUserId: "inoai", authorIsBot: false });
+        await until(async () => (await instance.store.listSessions()).length === 1);
+        const conversation = (await instance.store.listSessions())[0];
+        assert.equal(conversation?.project_path, configured ? project : directory);
+        assert.match(await transport.control("task-create", { taskGoal: "Report", taskType: "one_time" }), /Task #1 created/);
+        const task = (await instance.store.listTasks?.())?.[0];
+        assert.ok(task);
+        assert.equal((await instance.store.getSession(task.session_id))?.project_path, configured ? project : directory);
+      } finally { await instance.release(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 }
 
 test("Task controls authorize the owner, create a thread, and keep steering out of chat turns", async () => {

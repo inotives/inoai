@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { getAsset, isSea } from "node:sea";
 import {
   inspectRuntimeHomeLock, systemProcessIdentity,
   type ProcessIdentityProbe, type RuntimeHomeLockState,
@@ -67,7 +68,8 @@ export function sqliteHealthProbes(databaseFile: string) {
   return {
     query: (signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
       if (signal.aborted) { reject(new Error("SQLite probe cancelled")); return; }
-      const worker = new Worker(new URL("./sqlite-probe.js", import.meta.url), {
+      const worker = new Worker(isSea() ? getAsset("sqlite-probe.cjs", "utf8") : new URL("./sqlite-probe.js", import.meta.url), {
+        eval: isSea(),
         workerData: { databaseFile, timeout: DATABASE_PROBE_TIMEOUT_MS },
         stdout: true, stderr: true,
       });

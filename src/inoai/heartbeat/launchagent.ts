@@ -2,6 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { isSea } from "node:sea";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { resolveRuntimeHome } from "../agent-instance/runtime-home.js";
@@ -40,7 +41,7 @@ function xml(value: string): string {
 export function renderLaunchAgent(repository: string, command: LaunchAgentCommand, userHome = homedir(), nodeExecutable = process.execPath, environmentPath = process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin") {
   const checkout = resolve(repository);
   const runtimeHome = resolveRuntimeHome(checkout, command.connectDirectory ?? ".robin-xai-test").directory;
-  const executable = join(checkout, "dist", "index.js");
+  const executable = isSea() ? resolve(nodeExecutable) : join(checkout, "dist", "index.js");
   const label = `com.inoai.heartbeat.${createHash("sha256").update(runtimeHome).digest("hex").slice(0, 16)}`;
   const logs = join(resolve(userHome), "Library", "Logs", "inoai");
   const plistPath = join(resolve(userHome), "Library", "LaunchAgents", `${label}.plist`);
@@ -51,7 +52,7 @@ export function renderLaunchAgent(repository: string, command: LaunchAgentComman
 <dict>
   <key>Label</key>${string(label)}
   <key>ProgramArguments</key>
-  <array>${[resolve(nodeExecutable), executable, "heartbeat", "--connect-dir", basename(runtimeHome)].map(string).join("")}</array>
+  <array>${[resolve(nodeExecutable), ...(isSea() ? [] : [executable]), "heartbeat", "--connect-dir", command.connectDirectory?.startsWith("direct:") ? command.connectDirectory : basename(runtimeHome)].map(string).join("")}</array>
   <key>EnvironmentVariables</key><dict><key>PATH</key>${string(environmentPath)}</dict>
   <key>WorkingDirectory</key>${string(checkout)}
   <key>StandardOutPath</key>${string(join(logs, "heartbeat.log"))}

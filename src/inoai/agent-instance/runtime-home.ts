@@ -1,7 +1,8 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { lstatSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { defaultAgentProfile } from "./profile.js";
 import { EnabledSkillsDocument, validateEnabledSkills } from "../skills/skill-manifest.js";
@@ -71,14 +72,28 @@ export class UnsafeRuntimeHomeError extends Error {
 }
 
 export function resolveRuntimeHome(launchDirectory: string, connectDirectory = ".inoai-connect"): RuntimeHome {
-  if (
+  const direct = connectDirectory.startsWith("direct:");
+  if (direct && !isAbsolute(connectDirectory.slice("direct:".length))) throw new InvalidRuntimeHomeError(connectDirectory);
+  if (!direct && (
     (!connectDirectory.startsWith(".inoai-connect") && !connectDirectory.startsWith(".robin-")) ||
     connectDirectory.includes("/") ||
     connectDirectory.includes("\\")
-  ) {
+  )) {
     throw new InvalidRuntimeHomeError(connectDirectory);
   }
-  const directory = resolve(launchDirectory, connectDirectory);
+  const directory = direct ? resolve(connectDirectory.slice("direct:".length)) : resolve(launchDirectory, connectDirectory);
+  if (direct) {
+    try {
+      const folder = lstatSync(directory);
+      if (folder.isSymbolicLink()) throw new UnsafeRuntimeHomeError(directory);
+      if (!folder.isDirectory() || ![".env", "agent.md", "skills-enabled.json"].every((name) => lstatSync(join(directory, name)).isFile())) {
+        throw new Error("Not an initialized agent");
+      }
+    } catch (error) {
+      if (error instanceof UnsafeRuntimeHomeError) throw error;
+      throw new Error(`Agent folder is not initialized: ${directory}. Run inoai setup to create an agent.`);
+    }
+  }
   return {
     directory,
     envFile: join(directory, ".env"),

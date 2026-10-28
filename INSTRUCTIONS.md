@@ -6,6 +6,7 @@ see [README.md](README.md). For the architecture and folder layout, see
 
 ## Contents
 
+- [Standalone macOS CLI](#standalone-macos-cli)
 - [Dependencies](#dependencies)
 - [Installation](#installation)
   - [Local database](#local-database)
@@ -34,11 +35,75 @@ see [README.md](README.md). For the architecture and folder layout, see
 ## Dependencies
 
 ```text
-Node.js 22 or newer
+Node.js 22 or newer for source builds (not needed for the standalone CLI)
 macOS (V1 release target)
 A Discord bot per concurrently running Agent Instance
 One signed-in agent CLI per runtime home: codex, claude, or opencode
 ```
+
+## Standalone macOS CLI
+
+The standalone executable targets Apple Silicon Macs. It includes the inoai
+runtime, web UI and skills installer; it does not need Node, npm, or a source
+checkout at runtime. Install and sign in to the provider CLI you want to use
+(Codex, Claude, or OpenCode) before setup. Create a Discord bot and obtain its
+token, server ID, owner user ID and status channel ID. Use a different bot
+for each concurrently running agent.
+
+Build the executable on an Apple Silicon Mac with Node 22 or newer:
+
+```bash
+npm install
+npm run build:standalone
+```
+
+The executable is `dist/standalone/inoai`. Copy it to a directory on your
+`PATH`, or invoke it by its full path. The build uses an ad-hoc signature, not
+an Apple Developer signature or notarization. A downloaded copy may require
+you to allow it in macOS Privacy & Security settings.
+
+Third-party license notices are embedded in the executable. Run
+`inoai --licenses` to view them; the build also writes
+`dist/standalone/THIRD_PARTY_NOTICES.txt`. If the Node installation does not
+include its `LICENSE` file beside the installation root, set
+`INOAI_NODE_LICENSE` to that version's full Node license file when building.
+
+Create an agent and follow the prompts:
+
+```bash
+inoai setup
+inoai start --dir /path/to/agent --port 1133
+```
+
+Setup asks for a new agent data folder and a separate existing working folder.
+It checks that the chosen provider executable exists, but does not check its
+login state. The bot token is hidden as you type and stored in the agent's
+private `.env` file. Edit `agent.md` in the agent folder to customize the
+starter profile. Setup never overwrites an existing agent folder.
+
+The start command runs the agent and its UI in the foreground. It prints the UI
+address; press Ctrl+C to stop both. The default UI port is 8989 and access is
+limited to the Mac. To allow the UI on a private network, specify an address:
+
+```bash
+inoai start --dir /path/to/agent --port 1133 --host 192.168.1.10
+```
+
+LAN mode has no password: devices that can reach the UI can read its data and
+change Tasks. Use a private LAN address assigned to this Mac.
+
+New agents have no installed skills. Add and enable skills separately:
+
+```bash
+inoai skills add https://github.com/owner/repository --skill skill-name --dir /path/to/agent
+inoai skills list --dir /path/to/agent
+inoai skills enable skill-name --dir /path/to/agent
+inoai memory list --dir /path/to/agent
+```
+
+Remote Git repository skills require Git on `PATH`. If it is missing, install
+the macOS Command Line Tools with `xcode-select --install`. You do not need
+Node or npm for skill installation. Review each skill before enabling it.
 
 ## Installation
 

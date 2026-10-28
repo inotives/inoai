@@ -40,13 +40,17 @@ export function probeShowsConcurrentExecution(threads: string[], notices: ProbeN
 }
 
 // A fresh app-server and disposable project keep the probe separate from live turns.
-export async function probeCodexConcurrency(): Promise<boolean> {
+export async function probeCodexConcurrency(signal?: AbortSignal): Promise<boolean> {
   let project: string | undefined;
   let server: CodexAppServer | undefined;
   let timeout: NodeJS.Timeout | undefined;
+  const abort = () => { void server?.close().catch(() => undefined); };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
+    if (signal?.aborted) return false;
     project = await mkdtemp(join(tmpdir(), "inoai-codex-concurrency-"));
-    server = await CodexAppServer.connect({ timeoutMs: 15_000 });
+    server = await CodexAppServer.connect({ timeoutMs: 15_000, signal });
+    if (signal?.aborted) return false;
     timeout = setTimeout(() => { void server?.close().catch(() => undefined); }, 60_000);
     const startThread = async (): Promise<string> => {
       const result = await server!.request("thread/start", {
@@ -90,6 +94,7 @@ export async function probeCodexConcurrency(): Promise<boolean> {
   } catch {
     return false;
   } finally {
+    signal?.removeEventListener("abort", abort);
     if (timeout) clearTimeout(timeout);
     await server?.close().catch(() => undefined);
     if (project) await rm(project, { recursive: true, force: true }).catch(() => undefined);
@@ -133,7 +138,7 @@ export function probeShowsConcurrentStreaming(events: ClaudeProbeEvent[]): boole
   return Math.max(...runs.map((run) => run.firstDelta!)) < Math.min(...runs.map((run) => run.resultAt!));
 }
 
-export type ClaudeProbeOptions = { executable?: string; homeDir?: string; timeoutMs?: number };
+export type ClaudeProbeOptions = { executable?: string; homeDir?: string; timeoutMs?: number; signal?: AbortSignal };
 
 // Tools are disabled and nothing is persisted, so the probe needs no permission. `--tools ""` removes every
 // built-in tool and `--strict-mcp-config` (with no --mcp-config) removes MCP tools; both only restrict.
@@ -147,17 +152,21 @@ const claudeProbeExitGraceMs = 2_000;
 export const claudeProbeLeftoverWarning = "Claude concurrency probe: the CLI project folder for the probe held unexpected files and was left in place";
 
 // Two fresh `claude -p` processes in a disposable project keep the probe separate from live Turns. Never throws.
-export async function probeClaudeConcurrency({ executable = "claude", homeDir = homedir(), timeoutMs = 90_000 }: ClaudeProbeOptions = {}): Promise<boolean> {
+export async function probeClaudeConcurrency({ executable = "claude", homeDir = homedir(), timeoutMs = 90_000, signal }: ClaudeProbeOptions = {}): Promise<boolean> {
   let project: string | undefined;
   let encoded: string | undefined;
   const children: ChildProcess[] = [];
   const exits: Promise<void>[] = [];
   let timer: NodeJS.Timeout | undefined;
   let passed = false;
+  const abort = () => { for (const child of children) killProbe(child); };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
+    if (signal?.aborted) return false;
     project = await mkdtemp(join(tmpdir(), "inoai-claude-concurrency-"));
     // The CLI names its project folder after the resolved cwd with every non-alphanumeric replaced by "-".
     encoded = (await realpath(project)).replace(/[^A-Za-z0-9]/g, "-");
+    if (signal?.aborted) return false;
     const events: ClaudeProbeEvent[] = [];
     let failed = false;
     const killAll = () => { for (const child of children) killProbe(child); };
@@ -196,10 +205,11 @@ export async function probeClaudeConcurrency({ executable = "claude", homeDir = 
       child.stdin!.end(claudeProbePrompt);
     }
     await Promise.all(exits);
-    passed = !failed && probeShowsConcurrentStreaming(events);
+    passed = !failed && !signal?.aborted && probeShowsConcurrentStreaming(events);
   } catch {
     passed = false;
   } finally {
+    signal?.removeEventListener("abort", abort);
     if (timer) clearTimeout(timer);
     for (const child of children) killProbe(child);
     // The CLI may still be writing its project folder until it exits.

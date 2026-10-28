@@ -20,6 +20,8 @@ import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
 import { OpenCodeRuntime } from "./connectors/agent-runtime/opencode-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome, inspectRuntimeHomeLock, resolveRuntimeHome } from "./agent-instance/runtime-home.js";
+import { normalizeDirectoryArgs } from "./agent-instance/direct-directory.js";
+import { runSetup } from "./agent-instance/setup.js";
 import { createChatTransport } from "./connectors/discord/discord.js";
 import type { ChatTransport, IncomingMessage, ThreadControl } from "./transport/ports.js";
 export type { ChatTransport, IncomingMessage, ThreadControl } from "./transport/ports.js";
@@ -157,7 +159,7 @@ export async function startTransport(
             user_id: eligible.user.id, transport: message.transport, workspace_id: workspaceId,
             parent_conversation_id: message.parentConversationId!, conversation_id: message.conversationId,
             initiating_external_message_id: message.externalMessageId, agent_provider: instance.configuration.agentProvider,
-            agent_session_id: `pending:${message.externalMessageId}`, project_path: dirname(instance.runtimeHome.directory),
+            agent_session_id: `pending:${message.externalMessageId}`, project_path: instance.configuration.projectDirectory ?? dirname(instance.runtimeHome.directory),
           }, "transport:discord");
           const archived = await store.archiveMessage({
             session_id: session.id, transport: message.transport, workspace_id: workspaceId,
@@ -212,7 +214,7 @@ export async function startTransport(
             user_id: eligible.user.id, transport: message.transport, workspace_id: workspaceId,
             parent_conversation_id: message.conversationId, conversation_id: conversationId,
             initiating_external_message_id: message.externalMessageId, agent_provider: instance.configuration.agentProvider,
-            agent_session_id: `pending:${message.externalMessageId}`, project_path: dirname(instance.runtimeHome.directory),
+            agent_session_id: `pending:${message.externalMessageId}`, project_path: instance.configuration.projectDirectory ?? dirname(instance.runtimeHome.directory),
           }, "transport:discord");
           const archived = await store.archiveMessage({
             session_id: session.id, transport: message.transport, workspace_id: workspaceId,
@@ -276,7 +278,7 @@ export async function startTransport(
             user_id: owner.id, transport: "discord", workspace_id: request.workspaceId,
             parent_conversation_id: request.guildTextChannelId, conversation_id: threadId,
             initiating_external_message_id: starterId, agent_provider: instance.configuration.agentProvider,
-            agent_session_id: `pending:task:${threadId}`, project_path: dirname(instance.runtimeHome.directory),
+            agent_session_id: `pending:task:${threadId}`, project_path: instance.configuration.projectDirectory ?? dirname(instance.runtimeHome.directory),
           }, "task:create");
           sessionId = session.id;
           const task = await store.createTask({ goal, task_type: type, interval_seconds: interval,
@@ -608,6 +610,12 @@ export type RunDependencies = { heartbeat?: typeof runHeartbeat; heartbeatSetup?
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {
+  args = normalizeDirectoryArgs(args);
+  if (args[0] === "setup") {
+    if (args.length !== 1) throw new Error("Usage: inoai setup");
+    await runSetup();
+    return;
+  }
   if (args[0] === "heartbeat" && args[1] === "launchagent") {
     console.log(await (supplied.launchagent ?? manageLaunchAgent)(process.cwd(), parseLaunchAgentCommand(args.slice(2))));
     return;
@@ -680,8 +688,43 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     }))));
     return;
   }
-  const instance = await start(process.cwd(), parseConnectDirectory(args), supplied.storeFactory);
-  const transport = suppliedTransport ?? createChatTransport(instance.configuration);
+  const startupAbort = new AbortController();
+  let startingInstance: Awaited<ReturnType<typeof start>> | undefined;
+  const onStartupSignal = () => {
+    startupAbort.abort();
+    if (startingInstance) void startingInstance.release().catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : error);
+      process.exitCode = 1;
+    });
+  };
+  const removeStartupSignals = () => {
+    process.off("SIGINT", onStartupSignal);
+    process.off("SIGTERM", onStartupSignal);
+  };
+  process.on("SIGINT", onStartupSignal);
+  process.on("SIGTERM", onStartupSignal);
+  let instance: Awaited<ReturnType<typeof start>>;
+  try {
+    instance = await start(process.cwd(), parseConnectDirectory(args), supplied.storeFactory);
+    startingInstance = instance;
+  } catch (error) {
+    removeStartupSignals();
+    if (startupAbort.signal.aborted) return;
+    throw error;
+  }
+  if (startupAbort.signal.aborted) {
+    await instance.release();
+    removeStartupSignals();
+    return;
+  }
+  let transport: ChatTransport;
+  try {
+    transport = suppliedTransport ?? createChatTransport(instance.configuration);
+  } catch (error) {
+    await instance.release();
+    removeStartupSignals();
+    throw error;
+  }
   let runtime = suppliedRuntime;
   let approvalRelay: ApprovalRelay | undefined;
   // A supplied test runtime, or a failed or unavailable probe, leaves the worker in its safe global mode.
@@ -690,31 +733,40 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     if (!runtime) {
       switch (instance.configuration.agentProvider) {
         case "codex": {
-          const server = await CodexAppServer.connect();
+          const server = await CodexAppServer.connect({ signal: startupAbort.signal });
           runtime = createCodexRuntime(server);
           approvalRelay = new ApprovalRelay(instance.store!, server, transport, {
             workspaceId: instance.configuration.discordGuildId,
             externalUserId: instance.configuration.discordOwnerUserId,
           });
-          probeConcurrency = probeCodexConcurrency;
+          probeConcurrency = () => probeCodexConcurrency(startupAbort.signal);
           break;
         }
         case "claude":
           // The CLI denies prompts itself; the notifier only reports denials. A failed probe keeps global FIFO.
           runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
-            onPermissionDenied: claudePermissionDenialNotifier(instance.store!, transport) });
-          probeConcurrency = () => probeClaudeConcurrency();
+            onPermissionDenied: claudePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
+          probeConcurrency = () => probeClaudeConcurrency({ signal: startupAbort.signal });
           break;
         case "opencode":
           // OpenCode auto-rejects prompts in headless runs; the notifier only reports them. No concurrency probe yet,
           // so the home keeps global FIFO.
-          runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.store!, transport) });
+          runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
           break;
       }
     }
   } catch (error) {
     await instance.release();
+    removeStartupSignals();
+    if (startupAbort.signal.aborted) return;
     throw error;
+  }
+  if (startupAbort.signal.aborted) {
+    approvalRelay?.close();
+    await runtime.close();
+    await instance.release();
+    removeStartupSignals();
+    return;
   }
   let taskCards: TaskProposalCards | undefined;
   const worker = new ConversationWorker(instance.store!, instance.runtimeHome, runtime, instance.configuration.agentProvider, () => {
@@ -743,11 +795,28 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   if (instance.store?.claimTaskProposal) {
     taskCards = new TaskProposalCards(instance.store as OperationalStore & TaskOperationsStore, transport, {
       ownerUserId: instance.owner.id, agentProvider: instance.configuration.agentProvider,
-      projectPath: dirname(instance.runtimeHome.directory), taskChannelId: instance.configuration.discordTaskChannelId,
+      projectPath: instance.configuration.projectDirectory ?? dirname(instance.runtimeHome.directory), taskChannelId: instance.configuration.discordTaskChannelId,
       taskRunner, clock: supplied.schedulerClock });
   }
   worker.onQueueChange(() => { void scheduler.poke(); void taskScheduler.poke(); });
-  const concurrentSessionsValidated = await probeConcurrency();
+  let concurrentSessionsValidated: boolean;
+  try {
+    concurrentSessionsValidated = await probeConcurrency();
+  } catch (error) {
+    approvalRelay?.close();
+    await runtime.close();
+    await instance.release();
+    removeStartupSignals();
+    if (startupAbort.signal.aborted) return;
+    throw error;
+  }
+  if (startupAbort.signal.aborted) {
+    approvalRelay?.close();
+    await runtime.close();
+    await instance.release();
+    removeStartupSignals();
+    return;
+  }
   let keepAlive: NodeJS.Timeout | undefined;
   let startup: Promise<ChatTransport> | undefined;
   let cleanup: Promise<void> | undefined;
@@ -787,6 +856,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
       process.exitCode = 1;
     });
   };
+  removeStartupSignals();
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {

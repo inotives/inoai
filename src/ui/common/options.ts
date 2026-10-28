@@ -3,8 +3,8 @@ import { isIP } from "node:net";
 export const UI_DEFAULT_PORT = 8989;
 export const UI_DEFAULT_HOST = "127.0.0.1";
 
-export function parseUiOptions(args: string[]): { connectDirectory?: string; port: number; host: string } {
-  const usage = "Usage: inoai ui [--connect-dir .inoai-connect*] [--port 8989] [--host 192.168.1.10]";
+export function parseUiOptions(args: string[], command: "ui" | "start" = "ui"): { connectDirectory?: string; port: number; host: string } {
+  const usage = `Usage: inoai ${command} [--dir <agent-folder> | --connect-dir .inoai-connect*] [--port 8989] [--host 192.168.1.10]`;
   let connectDirectory: string | undefined;
   let port = UI_DEFAULT_PORT;
   let host = UI_DEFAULT_HOST;

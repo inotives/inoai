@@ -26,7 +26,7 @@ type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: bool
 // Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
 export type PermissionDenialListener = (sessionId: string, count: number) => void;
 // homeDir locates `~/.claude/projects` for review cleanup only; reviewTimeoutMs bounds one whole review.
-export type ClaudeRuntimeOptions = { executable?: string; model?: string; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener };
+export type ClaudeRuntimeOptions = { executable?: string; model?: string; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
 type ReviewEvent = {
   type?: string; subtype?: string; apiKeySource?: unknown; tools?: unknown; mcp_servers?: unknown; memory_paths?: unknown; error?: unknown;
   message?: { content?: unknown }; rate_limit_info?: { status?: string };
@@ -67,14 +67,14 @@ export class ClaudeRuntime implements AgentRuntime {
   static async connect(options: ClaudeRuntimeOptions = {}): Promise<ClaudeRuntime> {
     const executable = options.executable ?? "claude";
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(executable, ["--version"], { stdio: "ignore" });
+      const child = spawn(executable, ["--version"], { stdio: "ignore", signal: options.signal });
       const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
       child.once("error", () => { clearTimeout(timer); reject(new Error("Claude CLI is unavailable")); });
       child.once("close", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("Claude CLI is unavailable")); });
     });
     // Presence only: the value is never read, printed, or stripped.
     if ("CLAUDE_CODE_OAUTH_TOKEN" in process.env) throw refusal("CLAUDE_CODE_OAUTH_TOKEN in the environment");
-    const status = await readAuthStatus(executable);
+    const status = await readAuthStatus(executable, options.signal);
     if (typeof status.authMethod !== "string" || typeof status.apiProvider !== "string") throw new Error(unverified);
     const override = credentialOverride(status);
     if (override) throw refusal(override);
@@ -410,9 +410,9 @@ type AuthStatus = { loggedIn?: unknown; authMethod?: unknown; apiProvider?: unkn
 
 // Runs `claude auth status --json` without a shell. Only the four credential fields are kept; email, org,
 // and every other field are dropped at parse time, and the raw output is never logged or persisted.
-function readAuthStatus(executable: string): Promise<AuthStatus> {
+function readAuthStatus(executable: string, signal?: AbortSignal): Promise<AuthStatus> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ["auth", "status", "--json"], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(executable, ["auth", "status", "--json"], { stdio: ["ignore", "pipe", "ignore"], signal });
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;

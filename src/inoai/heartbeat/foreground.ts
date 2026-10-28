@@ -14,7 +14,7 @@ export async function runHeartbeat(launchDirectory: string, connectDirectory?: s
     const probes = sqliteHealthProbes(home.databaseFile);
     record = createHeartbeatEventRecorder(home);
     supervisor = new HeartbeatSupervisor({
-      spawn: () => spawnInoai(basename(home.directory), launchDirectory),
+      spawn: () => spawnInoai(connectDirectory?.startsWith("direct:") ? connectDirectory : basename(home.directory), launchDirectory),
       probe: (childPid) => probeHealth({ childPid, lockFile: home.lockFile, ...probes }),
       clock: supervisorClock, log, record,
     });
