@@ -4,12 +4,12 @@ import { RuntimeFailure } from "../agent-runtime/ports.js";
 import type { AgentRuntime, RuntimeFailureKind } from "../agent-runtime/ports.js";
 import { legacyApprovalNotice, permissionDeclinedNotice } from "../transport/approval-relay.js";
 import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conversation-worker.js";
-import { completeMemoryReview, createEvent, createMemory, createMemoryReview, listMemories, messagesForMemoryReview, softDeleteMemory } from "../connectors/persistence/sqlite/legacy-database.js";
-import type { MemoryRecord, MemoryReviewRecord, MessageRecord } from "../connectors/persistence/sqlite/legacy-database.js";
+import { completeMemoryReview, createEvent, createMemory, createMemoryReview, listMemories, maxReviewProposals, messagesForMemoryReview, softDeleteMemory, storeReviewProposals } from "../connectors/persistence/sqlite/legacy-database.js";
+import type { MemoryRecord, MemoryReviewRecord, MessageRecord, ReviewProposalDraft, ReviewProposalSkip } from "../connectors/persistence/sqlite/legacy-database.js";
 import { openCodeAuthenticationNotice } from "../connectors/agent-runtime/opencode-runtime.js";
 import { secretLike } from "../conversation/prompt-context.js";
 import { runtimeFailureNotice } from "../conversation/runtime-turn.js";
-import type { MemoryReviewCommit, MemoryReviewSnapshot } from "../persistence/operational-store.js";
+import type { MemoryReviewCommit, MemoryReviewCommitResult, MemoryReviewSnapshot } from "../persistence/operational-store.js";
 
 // One Memory Review (ADR 0010): an Agent Session's new archive range becomes one Recap plus validated Memory changes,
 // committed in one transaction. Nothing is written before that commit, so any failed attempt is safe to rerun.
@@ -61,19 +61,22 @@ export type MemoryReviewOptions = {
   // An existing pending or failed memory_reviews row for this Session; its through_message_id bounds the range.
   // Without it, the range runs to the newest settled Message and the row is created in the commit transaction.
   reviewId?: number;
+  // Unix seconds when proposals are stored; they expire 7 days later. Defaults to the system clock.
+  now?: number;
 };
 
 export type MemoryReviewIgnoredReason =
   | "model_ignore" | "invalid_action" | "too_many_actions" | "manual_entry" | "unknown_memory" | "duplicate_target"
   | "missing_source" | "source_out_of_range" | "unknown_recap" | "no_memory_signal" | "no_evidence"
-  | "missing_body" | "body_too_long" | "secret_like";
+  | "missing_body" | "body_too_long" | "secret_like" | "no_owner_source" | ReviewProposalSkip;
 
 export type MemoryReviewFailureReason = RuntimeFailureKind | "unparseable" | "unsafe_recap" | "stale_range" | "range_not_ready";
 
 export type MemoryReviewResult =
   | { state: "skipped"; reason: "unsupported" }
   | { state: "empty" }
-  | { state: "completed"; reviewId: number; throughMessageId: number; added: number; updated: number; deleted: number; ignored: MemoryReviewIgnoredReason[] }
+  // proposalIds are the Memory proposals stored with this review, pending the owner's confirmation.
+  | { state: "completed"; reviewId: number; throughMessageId: number; added: number; updated: number; deleted: number; ignored: MemoryReviewIgnoredReason[]; proposalIds: number[] }
   // Every failure happens before the commit and leaves SQLite unchanged, so it is always replay-safe.
   | { state: "failed"; reason: MemoryReviewFailureReason };
 
@@ -82,12 +85,13 @@ export type MemoryReviewResult =
  * store so the cursor, recap, memories, and outcome event remain atomic. */
 export type AsyncMemoryReviewStore = {
   readMemoryReview(sessionId: number, reviewId?: number): Promise<MemoryReviewSnapshot>;
-  commitMemoryReview(input: MemoryReviewCommit): Promise<{ state: "completed"; reviewId: number } | { state: "stale_range" }>;
+  commitMemoryReview(input: MemoryReviewCommit): Promise<MemoryReviewCommitResult>;
 };
 
 type Entry = { id: number; role: "owner" | "agent"; body: string };
 type Window = { text: string; firstId: number; lastId: number };
 type Action = { op: "add" | "update" | "delete"; memoryId?: number; body?: string; sourceMessageId: number | null };
+type Proposal = ReviewProposalDraft & { op: "propose" };
 
 class ReviewFailed extends Error {
   constructor(readonly reason: MemoryReviewFailureReason) { super(reason); }
@@ -263,8 +267,9 @@ function aggregationPrompt(count: number, fromId: number, throughId: number, not
     `Rules: "recap" is a concise summary of the notes, at most ${recapLimit} characters, with no secrets.`,
     'Propose "add" only when an owner message in this range explicitly asks to remember, take note of, or treat something as important (cite it in source_message_ids), or when the same useful pattern appears in at least two earlier recaps (cite them in source_recap_ids and the related messages in source_message_ids).',
     'Each entry in <explicit_requests> is an owner message in this range that explicitly asks to remember, take note of, or treat something as important, whether or not the notes mention it. Consider each one for "add", or "update" of a matching origin=review memory, citing its message ID in source_message_ids; skip any that is a secret, a one-off task, or not a durable fact.',
-    `"update" and "delete" may name only a memory with origin=review; memory with origin=manual is read-only. Each body is one durable fact of at most ${bodyLimit} characters with no secrets. Use "ignore" or no action for anything else, and set memory_id to null for "add".`,
-    'Reply with only this JSON object: {"recap": string, "actions": [{"op": "add" | "update" | "delete" | "ignore", "memory_id": number | null, "body": string | null, "source_message_ids": [number], "source_recap_ids": [number], "reason": string}]}',
+    `Use "propose" for an implicit signal in this range that is not an explicit request: an owner preference, a decision the owner confirmed, or an owner correction of the agent. The owner confirms each proposal before it becomes a memory. Cite the owner messages that show it in source_message_ids. Set "kind" to "core" for a standing rule that applies to every conversation and to "topic" for anything else. Propose at most ${maxReviewProposals}, and never text already in <memory>.`,
+    `"update" and "delete" may name only a memory with origin=review; memory with origin=manual is read-only. Each body is one durable fact of at most ${bodyLimit} characters with no secrets. Use "ignore" or no action for anything else, and set memory_id to null for "add" and "propose". Set "kind" only for "propose".`,
+    'Reply with only this JSON object: {"recap": string, "actions": [{"op": "add" | "update" | "delete" | "propose" | "ignore", "memory_id": number | null, "body": string | null, "kind": "core" | "topic" | null, "source_message_ids": [number], "source_recap_ids": [number], "reason": string}]}',
   ].join("\n");
 }
 
@@ -311,10 +316,11 @@ function validateAction(
   memories: Map<number, MemoryRecord>,
   isPriorRecap: (id: number) => boolean,
   targeted: Set<number>,
-): Action | MemoryReviewIgnoredReason {
+): Action | Proposal | MemoryReviewIgnoredReason {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid_action";
   const { op, memory_id: memoryId, body, source_message_ids: sources = [], source_recap_ids: recaps = [] } = value as Record<string, unknown>;
   if (op === "ignore") return "model_ignore";
+  if (op === "propose") return validateProposal(value as Record<string, unknown>, entries);
   if ((op !== "add" && op !== "update" && op !== "delete") || !isIdList(sources) || !isIdList(recaps)
     || (body !== undefined && body !== null && typeof body !== "string")) return "invalid_action";
   // inoai assigns IDs: a model-supplied memory_id on "add" is ignored.
@@ -345,6 +351,23 @@ function validateAction(
   if (!explicit && !recurrence) return "no_memory_signal";
   if (target) targeted.add(target.id);
   return { op, memoryId: target?.id, body: text, sourceMessageId: explicit?.id ?? sources[0] };
+}
+
+// A proposal needs a kind, a body within the Memory limits, and at least one cited owner Message in this range; only
+// the owner citations are kept. Duplicate, previously rejected, and over-limit proposals are dropped in the commit.
+function validateProposal(value: Record<string, unknown>, entries: Map<number, Entry>): Proposal | MemoryReviewIgnoredReason {
+  const { kind, body, source_message_ids: sources = [] } = value;
+  if ((kind !== "core" && kind !== "topic") || !isIdList(sources)
+    || (body !== undefined && body !== null && typeof body !== "string")) return "invalid_action";
+  const text = typeof body === "string" ? body.trim() : "";
+  if (!text) return "missing_body";
+  if (text.length > bodyLimit) return "body_too_long";
+  if (secretLike.test(text) || text.includes(redactedLine)) return "secret_like";
+  if (!sources.length) return "missing_source";
+  if (sources.some((id) => !entries.has(id))) return "source_out_of_range";
+  const owner = [...new Set(sources)].filter((id) => entries.get(id)!.role === "owner");
+  if (!owner.length) return "no_owner_source";
+  return { op: "propose", body: text, kind, sourceMessageIds: owner };
 }
 
 // Runs one Memory Review for an Agent Session. Returns "skipped" without any work when the runtime has no text-only
@@ -388,7 +411,7 @@ export async function reviewSession(database: DatabaseSync, runtime: AgentRuntim
     if (secretLike.test(recap)) throw new ReviewFailed("unsafe_recap");
     if (recap.length > recapLimit) recap = `${recap.slice(0, recapLimit - 1)}…`;
     if (signal?.aborted) throw new ReviewFailed("cancelled");
-    return commit(database, sessionId, cursor, review, fromId, throughId, recap, result.actions, included);
+    return commit(database, sessionId, cursor, review, fromId, throughId, recap, result.actions, included, options.now ?? Math.floor(Date.now() / 1000));
   } catch (error) {
     if (error instanceof ReviewFailed) return { state: "failed", reason: error.reason };
     throw error;
@@ -398,7 +421,7 @@ export async function reviewSession(database: DatabaseSync, runtime: AgentRuntim
 // The only write: validation, recap, Memory changes, cursor, and a non-secret outcome Event in one transaction.
 function commit(
   database: DatabaseSync, sessionId: number, cursor: number, review: MemoryReviewRecord | undefined,
-  fromId: number, throughId: number, recap: string, proposed: unknown[], included: Entry[],
+  fromId: number, throughId: number, recap: string, proposed: unknown[], included: Entry[], now: number,
 ): MemoryReviewResult {
   database.exec("BEGIN IMMEDIATE");
   try {
@@ -419,10 +442,15 @@ function commit(
     const targeted = new Set<number>();
     const ignored: MemoryReviewIgnoredReason[] = [];
     const counts = { added: 0, updated: 0, deleted: 0 };
+    const proposals: Proposal[] = [];
     for (const [index, value] of proposed.entries()) {
       const action = index < maxActions ? validateAction(value, entries, memories, isPriorRecap, targeted) : "too_many_actions";
       if (typeof action === "string") {
         ignored.push(action);
+        continue;
+      }
+      if (action.op === "propose") {
+        proposals.push(action);
         continue;
       }
       // An update supersedes: the old review entry is soft-deleted and its replacement carries fresh provenance.
@@ -432,11 +460,14 @@ function commit(
       }
       counts[action.op === "add" ? "added" : action.op === "update" ? "updated" : "deleted"]++;
     }
+    // Proposals go in after the actions, so one matching a Memory this review just added is a duplicate.
+    const { ids: proposalIds, skipped } = storeReviewProposals(database, row.id, proposals, now, actor);
+    ignored.push(...skipped);
     const reasons = [...new Set(ignored)].sort().map((reason) => `${reason}:${ignored.filter((item) => item === reason).length}`).join(",");
     createEvent(database, { session_id: sessionId, message_id: null, event_type: "memory_review_completed",
-      detail: `review=${row.id}; through=${throughId}; added=${counts.added}; updated=${counts.updated}; deleted=${counts.deleted}; ignored=${ignored.length}${reasons ? `; reasons=${reasons}` : ""}` }, actor);
+      detail: `review=${row.id}; through=${throughId}; added=${counts.added}; updated=${counts.updated}; deleted=${counts.deleted}; ignored=${ignored.length}${reasons ? `; reasons=${reasons}` : ""}${proposalIds.length ? `; proposed=${proposalIds.length}` : ""}` }, actor);
     database.exec("COMMIT");
-    return { state: "completed", reviewId: row.id, throughMessageId: throughId, ...counts, ignored };
+    return { state: "completed", reviewId: row.id, throughMessageId: throughId, ...counts, ignored, proposalIds };
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
@@ -503,15 +534,19 @@ export async function reviewSessionWithStore(store: AsyncMemoryReviewStore, runt
     const ignored: MemoryReviewIgnoredReason[] = [];
     const counts = { added: 0, updated: 0, deleted: 0 };
     const actions: MemoryReviewCommit["actions"] = [];
+    const proposals: ReviewProposalDraft[] = [];
     for (const [index, value] of result.actions.entries()) {
       const action = index < maxActions ? validateAction(value, entriesById, memories, (id) => priorRecaps.has(id) && id !== review?.id, targeted) : "too_many_actions";
       if (typeof action === "string") { ignored.push(action); continue; }
+      if (action.op === "propose") { proposals.push({ body: action.body, kind: action.kind, sourceMessageIds: action.sourceMessageIds }); continue; }
       actions.push(action);
       counts[action.op === "add" ? "added" : action.op === "update" ? "updated" : "deleted"]++;
     }
-    const committed = await store.commitMemoryReview({ sessionId, cursor: snapshot.cursor, reviewId: review?.id, fromMessageId: fromId, throughMessageId: throughId, recap, actions, ignored, counts, actor });
+    const committed = await store.commitMemoryReview({ sessionId, cursor: snapshot.cursor, reviewId: review?.id, fromMessageId: fromId, throughMessageId: throughId, recap, actions, ignored, counts, actor,
+      proposals, now: options.now ?? Math.floor(Date.now() / 1000) });
     if (committed.state === "stale_range") return { state: "failed", reason: "stale_range" };
-    return { state: "completed", reviewId: committed.reviewId, throughMessageId: throughId, ...counts, ignored };
+    return { state: "completed", reviewId: committed.reviewId, throughMessageId: throughId, ...counts,
+      ignored: [...ignored, ...(committed.skipped ?? [])], proposalIds: committed.proposalIds ?? [] };
   } catch (error) {
     if (error instanceof ReviewFailed) return { state: "failed", reason: error.reason };
     throw error;

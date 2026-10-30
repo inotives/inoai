@@ -1564,6 +1564,36 @@ export function wasMemoryProposalRejected(database: DatabaseSync, body: string):
     .get(normalizeMemoryBody(body)) !== undefined;
 }
 
+/** A Memory Review stores at most this many proposals; each one expires this many seconds after it is stored. */
+export const maxReviewProposals = 5;
+export const memoryProposalTtlSeconds = 7 * 24 * 60 * 60;
+/** A proposal that passed the review's own checks (owner citations, kind, body limit, no secret-like text). */
+export type ReviewProposalDraft = { body: string; kind: MemoryKind; sourceMessageIds: number[] };
+export type ReviewProposalSkip = "duplicate_memory" | "duplicate_proposal" | "rejected_proposal" | "too_many_proposals";
+
+/**
+ * Stores a review's proposals inside the caller's review commit transaction, in order. A proposal is skipped when its
+ * normalized text matches an active Memory, a pending unexpired proposal (including one stored earlier in this call),
+ * or a rejected proposal, and once maxReviewProposals are stored.
+ */
+export function storeReviewProposals(database: DatabaseSync, reviewId: number, drafts: ReviewProposalDraft[], now: number, actor = "memory-review"): { ids: number[]; skipped: ReviewProposalSkip[] } {
+  const memories = new Set(listMemories(database).map((memory) => normalizeMemoryBody(memory.body)));
+  const pending = database.prepare("SELECT 1 FROM memory_proposals WHERE normalized_body=? AND state='pending' AND expires_at>? AND deleted_at IS NULL LIMIT 1");
+  const ids: number[] = [];
+  const skipped: ReviewProposalSkip[] = [];
+  for (const draft of drafts) {
+    const normalized = normalizeMemoryBody(draft.body);
+    const skip: ReviewProposalSkip | undefined = memories.has(normalized) ? "duplicate_memory"
+      : pending.get(normalized, now) ? "duplicate_proposal"
+      : wasMemoryProposalRejected(database, normalized) ? "rejected_proposal"
+      : ids.length >= maxReviewProposals ? "too_many_proposals" : undefined;
+    if (skip) { skipped.push(skip); continue; }
+    ids.push(createMemoryProposal(database, { body: draft.body, kind: draft.kind, review_id: reviewId,
+      source_message_ids: draft.sourceMessageIds, expires_at: now + memoryProposalTtlSeconds }, now, actor).id);
+  }
+  return { ids, skipped };
+}
+
 /** Appends one `memory_uses` row per use in one transaction. Rows are never updated or deleted. */
 export function recordMemoryUses(database: DatabaseSync, uses: NewMemoryUse[], now: number, actor = "system"): number {
   if (uses.length === 0) return 0;

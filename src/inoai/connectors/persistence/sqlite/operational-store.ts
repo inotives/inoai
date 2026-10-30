@@ -15,7 +15,7 @@ import {
   claimTaskProposal, finishTaskProposal, listOpenTaskProposalCards, closeTaskProposalCard, editTask, createPendingTask,
   switchTaskSessionProvider,
   createMemoryProposal, getMemoryProposal, listPendingMemoryProposals, setMemoryProposalCardMessage, confirmMemoryProposal,
-  rejectMemoryProposal, expireDueMemoryProposals, wasMemoryProposalRejected, recordMemoryUses,
+  rejectMemoryProposal, expireDueMemoryProposals, wasMemoryProposalRejected, recordMemoryUses, storeReviewProposals,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
@@ -173,10 +173,13 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
           if (action.memoryId !== undefined) softDeleteMemory(database, action.memoryId, input.actor ?? "memory-review");
           if (action.body !== undefined) createMemory(database, { body: action.body, source_message_id: action.sourceMessageId, created_by_user_id: null, review_id: row.id, origin: "review" }, input.actor ?? "memory-review");
         }
-        const reasons = [...new Set(input.ignored)].sort().map((reason) => `${reason}:${input.ignored.filter((item) => item === reason).length}`).join(",");
-        const detail = `review=${row.id}; through=${input.throughMessageId}; added=${input.counts.added}; updated=${input.counts.updated}; deleted=${input.counts.deleted}; ignored=${input.ignored.length}${reasons ? `; reasons=${reasons}` : ""}`;
+        // Proposals go in after the actions, so one matching a Memory this review just added is a duplicate.
+        const { ids: proposalIds, skipped } = storeReviewProposals(database, row.id, input.proposals ?? [], input.now ?? Math.floor(Date.now() / 1000), input.actor ?? "memory-review");
+        const ignored = [...input.ignored, ...skipped];
+        const reasons = [...new Set(ignored)].sort().map((reason) => `${reason}:${ignored.filter((item) => item === reason).length}`).join(",");
+        const detail = `review=${row.id}; through=${input.throughMessageId}; added=${input.counts.added}; updated=${input.counts.updated}; deleted=${input.counts.deleted}; ignored=${ignored.length}${reasons ? `; reasons=${reasons}` : ""}${proposalIds.length ? `; proposed=${proposalIds.length}` : ""}`;
         createEvent(database, { session_id: input.sessionId, message_id: null, event_type: "memory_review_completed", detail }, input.actor ?? "memory-review");
-        return { state: "completed" as const, reviewId: row.id };
+        return { state: "completed" as const, reviewId: row.id, proposalIds, skipped };
       });
     },
     async listSessions() { return database.prepare("SELECT * FROM sessions WHERE deleted_at IS NULL ORDER BY id").all() as SessionRecord[]; },

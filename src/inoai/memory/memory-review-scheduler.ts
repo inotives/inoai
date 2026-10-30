@@ -157,6 +157,8 @@ export class MemoryReviewScheduler {
     if (now < this.scheduledOn(now)) return;
     const date = localDate(now);
     if ((await this.database.listEvents()).some((event) => event.event_type === "memory_review_cycle" && (event.detail ?? "").startsWith(`date=${date};`))) return;
+    // Memory proposals the owner left unanswered for 7 days expire (SQLite only; the PostgreSQL store has none).
+    await this.database.expireDueMemoryProposals?.(seconds(now), actor);
     let enqueued = 0;
       if (!this.runtime.review) {
         // Codex and OpenCode in V1: nothing is enqueued and every cursor stays where it is.
@@ -220,7 +222,7 @@ export class MemoryReviewScheduler {
     const done = (async () => {
       let result: MemoryReviewResult | { state: "failed"; reason: "commit_error" };
       try {
-        result = await reviewSessionWithStore(this.database, this.runtime, row.session_id, { reviewId: row.id, maxChars: this.options.maxChars, signal: controller.signal });
+        result = await reviewSessionWithStore(this.database, this.runtime, row.session_id, { reviewId: row.id, maxChars: this.options.maxChars, signal: controller.signal, now: seconds(this.clock.now()) });
       } catch {
         // The engine rolled its commit back, so a thrown error is a failed, replay-safe attempt.
         result = { state: "failed", reason: "commit_error" };

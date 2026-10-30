@@ -10,7 +10,8 @@ import { sqliteStore } from "../../../test/sqlite-store.js";
 import { RuntimeFailure } from "../../agent-runtime/ports.js";
 import type { AgentRuntime, RuntimeEvent } from "../../agent-runtime/ports.js";
 import { ConversationWorker, fixedTurnNotices } from "../../conversation/conversation-worker.js";
-import { archiveMessage, createEvent, createMemoryReview, createSession, listEvents, openDatabase, upsertUser } from "../../connectors/persistence/sqlite/legacy-database.js";
+import { archiveMessage, completeMemoryReview, createEvent, createMemoryProposal, createMemoryReview, createSession, listEvents, openDatabase, upsertUser } from "../../connectors/persistence/sqlite/legacy-database.js";
+import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
 import type { MemoryReviewRecord, MessageRecord } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { createCodexRuntime } from "../../../index.js";
 import { MemoryReviewScheduler } from "../../memory/memory-review-scheduler.js";
@@ -427,5 +428,33 @@ test("shutdown aborts an active review and waits for it to settle without using 
     assert.equal(time.timers.size, 0);
     instance.poke();
     assert.equal(state.calls, 1);
+  });
+});
+
+test("pending Memory proposals past their 7 days expire on the next cycle, and newer ones stay pending", async () => {
+  await withArchive(async ({ database, session, add, events }) => {
+    const created = at(3, 5);
+    const message = add("user", "earlier");
+    const review = createMemoryReview(database, { session_id: session.id, from_message_id: message.id, through_message_id: message.id });
+    completeMemoryReview(database, review.id, "Earlier.");
+    const propose = (body: string, createdAt: Date) => createMemoryProposal(database, { body, kind: "topic", review_id: review.id,
+      source_message_ids: [message.id], expires_at: seconds(createdAt) + 7 * 24 * 3600 }, seconds(createdAt));
+    const old = propose("Owner prefers tabs.", created);
+    const fresh = propose("Owner prefers pnpm.", at(5, 7));
+    const states = () => (database.prepare("SELECT id, state FROM memory_proposals ORDER BY id").all() as Array<{ id: number; state: string }>).map(({ id, state }) => [id, state]);
+    const time = fakeClock(at(10, 5, 59));
+    const instance = new MemoryReviewScheduler(createSqliteOperationalStore(database), reviewRuntime().runtime, { reviewTime: "06:00", maxChars: 20_000, clock: time.clock });
+    instance.start();
+    await instance.idle();
+    // Past its expiry time, but the day's cycle has not run yet.
+    assert.deepEqual(states(), [[old.id, "pending"], [fresh.id, "pending"]]);
+    time.set(at(10, 6, 0));
+    time.tick();
+    await instance.idle();
+    assert.deepEqual(events("memory_review_cycle"), ["date=2026-10-10; enqueued=0"]);
+    assert.deepEqual(states(), [[old.id, "expired"], [fresh.id, "pending"]]);
+    const expired = database.prepare("SELECT answered_at, updated_by FROM memory_proposals WHERE id = ?").get(old.id) as { answered_at: number; updated_by: string };
+    assert.deepEqual([expired.answered_at, expired.updated_by], [seconds(at(10, 6, 0)), "memory-review-scheduler"]);
+    await instance.stop();
   });
 });

@@ -17,6 +17,8 @@ import type {
   NewMessage,
   NewSession,
   NewUser,
+  ReviewProposalDraft,
+  ReviewProposalSkip,
   SessionRecord,
   UserRecord,
 } from "../connectors/persistence/sqlite/legacy-database.js";
@@ -48,7 +50,15 @@ export type MemoryReviewCommit = {
   ignored: string[];
   counts: { added: number; updated: number; deleted: number };
   actor?: string;
+  // Memory proposals (SQLite only; the PostgreSQL store does not store them) and the Unix-seconds time they are stored.
+  proposals?: ReviewProposalDraft[];
+  now?: number;
 };
+
+/** `proposalIds` are the stored proposals; `skipped` are proposals the commit dropped, counted as ignored reasons. */
+export type MemoryReviewCommitResult =
+  | { state: "completed"; reviewId: number; proposalIds?: number[]; skipped?: ReviewProposalSkip[] }
+  | { state: "stale_range" };
 
 type Queryable = Pick<Pool, "query">;
 
@@ -177,7 +187,7 @@ export interface OperationalStore {
   completeMemoryReview(id: number, recap: string, actor?: string): Promise<MemoryReviewRecord | undefined>;
   messagesForMemoryReview(sessionId: number): Promise<MessageRecord[]>;
   readMemoryReview(sessionId: number, reviewId?: number): Promise<MemoryReviewSnapshot>;
-  commitMemoryReview(input: MemoryReviewCommit): Promise<{ state: "completed"; reviewId: number } | { state: "stale_range" }>;
+  commitMemoryReview(input: MemoryReviewCommit): Promise<MemoryReviewCommitResult>;
   close(): Promise<void>;
 }
 
@@ -414,7 +424,7 @@ export class PostgresOperationalStore implements OperationalStore, MemoryOperati
       client.release();
     }
   }
-  async commitMemoryReview(input: MemoryReviewCommit): Promise<{ state: "completed"; reviewId: number } | { state: "stale_range" }> {
+  async commitMemoryReview(input: MemoryReviewCommit): Promise<MemoryReviewCommitResult> {
     return transaction(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`inoai.memory_review:${input.sessionId}`]);
       const cursorRow = await safeQuery<{ through_message_id: number | null }>(client, `SELECT MAX(through_message_id) AS through_message_id FROM ${this.table("memory_reviews")} WHERE session_id = $1 AND state = 'completed' AND deleted_at IS NULL`, [input.sessionId]);
