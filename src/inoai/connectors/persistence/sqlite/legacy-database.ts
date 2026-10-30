@@ -368,7 +368,6 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     migrateTasks(database);
     migrateTaskProposals(database);
     recoverStaleWork(database);
-    recoverTaskRuns(database);
     recoverLegacyApprovals(database);
     recoverTaskProposals(database, Math.floor(Date.now() / 1000));
     return database;
@@ -641,9 +640,13 @@ export function recoverStaleWork(database: DatabaseSync, actor = "startup-recove
   }
 }
 
-export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recovery", now = Math.floor(Date.now() / 1000)): void {
+export type RecoveredTaskRun = { id: number; task_id: number; started_at: number; completed_at: number };
+
+/** Fails Task Runs left `processing` by a restart and returns the runs it failed. */
+export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recovery", now = Math.floor(Date.now() / 1000)): RecoveredTaskRun[] {
   database.exec("BEGIN IMMEDIATE");
   try {
+    const runs = database.prepare("SELECT id, task_id, started_at FROM task_runs WHERE state='processing' AND deleted_at IS NULL ORDER BY id").all() as Array<{ id: number; task_id: number; started_at: number }>;
     const stale = database.prepare("SELECT DISTINCT task_id FROM task_runs WHERE state='processing' AND deleted_at IS NULL").all() as Array<{ task_id: number }>;
     database.prepare(`UPDATE task_runs SET state='failed', failure_detail='Interrupted by restart', completed_at=?, updated_at=?, updated_by=?
       WHERE state='processing' AND deleted_at IS NULL`).run(now, now, actor);
@@ -654,6 +657,7 @@ export function recoverTaskRuns(database: DatabaseSync, actor = "startup-recover
       advanceScheduledTask(database, task_id, now, actor);
     }
     database.exec("COMMIT");
+    return runs.map((run) => ({ ...run, completed_at: now }));
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -362,6 +362,65 @@ test("startup bootstraps and locks the default runtime home", async () => {
     }
   } finally {
     await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+async function leaveProcessingRun(deployment: string): Promise<{ taskId: number; runId: number; home: string }> {
+  const instance = await start(deployment);
+  try {
+    const session = await instance.store.createSession({
+      user_id: instance.owner.id, transport: "discord", workspace_id: instance.configuration.discordGuildId,
+      parent_conversation_id: "channel", conversation_id: "recovery-thread", initiating_external_message_id: "recovery-start",
+      agent_provider: "codex", agent_session_id: "recovery-session", project_path: deployment,
+    }, "test");
+    const task = await instance.store.createTask!({ goal: "daily report", task_type: "one_time",
+      conversation_id: "recovery-thread", session_id: session.id }, "test");
+    const run = (await instance.store.claimTaskRun!(task.id, 1_000, "test"))!;
+    return { taskId: task.id, runId: run.id, home: instance.runtimeHome.directory };
+  } finally {
+    await instance.release();
+  }
+}
+
+test("startup recovery writes a failed result.md for a run left processing", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    await writeFile((await bootstrapRuntimeHome(deployment)).envFile, validEnv);
+    const { taskId, runId, home } = await leaveProcessingRun(deployment);
+    const instance = await start(deployment);
+    try {
+      assert.equal((await instance.store.getTaskRun!(runId))?.state, "failed");
+      const result = await readFile(join(home, "results", String(taskId), String(runId), "result.md"), "utf8");
+      assert.match(result, /^- State: failed$/m);
+      assert.match(result, /^- Started: 1970-01-01T00:16:40\.000Z$/m);
+      assert.match(result, /## Failure\n\nInterrupted by restart\n/);
+    } finally {
+      await instance.release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery writes no result.md into a symlinked Task folder and still starts", async () => {
+  const deployment = await temporaryDeployment();
+  const outside = await mkdtemp(join(tmpdir(), "inoai-outside-"));
+  try {
+    await writeFile((await bootstrapRuntimeHome(deployment)).envFile, validEnv);
+    const { taskId, runId, home } = await leaveProcessingRun(deployment);
+    await mkdir(join(home, "results"), { recursive: true });
+    await mkdir(join(outside, String(runId)));
+    await symlink(outside, join(home, "results", String(taskId)));
+    const instance = await start(deployment);
+    try {
+      assert.equal((await instance.store.getTaskRun!(runId))?.state, "failed");
+      await assert.rejects(stat(join(outside, String(runId), "result.md")), { code: "ENOENT" });
+    } finally {
+      await instance.release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

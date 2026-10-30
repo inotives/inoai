@@ -12,7 +12,7 @@ import { loadConfiguration } from "./agent-instance/config.js";
 import type { UserRecord } from "./connectors/persistence/sqlite/legacy-database.js";
 import type { MemoryRecord } from "./memory/ports.js";
 import { ConversationWorker } from "./conversation/conversation-worker.js";
-import { TaskRunExecutor } from "./conversation/task-run-executor.js";
+import { TaskRunExecutor, writeTaskRunResult } from "./conversation/task-run-executor.js";
 import { TaskScheduler } from "./conversation/task-scheduler.js";
 import { TaskProposalCards } from "./conversation/task-proposal-cards.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
@@ -84,7 +84,16 @@ export async function start(launchDirectory = process.cwd(), connectDirectory?: 
   try {
     store = storeFactory?.(runtimeHome) ?? createSqliteOperationalStore(openDatabase(runtimeHome));
     const owner = await store.bootstrapOwner(configuration);
-    await store.recoverTaskRuns?.();
+    for (const run of await store.recoverTaskRuns?.() ?? []) {
+      // The runs are already failed in SQLite; a missing or unsafe result folder only loses the result.md.
+      try {
+        const task = await store.getTask?.(run.task_id);
+        if (task) await writeTaskRunResult(runtimeHome.directory, task, { id: run.id, startedAt: run.started_at },
+          { state: "failed", endedAt: run.completed_at, failure: "Interrupted by restart" }, { createFolder: true });
+      } catch (error) {
+        console.error(`Task Run #${run.id} result.md write failed:`, error instanceof Error ? error.message : error);
+      }
+    }
     const pendingIngestion = new Set<Promise<void>>();
     const activeStore = store;
     let cleanup: Promise<void> | undefined;

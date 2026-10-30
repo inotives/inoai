@@ -16,7 +16,7 @@ import {
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
-import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord, OpenTaskProposalCard, TaskEditResult, PendingTaskOwner } from "./legacy-database.js";
+import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord, OpenTaskProposalCard, TaskEditResult, PendingTaskOwner, RecoveredTaskRun } from "./legacy-database.js";
 import type { TaskColumns, TaskSpec } from "../../../tasks/schedule.js";
 
 export interface TaskOperationsStore {
@@ -32,7 +32,7 @@ export interface TaskOperationsStore {
   resumeTask(taskId: number, actor?: string, now?: number): Promise<boolean>;
   cancelTask(taskId: number, now: number, actor?: string): Promise<boolean>;
   bindTaskConversation(taskId: number, binding: { conversationId: string; parentConversationId: string; initiatingExternalMessageId: string }, now: number, actor?: string): Promise<void>;
-  recoverTaskRuns(actor?: string, now?: number): Promise<void>;
+  recoverTaskRuns(actor?: string, now?: number): Promise<RecoveredTaskRun[]>;
   createTaskProposal(proposal: NewTaskProposal, now: number, actor?: string): Promise<TaskProposalRecord>;
   getTaskProposal(id: number): Promise<TaskProposalRecord | undefined>;
   setTaskProposalCardMessage(id: number, cardMessageId: string, now: number, actor?: string): Promise<boolean>;
@@ -76,7 +76,7 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async resumeTask(taskId, actor, now) { return resumeTask(database, taskId, actor, now); },
     async cancelTask(taskId, now, actor) { return cancelTask(database, taskId, now, actor); },
     async bindTaskConversation(taskId, binding, now, actor) { bindTaskConversation(database, taskId, binding, now, actor); },
-    async recoverTaskRuns(actor, now) { recoverTaskRuns(database, actor, now); },
+    async recoverTaskRuns(actor, now) { return recoverTaskRuns(database, actor, now); },
     async createTaskProposal(proposal, now, actor) { return createTaskProposal(database, proposal, now, actor); },
     async getTaskProposal(id) { return getTaskProposal(database, id); },
     async setTaskProposalCardMessage(id, cardMessageId, now, actor) { return setTaskProposalCardMessage(database, id, cardMessageId, now, actor); },
