@@ -13,10 +13,11 @@ import {
   createCommandApproval, setCommandApprovalCard, resolveCommandApproval,
   createTaskProposal, expireOverdueTaskProposals, expireSessionTaskProposals, getTaskProposal, resolveTaskProposal, setTaskProposalCardMessage,
   claimTaskProposal, finishTaskProposal, listOpenTaskProposalCards, closeTaskProposalCard, editTask, createPendingTask,
+  switchTaskSessionProvider,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
-import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord, OpenTaskProposalCard, TaskEditResult, PendingTaskOwner, RecoveredTaskRun } from "./legacy-database.js";
+import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord, OpenTaskProposalCard, TaskEditResult, PendingTaskOwner, RecoveredTaskRun, TaskProviderSwitch } from "./legacy-database.js";
 import type { TaskColumns, TaskSpec } from "../../../tasks/schedule.js";
 
 export interface TaskOperationsStore {
@@ -45,6 +46,8 @@ export interface TaskOperationsStore {
   closeTaskProposalCard(id: number, now: number, actor?: string): Promise<boolean>;
   editTask(taskId: number, spec: TaskSpec, now: number, actor: string): Promise<TaskEditResult>;
   createPendingTask(owner: PendingTaskOwner, columns: TaskColumns, actor: string): Promise<TaskRecord>;
+  /** Moves an active Task Session to another agent provider with a fresh pending Agent Session ID; false if it already moved. */
+  switchTaskSessionProvider(sessionId: number, change: TaskProviderSwitch, now: number, actor?: string): Promise<boolean>;
 }
 
 export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore {
@@ -89,6 +92,7 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async closeTaskProposalCard(id, now, actor) { return closeTaskProposalCard(database, id, now, actor); },
     async editTask(taskId, spec, now, actor) { return editTask(database, taskId, spec, now, actor); },
     async createPendingTask(owner, columns, actor) { return createPendingTask(database, owner, columns, actor); },
+    async switchTaskSessionProvider(sessionId, change, now, actor) { return switchTaskSessionProvider(database, sessionId, change, now, actor); },
     async claimLegacyApprovalNotice(id) { return claimLegacyApprovalNotice(database, id); },
     async resolveLegacyApprovalNotice(id, messageId) { resolveLegacyApprovalNotice(database, id, messageId); },
     async recoverStaleWork(actor = "startup-recovery") {

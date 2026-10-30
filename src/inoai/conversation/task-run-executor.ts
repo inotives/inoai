@@ -109,10 +109,18 @@ export class TaskRunExecutor {
       const folder: RunFolder = { task, output, relativeOutput };
       active.folder = folder;
       if (active.cancelled) return;
-      const session = await this.store.getSession(task.session_id);
+      let session = await this.store.getSession(task.session_id);
+      if (session?.state === "active" && session.agent_provider !== this.agentProvider) {
+        // Task runs follow the active provider: the Task's own Session gets a fresh pending id under it.
+        // If another start switched it first, the re-read below continues with the current state.
+        await this.store.switchTaskSessionProvider(session.id, { taskId, runId, fromProvider: session.agent_provider,
+          toProvider: this.agentProvider }, this.now(), "task-runtime");
+        session = await this.store.getSession(task.session_id);
+      }
       if (!session || session.state !== "active" || session.agent_provider !== this.agentProvider) {
         throw new TaskRunError("Task Agent Session unavailable");
       }
+      const carryover = await this.carryover(task, session.id);
       conversationId ??= await this.openTaskThread(task, runId);
       active.sessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.store, this.runtime, session.id, this.home)
@@ -122,6 +130,7 @@ export class TaskRunExecutor {
         ...(task.title ? [`Task title: ${task.title}`] : []),
         `Task goal: ${task.goal}`,
         ...(task.output_spec ? [`Expected output: ${task.output_spec}`] : []),
+        ...(carryover ? [carryover] : []),
         messages.length ? `New Task thread messages:\n${messages.map((message) => message.body).join("\n\n")}` : "No new Task thread messages.",
         `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Do not create result.md; inoai writes it with your reply. Reply with a concise completion summary.`,
       ].join("\n\n");
@@ -193,6 +202,28 @@ export class TaskRunExecutor {
         detail: `task=${task.id}; run=${runId}` }, "task-runtime").catch(() => undefined);
       return undefined;
     }
+  }
+
+  /**
+   * Builds the carryover for runs after a provider switch until one of them completes: the latest completed run's
+   * answer and the Task thread so far. The latest `task_provider_switched` event names the run that switched; a
+   * completed run with that id or later means the new agent session already has the context.
+   */
+  private async carryover(task: TaskRecord, sessionId: number): Promise<string | undefined> {
+    const switched = (await this.store.listEvents(sessionId)).filter((event) => event.event_type === "task_provider_switched").at(-1);
+    const switchRunId = Number(switched?.detail?.match(/^task=\d+; run=(\d+);/)?.[1]);
+    if (!Number.isSafeInteger(switchRunId)) return undefined;
+    const runs = await this.store.listTaskRuns(task.id);
+    if (runs.some((run) => run.id >= switchRunId && run.state === "completed")) return undefined;
+    const previous = runs.filter((run) => run.state === "completed").at(-1);
+    const answer = previous ? await readRunAnswer(this.home.directory, task.id, previous.id) : undefined;
+    const thread = keepNewest((await this.store.listMessages(sessionId))
+      .filter((message) => message.direction === "user" && message.state === "completed").map((message) => message.body));
+    return [
+      "Carryover: earlier runs of this Task used another agent provider; this run continues in a fresh agent session.",
+      ...(answer ? [`Previous run answer:\n${answer}`] : []),
+      ...(thread ? [`Task thread messages so far:\n${thread}`] : []),
+    ].join("\n\n");
   }
 
   /** Writes a cancelled result.md when SQLite shows the run cancelled. Shutdown leaves the run processing for `stop`. */
@@ -267,6 +298,58 @@ export async function writeTaskRunResult(homeDirectory: string, task: TaskRecord
     await handle.writeFile(body, "utf8");
   } finally { await handle.close(); }
   return files;
+}
+
+const carryoverAnswerLimit = 4_000;
+const carryoverThreadLimit = 8_000;
+const carryoverResultReadLimit = 1024 * 1024;
+
+/**
+ * Returns the `## Answer` text of a completed run's result.md, at most 4,000 characters, or undefined. Every folder must
+ * be a real directory inside results/; the file must be a regular, single-link, non-FIFO file of at most 1 MiB.
+ */
+async function readRunAnswer(homeDirectory: string, taskId: number, runId: number): Promise<string | undefined> {
+  try {
+    const results = join(homeDirectory, "results");
+    const output = join(results, String(taskId), String(runId));
+    for (const directory of [results, dirname(output), output]) {
+      const info = await lstat(directory);
+      if (!info.isDirectory() || info.isSymbolicLink()) return undefined;
+    }
+    if (!(await realpath(output)).startsWith(`${await realpath(results)}${sep}`)) return undefined;
+    // O_NONBLOCK keeps a FIFO planted at result.md from blocking the open; the fstat check then refuses it.
+    const handle = await open(join(output, "result.md"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.nlink !== 1 || info.size > carryoverResultReadLimit) return undefined;
+      const buffer = Buffer.alloc(info.size);
+      const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
+      const bytes = buffer.subarray(0, bytesRead);
+      if (bytes.includes(0)) return undefined;
+      const content = bytes.toString("utf8");
+      const heading = "\n\n## Answer\n\n";
+      const start = content.indexOf(heading);
+      const end = content.lastIndexOf("\n\n## Files\n\n");
+      if (!content.includes("\n- State: completed\n") || start < 0 || end < start + heading.length) return undefined;
+      return content.slice(start + heading.length, end).trim().slice(0, carryoverAnswerLimit) || undefined;
+    } finally { await handle.close(); }
+  } catch { return undefined; }
+}
+
+/** Joins whole messages, newest kept, within 8,000 characters; an oversized newest message keeps its end. */
+function keepNewest(bodies: string[]): string | undefined {
+  const kept: string[] = [];
+  let size = 0;
+  for (const body of [...bodies].reverse()) {
+    const cost = body.length + (kept.length ? 2 : 0);
+    if (size + cost > carryoverThreadLimit) {
+      if (!kept.length) kept.push(body.slice(-carryoverThreadLimit));
+      break;
+    }
+    kept.unshift(body);
+    size += cost;
+  }
+  return kept.length ? kept.join("\n\n") : undefined;
 }
 
 function threadName(task: TaskRecord): string {

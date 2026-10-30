@@ -536,3 +536,133 @@ test("writeTaskRunResult creates a missing run folder and refuses a symlinked Ta
     await assert.rejects(access(join(directory, "elsewhere", "8")));
   });
 });
+
+async function withCodexTask(name: string, run: (context: { store: OperationalStore & TaskOperationsStore;
+  instance: Awaited<ReturnType<typeof start>>; sessionId: number; taskId: number }) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), `inoai-task-switch-${name}-`));
+  try {
+    await writeFile((await bootstrapRuntimeHome(directory)).envFile, env);
+    const instance = await start(directory);
+    try {
+      const store = instance.store as OperationalStore & TaskOperationsStore;
+      const session = await store.createSession({ user_id: instance.owner.id, transport: "discord", workspace_id: "guild",
+        parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "starter",
+        agent_provider: "codex", agent_session_id: "codex-thread", project_path: directory });
+      const task = await store.createTask({ goal: "Report", task_type: "recurring", interval_seconds: 3600,
+        conversation_id: "thread", session_id: session.id });
+      await run({ store, instance, sessionId: session.id, taskId: task.id });
+    } finally { await instance.release(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+function steer(store: OperationalStore, instance: Awaited<ReturnType<typeof start>>, sessionId: number, id: string, body: string) {
+  return store.archiveMessage({ session_id: sessionId, transport: "discord", workspace_id: "guild", external_message_id: id,
+    external_author_id: "owner", user_id: instance.owner.id, direction: "user", body, reply_to_external_message_id: null,
+    in_reply_to_message_id: null, state: "completed" });
+}
+
+function claudeRuntime(prompts: string[], calls: string[], options: { failFirst?: boolean } = {}): AgentRuntime {
+  return { ...writingRuntime(prompts, "Claude answer", options.failFirst),
+    createSession: async () => { calls.push("create"); return "claude-session"; },
+    resumeSession: async (id: string) => { calls.push(`resume ${id}`); } };
+}
+
+test("a codex-bound Task runs under claude: switches its Session, records the switch, and carries over context once", async () => {
+  await withCodexTask("carryover", async ({ store, instance, sessionId, taskId }) => {
+    const codexPrompts: string[] = [];
+    const codex = new TaskRunExecutor(store, writingRuntime(codexPrompts, `Codex answer start ${"a".repeat(5000)} tail-marker`),
+      instance.runtimeHome, { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "codex");
+    await steer(store, instance, sessionId, "m1", `oldest-marker ${"o".repeat(3000)}`);
+    await steer(store, instance, sessionId, "m2", `middle-marker ${"m".repeat(3000)}`);
+    await steer(store, instance, sessionId, "m3", `newer-marker ${"n".repeat(3000)}`);
+    assert.equal(await finishRun(store, codex, taskId, 0), "completed");
+    const fresh = await steer(store, instance, sessionId, "m4", "fresh-marker");
+
+    const prompts: string[] = [];
+    const calls: string[] = [];
+    const claude = new TaskRunExecutor(store, claudeRuntime(prompts, calls), instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "claude");
+    assert.equal(await finishRun(store, claude, taskId, 1), "completed");
+    const session = (await store.getSession(sessionId))!;
+    assert.equal(session.agent_provider, "claude");
+    assert.equal(session.agent_session_id, "claude-session");
+    assert.equal(session.updated_by, "runtime:claude");
+    const switched = (await store.listEvents(sessionId)).filter((event) => event.event_type === "task_provider_switched");
+    assert.deepEqual(switched.map((event) => [event.detail, event.created_by]),
+      [[`task=${taskId}; run=2; from=codex; agent_session=codex-thread`, "task-runtime"]]);
+    assert.deepEqual(calls, ["create"]);
+
+    const prompt = prompts[0]!;
+    const answer = prompt.match(/Previous run answer:\n([\s\S]*?)\n\nTask thread messages so far:\n/)?.[1];
+    assert.ok(answer);
+    assert.equal(answer.length, 4000);
+    assert.ok(answer.startsWith("Codex answer start "));
+    assert.doesNotMatch(prompt, /tail-marker/);
+    const thread = prompt.match(/Task thread messages so far:\n([\s\S]*?)\n\nNew Task thread messages:/)?.[1];
+    assert.ok(thread);
+    assert.ok(thread.length <= 8000);
+    // Trimming keeps the newest messages, including those an earlier run already consumed.
+    assert.match(thread, /middle-marker[\s\S]*newer-marker[\s\S]*fresh-marker/);
+    assert.doesNotMatch(prompt, /oldest-marker/);
+    assert.equal((await store.getTask(taskId))?.message_cursor, fresh.message!.id);
+
+    assert.equal(await finishRun(store, claude, taskId, 2), "completed");
+    assert.deepEqual(calls, ["create", "resume claude-session"]);
+    assert.doesNotMatch(prompts[1]!, /Carryover|Previous run answer|Task thread messages so far|Codex answer/);
+    assert.match(prompts[1]!, /No new Task thread messages\./);
+  });
+});
+
+test("a switched run that fails keeps the switch and the next run still gets the carryover", async () => {
+  await withCodexTask("retry", async ({ store, instance, sessionId, taskId }) => {
+    const codex = new TaskRunExecutor(store, writingRuntime([], "Codex answer"), instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, codex, taskId, 0), "completed");
+    const prompts: string[] = [];
+    const calls: string[] = [];
+    const claude = new TaskRunExecutor(store, claudeRuntime(prompts, calls, { failFirst: true }), instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "claude");
+    assert.equal(await finishRun(store, claude, taskId, 1), "failed");
+    assert.equal(await finishRun(store, claude, taskId, 2), "completed");
+    assert.deepEqual(calls, ["create", "resume claude-session"]);
+    assert.match(prompts[0]!, /Previous run answer:\nCodex answer\n/);
+    assert.match(prompts[1]!, /Previous run answer:\nCodex answer\n/);
+    assert.equal((await store.listEvents(sessionId)).filter((event) => event.event_type === "task_provider_switched").length, 1);
+  });
+});
+
+test("an ended codex Task Session still fails under claude and is not switched", async () => {
+  await withCodexTask("ended", async ({ store, instance, sessionId, taskId }) => {
+    assert.equal(await store.resetSession(sessionId, "user:owner"), true);
+    const prompts: string[] = [];
+    const claude = new TaskRunExecutor(store, claudeRuntime(prompts, []), instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "claude");
+    assert.equal(await finishRun(store, claude, taskId, 0), "failed");
+    assert.deepEqual(prompts, []);
+    const result = await readFile(join(instance.runtimeHome.directory, "results", String(taskId), "1", "result.md"), "utf8");
+    assert.match(result, /## Failure\n\nTask Agent Session unavailable\n/);
+    const session = (await store.getSession(sessionId))!;
+    assert.deepEqual([session.agent_provider, session.agent_session_id], ["codex", "codex-thread"]);
+    assert.equal((await store.listEvents(sessionId)).some((event) => event.event_type === "task_provider_switched"), false);
+  });
+});
+
+test("carryover skips a previous result.md that is a symlink and still runs", async () => {
+  await withCodexTask("unsafe", async ({ store, instance, sessionId, taskId }) => {
+    const codex = new TaskRunExecutor(store, writingRuntime([], "Codex answer"), instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, codex, taskId, 0), "completed");
+    await steer(store, instance, sessionId, "m1", "only-message");
+    const result = join(instance.runtimeHome.directory, "results", String(taskId), "1", "result.md");
+    const outside = join(instance.runtimeHome.directory, "outside.md");
+    await writeFile(outside, (await readFile(result, "utf8")).replace("Codex answer", "outside-secret"));
+    await rm(result);
+    await symlink(outside, result);
+    const prompts: string[] = [];
+    const claude = new TaskRunExecutor(store, claudeRuntime(prompts, []), instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "claude");
+    assert.equal(await finishRun(store, claude, taskId, 1), "completed");
+    assert.match(prompts[0]!, /Carryover: [^\n]*\n\nTask thread messages so far:\nonly-message\n/);
+    assert.doesNotMatch(prompts[0]!, /Previous run answer|outside-secret/);
+  });
+});

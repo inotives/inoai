@@ -837,6 +837,30 @@ export function cancelTask(database: DatabaseSync, taskId: number, now: number, 
   }
 }
 
+export type TaskProviderSwitch = { taskId: number; runId: number; fromProvider: string; toProvider: string };
+
+/**
+ * Moves a Task's active Session from `fromProvider` to `toProvider` with a fresh `pending:task:switch:` Agent Session ID
+ * and records a `task_provider_switched` event, in one transaction. Returns false when the Session is no longer active
+ * with `fromProvider`, for example because another run start switched it first.
+ */
+export function switchTaskSessionProvider(database: DatabaseSync, sessionId: number, change: TaskProviderSwitch, now: number,
+  actor = "task-runtime"): boolean {
+  if (!change.toProvider || change.toProvider === change.fromProvider) throw new RangeError("Invalid agent provider switch");
+  return inTransaction(database, () => {
+    const session = database.prepare(`SELECT agent_session_id FROM sessions
+      WHERE id=? AND agent_provider=? AND state='active' AND deleted_at IS NULL`).get(sessionId, change.fromProvider) as { agent_session_id: string } | undefined;
+    if (!session) return false;
+    const changed = database.prepare(`UPDATE sessions SET agent_provider=?,agent_session_id=?,updated_at=?,updated_by=?
+      WHERE id=? AND agent_provider=? AND agent_session_id=? AND state='active' AND deleted_at IS NULL`)
+      .run(change.toProvider, `pending:task:switch:${randomUUID()}`, now, actor, sessionId, change.fromProvider, session.agent_session_id);
+    if (changed.changes !== 1) return false;
+    createEvent(database, { session_id: sessionId, message_id: null, event_type: "task_provider_switched",
+      detail: `task=${change.taskId}; run=${change.runId}; from=${change.fromProvider}; agent_session=${session.agent_session_id}` }, actor);
+    return true;
+  });
+}
+
 export function getTaskProposal(database: DatabaseSync, id: number): TaskProposalRecord | undefined {
   return activeRow<TaskProposalRecord>(database, "SELECT * FROM task_proposals WHERE id=? AND deleted_at IS NULL", id);
 }
