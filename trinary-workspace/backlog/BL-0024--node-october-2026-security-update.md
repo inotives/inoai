@@ -2,10 +2,10 @@
 id: BL-0024
 title: Move to a patched Node.js after the October 2026 security release
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-24T13:20:00Z
 source: human request
-promoted_to: null
+promoted_to: RF-0001
 ---
 
 # BL-0024: Move to a patched Node.js after the October 2026 security release
@@ -25,6 +25,7 @@ The developer machine runs v24.21.0, which is unpatched. `package.json` declares
 ## Discussion
 
 - [2026-10-24] Captured during IP-0004 acceptance; the owner asked whether to do it in this branch or the next one.
+- [2026-10-30] Promoted to RF-0001 (rapid) on branch `chore/node-security-update`. Owner accepted all recommendations: engines `^22.23.4 || ^24.22.1 || >=26.12.1`, `.nvmrc` 26.12.1, `.npmrc` engine-strict, standalone build refuses unpatched Node, `@types/node` stays on 22.
 
 ## Open questions
 
