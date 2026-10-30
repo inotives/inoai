@@ -2,10 +2,10 @@
 id: BL-0019
 title: Single-executable macOS build of the core
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-24T07:00:00Z
 source: owner discussion after IP-0003 (Rust rewrite question)
-promoted_to: null
+promoted_to: PR-31
 ---
 
 # BL-0019: Single-executable macOS build of the core
@@ -43,6 +43,7 @@ None
 ## Discussion
 
 - [2026-10-24] Recheck on `main` at `16b551c`: facts confirmed. Additions: the UI loads an icon stylesheet from `cdn-uicons.flaticon.com` (`src/ui/pages/app-shell.ts:12`), so it needs network access for icons; `pg` is used only by the optional PostgreSQL tools and could be left out of a bundle; README still describes a sibling Electron UI app (see BL-0014).
+- [2026-10-30] Delivered outside the Trinary workflow by PR #31 (commit `b345db0`, "Add standalone CLI for agent deployment"): `npm run build:standalone` bundles with esbuild, injects a SEA blob with postject, and ad-hoc signs with codesign; `npm run test:standalone` verifies it. RF-0001 later fixed its launcher for Node 26. Archived.
 
 ## Open questions
 

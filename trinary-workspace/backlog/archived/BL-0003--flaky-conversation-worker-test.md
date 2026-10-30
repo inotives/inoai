@@ -27,6 +27,7 @@ promoted_to: IP-0002
 ## Discussion
 
 - [2026-10-23] Captured from T-0002 follow-ups.
+- [2026-10-30] Archived: its feature was accepted.
 
 ## Open questions
 

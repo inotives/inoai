@@ -30,6 +30,7 @@ promoted_to: IP-0003
   - Possible extra: stopping a run that is already in progress (needs the running agent).
 
 - [2026-10-23] Promoted to IP-0003 on branch `feat/discord-nl-tasks` (owner: "lets start. create a new branch."). The feature README is now canonical.
+- [2026-10-30] Archived: its feature was accepted.
 
 ## Open questions
 
