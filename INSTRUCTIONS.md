@@ -346,7 +346,7 @@ The in-process scheduler checks for due Tasks at startup and about once per minu
 
 For requested files, the agent is directed to write under the selected runtime home's `results/<task-id>/<run-id>/`. Each run gets a new directory, so earlier output remains. inoai posts the run summary and relative file paths in the Task thread and uploads a copy of each produced file to Discord. If an upload fails, the local file remains and the thread receives its relative path. Keep these files in your runtime-home backup plan; SQLite stores the paths and run history, not the file contents.
 
-A completed or failed run also gets `results/<task-id>/<run-id>/result.md`, written by inoai, once its run folder exists. It holds the run times and state, the instruction, the expected output, the full answer or a safe failure reason, and the list of other files in the run folder. It stays local: inoai does not upload it to Discord. A run that fails before its run folder exists, a run failed by restart recovery, and a cancelled run have no `result.md`.
+A completed, failed, or cancelled run also gets `results/<task-id>/<run-id>/result.md`, written by inoai. It holds the run times and state, the instruction, the expected output, the full answer or a safe failure reason, and the list of other files in the run folder. A run stopped by `/inoai task cancel` gets `State: cancelled` and the note "Cancelled by the owner." A run interrupted by a restart gets `State: failed` with "Interrupted by restart" when the agent next starts. It stays local: inoai does not upload it to Discord. A run that fails before its run folder exists has no `result.md`, and neither does a cancelled or restart-interrupted run whose run folder is unsafe.
 
 ### Tasks from chat
 
@@ -370,7 +370,7 @@ Known limits: a card waiting to be posted is lost if inoai restarts, and its pro
 
 ### Tasks in the UI
 
-Talk to the agent in Discord once before creating tasks from the UI. A UI-created Task copies its user, workspace, and agent provider from the most recent owner session; without one, the UI refuses to create a Task.
+Talk to the agent in Discord once before creating tasks from the UI. A UI-created Task copies its user, workspace, and agent provider from the most recent owner session; without one, the UI refuses to create a Task. Its runs still use the active `AGENT_PROVIDER`.
 
 Open the local UI with `npm start -- ui` (add `--connect-dir .inoai-connect-<name>` for another runtime home), then open the Tasks drawer:
 
@@ -380,7 +380,7 @@ Open the local UI with `npm start -- ui` (add `--connect-dir .inoai-connect-<nam
 - **Pause** stops new runs; a run in progress finishes. **Resume** recalculates the next run from now. A Task created with `/inoai task create` keeps its existing due time.
 - **Cancel** asks for confirmation, then stops all future runs. A run in progress finishes. Unlike `/inoai task cancel`, the UI does not stop the active run.
 - Completed and cancelled Tasks are read-only. Nothing is deleted.
-- Each Task shows its newest 20 runs. Select a run to read its `result.md`.
+- Each Task shows its newest 20 runs. Select a run to read its `result.md`. A cancelled run shows `State: cancelled`; a run interrupted by a restart shows `State: failed` with "Interrupted by restart".
 
 Schedule kinds, all in the Task's time zone:
 
@@ -403,7 +403,7 @@ The UI writes only Tasks. It never reads `.env`, and it hides credential-shaped 
 
 A UI-created Task has no Discord thread unless you set the optional `DISCORD_TASK_CHANNEL_ID` in the runtime home's `.env` to a channel ID (digits only). When it is set, the first run creates a thread named after the Task title in that channel and later run reports go there. The bot needs permission to post and create threads in it. Do not use the `DISCORD_STATUS_CHANNEL_ID` channel: inoai ignores messages in threads of the status channel, so Task thread guidance would be dropped.
 
-A UI-created Task keeps the agent provider it copied when it was created. After any `AGENT_PROVIDER` change, its runs fail with "Task Agent Session unavailable"; talking to the agent does not fix that Task. A Task created after the change but before a new owner session exists also copies the old provider and fails the same way. To fix both cases, talk to the agent in Discord under the new provider, then create the Task again.
+Task runs follow the active `AGENT_PROVIDER` ([ADR 0028](docs/adr/0028-task-runs-follow-active-provider.md)). When a run starts and its Task's session belongs to another provider, inoai moves that session to the active provider and starts a fresh agent session. Until a run completes under the new provider, each run also gets the previous run's answer and the Task thread messages so far, both shortened to a fixed size. The run stays in the same Task thread. You do not need to create the Task again. Chat threads are different: a thread bound to another provider still needs `/inoai reset` or a new thread.
 
 ## Heartbeat Supervisor
 
@@ -621,7 +621,7 @@ All three runtimes share the same queue, archive, and safety rules:
 - At startup, Codex and Claude run a concurrency probe; the Claude probe makes two short, tool-free `haiku` calls that count against your subscription usage. Startup logs which mode is active.
 - Sign-in and usage failures post the runtime's own fixed notice, for example to run `codex login` or `claude /login`.
 - `agent.md` is sent with every Turn, so edits apply from the next Turn, including in existing threads.
-- A thread bound to a different provider is not resumed; its notice offers `/inoai reset` or a new thread. A session the CLI can no longer find fails closed with a notice to run `/inoai reset`, and is never silently recreated.
+- A chat thread bound to a different provider is not resumed; its notice offers `/inoai reset` or a new thread. Task runs instead move their Task's session to the active provider (ADR 0028). A session the CLI can no longer find fails closed with a notice to run `/inoai reset`, and is never silently recreated.
 
 ## Daily Memory Review
 
