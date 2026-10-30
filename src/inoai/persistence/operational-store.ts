@@ -1,6 +1,9 @@
 import type {
   EventRecord,
   ApprovalRecord,
+  MemoryProposalAnswer,
+  MemoryProposalConfirmation,
+  MemoryProposalRecord,
   MemoryRecord,
   MemoryReviewRecord,
   MessageQueueMode,
@@ -8,7 +11,9 @@ import type {
   NewAgentResponse,
   NewEvent,
   NewMemory,
+  NewMemoryProposal,
   NewMemoryReview,
+  NewMemoryUse,
   NewMessage,
   NewSession,
   NewUser,
@@ -72,6 +77,11 @@ function normalize<T extends QueryResultRow>(row: T): T {
     if (key in copy && copy[key] !== null) copy[key] = Number(copy[key]);
   }
   return copy as T;
+}
+
+// PostgreSQL has no Memory kinds; every Memory reads as `topic`.
+function topicMemory(row: MemoryRecord): MemoryRecord {
+  return { ...normalize(row), kind: "topic" };
 }
 
 function rows<T extends QueryResultRow>(result: { rows: T[] }): T[] {
@@ -153,6 +163,16 @@ export interface OperationalStore {
   createMemory(memory: NewMemory, actor?: string): Promise<MemoryRecord>;
   listMemories(): Promise<MemoryRecord[]>;
   softDeleteMemory(id: number, actor?: string): Promise<void>;
+  // Memory proposals and usage records are SQLite only; the PostgreSQL store has none.
+  createMemoryProposal?(proposal: NewMemoryProposal, now: number, actor?: string): Promise<MemoryProposalRecord>;
+  getMemoryProposal?(id: number): Promise<MemoryProposalRecord | undefined>;
+  listPendingMemoryProposals?(now: number): Promise<MemoryProposalRecord[]>;
+  setMemoryProposalCardMessage?(id: number, cardMessageId: string, now: number, actor?: string): Promise<boolean>;
+  confirmMemoryProposal?(id: number, now: number, actor?: string): Promise<MemoryProposalConfirmation>;
+  rejectMemoryProposal?(id: number, now: number, actor?: string): Promise<MemoryProposalAnswer>;
+  expireDueMemoryProposals?(now: number, actor?: string): Promise<MemoryProposalRecord[]>;
+  wasMemoryProposalRejected?(body: string): Promise<boolean>;
+  recordMemoryUses?(uses: NewMemoryUse[], now: number, actor?: string): Promise<number>;
   createMemoryReview(review: NewMemoryReview, actor?: string): Promise<MemoryReviewRecord>;
   completeMemoryReview(id: number, recap: string, actor?: string): Promise<MemoryReviewRecord | undefined>;
   messagesForMemoryReview(sessionId: number): Promise<MessageRecord[]>;
@@ -360,8 +380,8 @@ export class PostgresOperationalStore implements OperationalStore, MemoryOperati
   }
   async retireMemoryReview(id: number, actor = "memory-review-scheduler"): Promise<boolean> { return this.updateOne(`UPDATE ${this.table("memory_reviews")} SET state = 'failed', failure_detail = 'stale_range', updated_at = now(), updated_by = $1, deleted_at = now(), deleted_by = $1 WHERE id = $2 AND deleted_at IS NULL`, [actor, id]); }
   async claimDueMemoryReview(now: number, actor = "memory-review-scheduler"): Promise<MemoryReviewRecord | undefined> { return transaction(this.pool, async (client) => { const row = (await safeQuery<MemoryReviewRecord>(client, `SELECT * FROM ${this.table("memory_reviews")} WHERE state = 'pending' AND next_attempt_at <= to_timestamp($1) AND deleted_at IS NULL ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`, [now]))[0]; if (!row) return undefined; const claimed = (await safeQuery<MemoryReviewRecord>(client, `UPDATE ${this.table("memory_reviews")} SET state = 'processing', started_at = to_timestamp($1), updated_at = now(), updated_by = $2 WHERE id = $3 AND state = 'pending' AND deleted_at IS NULL RETURNING *`, [now, actor, row.id]))[0]; return claimed ? normalize(claimed) : undefined; }); }
-  async createMemory(memory: NewMemory, actor = "system"): Promise<MemoryRecord> { const row = (await safeQuery<MemoryRecord>(this.pool, `INSERT INTO ${this.table("memories")} (body,source_message_id,created_by_user_id,review_id,origin,created_by,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING *`, [memory.body, memory.source_message_id, memory.created_by_user_id, memory.review_id, memory.origin, actor]))[0]!; return normalize(row); }
-  async listMemories(): Promise<MemoryRecord[]> { return (await safeQuery<MemoryRecord>(this.pool, `SELECT * FROM ${this.table("memories")} WHERE state = 'active' AND deleted_at IS NULL ORDER BY id`)).map(normalize); }
+  async createMemory(memory: NewMemory, actor = "system"): Promise<MemoryRecord> { const row = (await safeQuery<MemoryRecord>(this.pool, `INSERT INTO ${this.table("memories")} (body,source_message_id,created_by_user_id,review_id,origin,created_by,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING *`, [memory.body, memory.source_message_id, memory.created_by_user_id, memory.review_id, memory.origin, actor]))[0]!; return topicMemory(row); }
+  async listMemories(): Promise<MemoryRecord[]> { return (await safeQuery<MemoryRecord>(this.pool, `SELECT * FROM ${this.table("memories")} WHERE state = 'active' AND deleted_at IS NULL ORDER BY id`)).map(topicMemory); }
   async softDeleteMemory(id: number, actor = "system"): Promise<void> { await safeQuery(this.pool, `UPDATE ${this.table("memories")} SET state = 'deleted', updated_at = now(), updated_by = $1, deleted_at = now(), deleted_by = $1 WHERE id = $2 AND deleted_at IS NULL`, [actor, id]); }
   async createMemoryReview(review: NewMemoryReview, actor = "system"): Promise<MemoryReviewRecord> {
     return transaction(this.pool, async (client) => {
@@ -386,7 +406,7 @@ export class PostgresOperationalStore implements OperationalStore, MemoryOperati
       const memories = await safeQuery<MemoryRecord>(client, `SELECT * FROM ${this.table("memories")} WHERE state = 'active' AND deleted_at IS NULL ORDER BY id`);
       const recaps = await safeQuery<{ id: number; recap: string }>(client, `SELECT id, recap FROM ${this.table("memory_reviews")} WHERE state = 'completed' AND recap IS NOT NULL AND deleted_at IS NULL ORDER BY completed_at DESC, id DESC`);
       await client.query("COMMIT");
-      return { cursor: Number(cursorRow[0]?.through_message_id ?? 0), review, messages: messages.map(normalize), ownerUserIds: owners.map((row) => Number(row.id)), memories: memories.map(normalize), recaps: recaps.map(normalize) };
+      return { cursor: Number(cursorRow[0]?.through_message_id ?? 0), review, messages: messages.map(normalize), ownerUserIds: owners.map((row) => Number(row.id)), memories: memories.map(topicMemory), recaps: recaps.map(normalize) };
     } catch {
       await client.query("ROLLBACK").catch(() => undefined);
       throw new Error("PostgreSQL operation failed");

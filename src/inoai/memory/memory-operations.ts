@@ -1,4 +1,4 @@
-import type { MemoryOperationsStore, MemoryRecord } from "./ports.js";
+import type { MemoryKind, MemoryOperationsStore, MemoryRecord } from "./ports.js";
 
 /** Manual Memory operations are store-only and safe for CLI or future UI callers. */
 export async function manageMemoryWithStore(
@@ -6,13 +6,14 @@ export async function manageMemoryWithStore(
   operation: "add" | "list" | "delete",
   argument: string | undefined,
   ownerUserId: number | null = null,
+  kind: MemoryKind = "topic",
 ): Promise<MemoryRecord | MemoryRecord[] | void> {
   const actor = ownerUserId === null ? "manual-cli" : `manual-cli:user:${ownerUserId}`;
   if (operation === "list") return store.listMemories();
   if (operation === "add") {
     const body = argument?.trim();
-    if (!body) throw new Error("Usage: inoai memory add <text>");
-    return store.createMemory({ body, source_message_id: null, created_by_user_id: ownerUserId, review_id: null, origin: "manual" }, actor);
+    if (!body) throw new Error("Usage: inoai memory add [--core] <text>");
+    return store.createMemory({ body, source_message_id: null, created_by_user_id: ownerUserId, review_id: null, origin: "manual", kind }, actor);
   }
   const id = Number(argument);
   if (!Number.isSafeInteger(id) || id < 1) throw new Error("Usage: inoai memory delete <id>");

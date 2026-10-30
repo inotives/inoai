@@ -14,6 +14,8 @@ import {
   createTaskProposal, expireOverdueTaskProposals, expireSessionTaskProposals, getTaskProposal, resolveTaskProposal, setTaskProposalCardMessage,
   claimTaskProposal, finishTaskProposal, listOpenTaskProposalCards, closeTaskProposalCard, editTask, createPendingTask,
   switchTaskSessionProvider,
+  createMemoryProposal, getMemoryProposal, listPendingMemoryProposals, setMemoryProposalCardMessage, confirmMemoryProposal,
+  rejectMemoryProposal, expireDueMemoryProposals, wasMemoryProposalRejected, recordMemoryUses,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
@@ -136,6 +138,15 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async createMemory(memory: NewMemory, actor) { return createMemory(database, memory, actor); },
     async listMemories() { return listMemories(database); },
     async softDeleteMemory(id, actor) { softDeleteMemory(database, id, actor); },
+    async createMemoryProposal(proposal, now, actor) { return createMemoryProposal(database, proposal, now, actor); },
+    async getMemoryProposal(id) { return getMemoryProposal(database, id); },
+    async listPendingMemoryProposals(now) { return listPendingMemoryProposals(database, now); },
+    async setMemoryProposalCardMessage(id, cardMessageId, now, actor) { return setMemoryProposalCardMessage(database, id, cardMessageId, now, actor); },
+    async confirmMemoryProposal(id, now, actor) { return confirmMemoryProposal(database, id, now, actor); },
+    async rejectMemoryProposal(id, now, actor) { return rejectMemoryProposal(database, id, now, actor); },
+    async expireDueMemoryProposals(now, actor) { return expireDueMemoryProposals(database, now, actor); },
+    async wasMemoryProposalRejected(body) { return wasMemoryProposalRejected(database, body); },
+    async recordMemoryUses(uses, now, actor) { return recordMemoryUses(database, uses, now, actor); },
     async createMemoryReview(review: NewMemoryReview, actor) { return createMemoryReview(database, review, actor); },
     async completeMemoryReview(id, recap, actor) { return completeMemoryReview(database, id, recap, actor); },
     async messagesForMemoryReview(sessionId) { return messagesForMemoryReview(database, sessionId); },

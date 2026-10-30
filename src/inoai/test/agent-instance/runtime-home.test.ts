@@ -693,7 +693,20 @@ test("Memory CLI list, add, and delete work under a live runtime lock", async ()
 
     const invalid = await runCli(deployment, ["memory", "add", "   ", "--connect-dir", connectDirectory]);
     assert.equal(invalid.code, 1);
-    assert.match(invalid.stderr, /Usage: inoai memory add <text>/);
+    assert.match(invalid.stderr, /Usage: inoai memory add \[--core\] <text>/);
+
+    const core = await runCli(deployment, ["memory", "add", "--core", "Answer in English", "--connect-dir", connectDirectory]);
+    assert.equal(core.code, 0, core.stderr);
+    const coreMemory = JSON.parse(core.stdout) as { id: number; body: string; kind: string; origin: string };
+    assert.deepEqual([coreMemory.body, coreMemory.kind, coreMemory.origin], ["Answer in English", "core", "manual"]);
+    const kinds = await runCli(deployment, ["memory", "list", "--connect-dir", connectDirectory]);
+    assert.equal(kinds.code, 0, kinds.stderr);
+    assert.deepEqual((JSON.parse(kinds.stdout) as Array<{ id: number; kind: string }>).map(({ id, kind }) => [id, kind]),
+      [[added.id, "topic"], [coreMemory.id, "core"]]);
+    const doubleCore = await runCli(deployment, ["memory", "add", "--core", "--core", "--connect-dir", connectDirectory]);
+    assert.equal(doubleCore.code, 1);
+    const softDeleteCore = await runCli(deployment, ["memory", "delete", String(coreMemory.id), "--connect-dir", connectDirectory]);
+    assert.equal(softDeleteCore.code, 0, softDeleteCore.stderr);
 
     const deleted = await runCli(deployment, ["memory", "delete", String(added.id), "--connect-dir", connectDirectory]);
     assert.equal(deleted.code, 0, deleted.stderr);

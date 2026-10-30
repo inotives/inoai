@@ -10,7 +10,7 @@ import { CodexRuntime } from "./connectors/agent-runtime/codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "./connectors/agent-runtime/concurrency-probe.js";
 import { loadConfiguration } from "./agent-instance/config.js";
 import type { UserRecord } from "./connectors/persistence/sqlite/legacy-database.js";
-import type { MemoryRecord } from "./memory/ports.js";
+import type { MemoryKind, MemoryRecord } from "./memory/ports.js";
 import { ConversationWorker } from "./conversation/conversation-worker.js";
 import { TaskRunExecutor, writeTaskRunResult } from "./conversation/task-run-executor.js";
 import { TaskScheduler } from "./conversation/task-scheduler.js";
@@ -429,15 +429,16 @@ export async function startTransport(
   }
 }
 
-export function manageMemory(operation: "add", argument: string, launchDirectory?: string, connectDirectory?: string): Promise<MemoryRecord>;
+export function manageMemory(operation: "add", argument: string, launchDirectory?: string, connectDirectory?: string, kind?: MemoryKind): Promise<MemoryRecord>;
 export function manageMemory(operation: "list", argument: undefined, launchDirectory?: string, connectDirectory?: string): Promise<MemoryRecord[]>;
 export function manageMemory(operation: "delete", argument: string, launchDirectory?: string, connectDirectory?: string): Promise<void>;
-export function manageMemory(operation: "add" | "list" | "delete", argument: string | undefined, launchDirectory?: string, connectDirectory?: string): Promise<MemoryRecord | MemoryRecord[] | void>;
+export function manageMemory(operation: "add" | "list" | "delete", argument: string | undefined, launchDirectory?: string, connectDirectory?: string, kind?: MemoryKind): Promise<MemoryRecord | MemoryRecord[] | void>;
 export async function manageMemory(
   operation: "add" | "list" | "delete",
   argument: string | undefined,
   launchDirectory = process.cwd(),
   connectDirectory?: string,
+  kind: MemoryKind = "topic",
 ): Promise<MemoryRecord | MemoryRecord[] | void> {
   try {
     const runtimeHome = resolveRuntimeHome(launchDirectory, connectDirectory);
@@ -448,13 +449,13 @@ export async function manageMemory(
         if (operation === "list") return manageMemoryWithStore(store, operation, argument);
         const owner = await store.findUser("discord", configuration.discordGuildId, configuration.discordOwnerUserId);
         if (!owner || owner.role !== "owner") throw new Error("Configured Discord owner is missing from the runtime database");
-        return manageMemoryWithStore(store, operation, argument, owner.id);
+        return manageMemoryWithStore(store, operation, argument, owner.id, kind);
       });
     }
 
     const instance = await start(launchDirectory, connectDirectory);
     try {
-      return await manageMemoryWithStore(instance.store, operation, argument, instance.owner.id);
+      return await manageMemoryWithStore(instance.store, operation, argument, instance.owner.id, kind);
     } finally {
       await instance.release();
     }
@@ -491,13 +492,16 @@ export function parseConnectDirectory(args: string[]): string | undefined {
   throw new Error("Usage: inoai [--connect-dir .inoai-connect*]");
 }
 
-function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "delete"; argument: string | undefined; connectDirectory: string | undefined } {
+function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "delete"; argument: string | undefined; connectDirectory: string | undefined; kind: MemoryKind } {
   const connectDirectory = args.length >= 2 && args.at(-2) === "--connect-dir" ? args.at(-1) : undefined;
   const command = connectDirectory === undefined ? args : args.slice(0, -2);
   const [operation, ...values] = command;
-  if ((operation === "add" || operation === "delete") && values.length === 1) return { operation, argument: values[0], connectDirectory };
-  if (operation === "list" && values.length === 0) return { operation, argument: undefined, connectDirectory };
-  throw new Error("Usage: inoai memory <add <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
+  if (operation === "add" && values.length === 2 && values.filter((value) => value === "--core").length === 1) {
+    return { operation, argument: values.find((value) => value !== "--core"), connectDirectory, kind: "core" };
+  }
+  if ((operation === "add" || operation === "delete") && values.length === 1) return { operation, argument: values[0], connectDirectory, kind: "topic" };
+  if (operation === "list" && values.length === 0) return { operation, argument: undefined, connectDirectory, kind: "topic" };
+  throw new Error("Usage: inoai memory <add [--core] <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
 }
 
 function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation; userId: string; displayName?: string; connectDirectory?: string } {
@@ -644,8 +648,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     return;
   }
   if (args[0] === "memory") {
-    const { operation, argument, connectDirectory } = parseMemoryCommand(args.slice(1));
-    const result = await manageMemory(operation, argument, process.cwd(), connectDirectory);
+    const { operation, argument, connectDirectory, kind } = parseMemoryCommand(args.slice(1));
+    const result = await manageMemory(operation, argument, process.cwd(), connectDirectory, kind);
     console.log(JSON.stringify(result));
     return;
   }

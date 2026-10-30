@@ -52,11 +52,11 @@ test("conversation session use case uses runtime and persistence ports", async (
 });
 
 test("memory application use case remains store-only", async () => {
-  const memories: Array<{ id: number; body: string; created_at: number; created_by: string; updated_at: number; updated_by: string; deleted_at: null; deleted_by: null; source_message_id: null; created_by_user_id: number; review_id: null; origin: "manual"; state: "active" }> = [];
+  const memories: Array<{ id: number; body: string; created_at: number; created_by: string; updated_at: number; updated_by: string; deleted_at: null; deleted_by: null; source_message_id: null; created_by_user_id: number; review_id: null; origin: "manual"; state: "active"; kind: "topic" }> = [];
   const store = {
     async listMemories() { return memories; },
     async createMemory(input: { body: string; created_by_user_id: number | null }) {
-      const memory = { id: 1, body: input.body, created_at: 0, created_by: "test", updated_at: 0, updated_by: "test", deleted_at: null, deleted_by: null, source_message_id: null, created_by_user_id: input.created_by_user_id ?? 0, review_id: null, origin: "manual" as const, state: "active" as const };
+      const memory = { id: 1, body: input.body, created_at: 0, created_by: "test", updated_at: 0, updated_by: "test", deleted_at: null, deleted_by: null, source_message_id: null, created_by_user_id: input.created_by_user_id ?? 0, review_id: null, origin: "manual" as const, state: "active" as const, kind: "topic" as const };
       memories.push(memory);
       return memory;
     },
