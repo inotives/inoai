@@ -17,7 +17,7 @@
     "allowlist:add": "npm run build && node dist/index.js allowlist:add",
     "allowlist:disable": "npm run build && node dist/index.js allowlist:disable",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test dist/test/*.test.js dist/platform/*.test.js dist/inoai/test/agent-instance/*.test.js dist/inoai/test/agent-runtime/*.test.js dist/inoai/test/persistence/*.test.js dist/inoai/test/connectors/sqlite/*.test.js dist/inoai/test/connectors/postgres/*.test.js dist/inoai/test/conversation/*.test.js dist/inoai/test/memory/*.test.js dist/inoai/test/heartbeat/*.test.js dist/inoai/test/transport/*.test.js dist/inoai/test/skills/*.test.js dist/inoai/test/tasks/*.test.js dist/ui/test/*.test.js scripts/*.test.mjs",
+    "test": "npm run build && node --test dist/test/*.test.js dist/inoai/test/agent-instance/*.test.js dist/inoai/test/agent-runtime/*.test.js dist/inoai/test/persistence/*.test.js dist/inoai/test/connectors/sqlite/*.test.js dist/inoai/test/connectors/postgres/*.test.js dist/inoai/test/conversation/*.test.js dist/inoai/test/memory/*.test.js dist/inoai/test/heartbeat/*.test.js dist/inoai/test/transport/*.test.js dist/inoai/test/skills/*.test.js dist/inoai/test/tasks/*.test.js dist/ui/test/*.test.js scripts/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "architecture:check": "node scripts/check-source-architecture.mjs",
     "validate": "npm run build && node dist/index.js validate"
@@ -33,5 +33,8 @@
     "discord.js": "^14.27.0",
     "pg": "^8.23.1",
     "skills": "1.7.4"
+  },
+  "allowScripts": {
+    "esbuild": false
   }
 }

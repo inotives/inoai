@@ -599,7 +599,7 @@ processes, and service controls; they do not write the real LaunchAgents folder.
 ```sh
 npm run typecheck
 npm run build
-node --test dist/test/heartbeat*.test.js dist/platform/runtime-home.test.js dist/persistence/sqlite-operational-store.test.js
+node --test dist/inoai/test/heartbeat/*.test.js dist/inoai/test/agent-instance/runtime-home.test.js dist/inoai/test/connectors/sqlite/sqlite-operational-store.test.js
 npm test
 git diff --check
 ```
