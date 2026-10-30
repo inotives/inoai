@@ -79,7 +79,8 @@ export class TaskRunExecutor {
     await active.done;
     const endedAt = this.now();
     if (await this.store.failTaskRun(active.runId, "Interrupted by shutdown", endedAt, "task-runtime") && active.folder) {
-      await this.writeResult(active, active.folder, { state: "failed", endedAt, failure: "Interrupted by shutdown" }).catch(() => undefined);
+      await writeTaskRunResult(this.home.directory, active.folder.task, { id: active.runId, startedAt: active.startedAt },
+        { state: "failed", endedAt, failure: "Interrupted by shutdown" }).catch(() => undefined);
     }
   }
 
@@ -87,6 +88,7 @@ export class TaskRunExecutor {
     const output = join(this.home.directory, "results", String(taskId), String(runId));
     const relativeOutput = `results/${taskId}/${runId}`;
     let conversationId: string | undefined;
+    let ended = false;
     try {
       const task = await this.store.getTask(taskId);
       if (!task) throw new TaskRunError("Task unavailable");
@@ -140,9 +142,11 @@ export class TaskRunExecutor {
       if (active.cancelled) return;
       if (answer === undefined) throw new TaskRunError("Task Run returned no answer");
       const endedAt = this.now();
-      const files = await this.writeResult(active, folder, { state: "completed", endedAt, answer });
+      const files = await writeTaskRunResult(this.home.directory, task, { id: runId, startedAt: active.startedAt },
+        { state: "completed", endedAt, answer });
       const paths = [...files, `${relativeOutput}/result.md`].sort();
       await this.store.completeTaskRun(runId, cursor, paths, endedAt, "task-runtime");
+      ended = true;
       if (!conversationId) return;
       const summary = answer.trim().slice(0, 1200) || "Task Run completed.";
       const report = `Task #${taskId} run #${runId} completed.\n${summary}\n${files.length ? `Files: ${files.join(", ")}` : "No files produced."}`;
@@ -158,10 +162,15 @@ export class TaskRunExecutor {
     } catch (error) {
       const endedAt = this.now();
       if (!active.cancelled && await this.store.failTaskRun(runId, genericFailure, endedAt, "task-runtime")) {
+        ended = true;
         const failure = error instanceof TaskRunError ? error.message : genericFailure;
-        if (active.folder) await this.writeResult(active, active.folder, { state: "failed", endedAt, failure }).catch(() => undefined);
+        if (active.folder) await writeTaskRunResult(this.home.directory, active.folder.task, { id: runId, startedAt: active.startedAt },
+          { state: "failed", endedAt, failure }).catch(() => undefined);
         if (conversationId) await this.transport.sendMessage(conversationId, `Task #${taskId} run #${runId} failed. Check the local archive; it will not retry automatically.`).catch(() => undefined);
       }
+    } finally {
+      // A cancel can land at any point, including after the completed result.md was written; SQLite decides.
+      if (!ended) await this.writeCancelledResult(taskId, active).catch(() => undefined);
     }
   }
 
@@ -186,56 +195,78 @@ export class TaskRunExecutor {
     }
   }
 
-  /** Writes result.md inside the run folder and returns the run's other file paths. */
-  private async writeResult(active: ActiveRun, folder: RunFolder,
-    outcome: { state: "completed" | "failed"; endedAt: number; answer?: string; failure?: string }): Promise<string[]> {
-    const results = join(this.home.directory, "results");
-    for (const directory of [results, dirname(folder.output), folder.output]) {
-      const info = await lstat(directory);
-      if (!info.isDirectory() || info.isSymbolicLink()) throw new TaskRunError("Unsafe results directory");
-    }
-    if (!(await realpath(folder.output)).startsWith(`${await realpath(results)}${sep}`)) throw new TaskRunError("Unsafe results directory");
-    const resultPath = `${folder.relativeOutput}/result.md`;
-    const files = (await artifactPaths(folder.output, folder.relativeOutput)).filter((path) => path !== resultPath);
-    const { task } = folder;
-    const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
-    const body = [
-      `# ${(task.title ?? `Task #${task.id}`).replace(/\s+/g, " ").trim()}`,
-      "",
-      `- Task: #${task.id}`,
-      `- Run: #${active.runId}`,
-      `- State: ${outcome.state}`,
-      `- Started: ${iso(active.startedAt)}`,
-      `- Ended: ${iso(outcome.endedAt)}`,
-      "",
-      "## Instruction",
-      "",
-      task.goal,
-      "",
-      "## Expected output",
-      "",
-      task.output_spec ?? "Not set.",
-      "",
-      outcome.state === "completed" ? "## Answer" : "## Failure",
-      "",
-      outcome.state === "completed" ? outcome.answer ?? "" : outcome.failure ?? genericFailure,
-      "",
-      "## Files",
-      "",
-      ...(files.length ? files.map((path) => `- \`${path}\``) : ["No other files."]),
-      "",
-    ].join("\n");
-    // O_NOFOLLOW refuses a symlink planted at result.md. The file is opened without O_TRUNC and truncated only after
-    // fstat shows a regular file with one link, so a hard link to a file outside results/ is never overwritten.
-    const handle = await open(join(folder.output, "result.md"), constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
-    try {
-      const info = await handle.stat();
-      if (!info.isFile() || info.nlink !== 1) throw new TaskRunError("Unsafe result file");
-      await handle.truncate(0);
-      await handle.writeFile(body, "utf8");
-    } finally { await handle.close(); }
-    return files;
+  /** Writes a cancelled result.md when SQLite shows the run cancelled. Shutdown leaves the run processing for `stop`. */
+  private async writeCancelledResult(taskId: number, active: ActiveRun): Promise<void> {
+    const run = await this.store.getTaskRun(active.runId);
+    if (run?.state !== "cancelled") return;
+    const task = active.folder?.task ?? await this.store.getTask(taskId);
+    if (!task) return;
+    await writeTaskRunResult(this.home.directory, task, { id: run.id, startedAt: run.started_at },
+      { state: "cancelled", endedAt: run.completed_at ?? this.now() }, { createFolder: true });
   }
+}
+
+export type TaskRunOutcome = { state: "completed" | "failed" | "cancelled"; endedAt: number; answer?: string; failure?: string };
+
+/**
+ * Writes result.md inside `results/<task>/<run>` of a runtime home and returns the run's other file paths.
+ * With `createFolder`, a missing run folder is created one level at a time, refusing symlinked or non-directory levels.
+ */
+export async function writeTaskRunResult(homeDirectory: string, task: TaskRecord, run: { id: number; startedAt: number },
+  outcome: TaskRunOutcome, options: { createFolder?: boolean } = {}): Promise<string[]> {
+  const results = join(homeDirectory, "results");
+  const output = join(results, String(task.id), String(run.id));
+  const relativeOutput = `results/${task.id}/${run.id}`;
+  for (const directory of [results, dirname(output), output]) {
+    if (options.createFolder) {
+      await mkdir(directory).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    }
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new TaskRunError("Unsafe results directory");
+  }
+  if (!(await realpath(output)).startsWith(`${await realpath(results)}${sep}`)) throw new TaskRunError("Unsafe results directory");
+  const resultPath = `${relativeOutput}/result.md`;
+  const files = (await artifactPaths(output, relativeOutput)).filter((path) => path !== resultPath);
+  const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
+  const [heading, text] = outcome.state === "completed" ? ["## Answer", outcome.answer ?? ""]
+    : outcome.state === "cancelled" ? ["## Cancellation", "Cancelled by the owner."]
+    : ["## Failure", outcome.failure ?? genericFailure];
+  const body = [
+    `# ${(task.title ?? `Task #${task.id}`).replace(/\s+/g, " ").trim()}`,
+    "",
+    `- Task: #${task.id}`,
+    `- Run: #${run.id}`,
+    `- State: ${outcome.state}`,
+    `- Started: ${iso(run.startedAt)}`,
+    `- Ended: ${iso(outcome.endedAt)}`,
+    "",
+    "## Instruction",
+    "",
+    task.goal,
+    "",
+    "## Expected output",
+    "",
+    task.output_spec ?? "Not set.",
+    "",
+    heading,
+    "",
+    text,
+    "",
+    "## Files",
+    "",
+    ...(files.length ? files.map((path) => `- \`${path}\``) : ["No other files."]),
+    "",
+  ].join("\n");
+  // O_NOFOLLOW refuses a symlink planted at result.md. The file is opened without O_TRUNC and truncated only after
+  // fstat shows a regular file with one link, so a hard link to a file outside results/ is never overwritten.
+  const handle = await open(join(output, "result.md"), constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1) throw new TaskRunError("Unsafe result file");
+    await handle.truncate(0);
+    await handle.writeFile(body, "utf8");
+  } finally { await handle.close(); }
+  return files;
 }
 
 function threadName(task: TaskRecord): string {

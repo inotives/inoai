@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { access, link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { AgentRuntime, RuntimeEvent } from "../../agent-runtime/ports.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { start } from "../../app.js";
-import { TaskRunExecutor } from "../../conversation/task-run-executor.js";
+import { TaskRunExecutor, writeTaskRunResult } from "../../conversation/task-run-executor.js";
 import { ConversationWorker } from "../../conversation/conversation-worker.js";
 import type { TaskOperationsStore } from "../../connectors/persistence/sqlite/operational-store.js";
 import type { OperationalStore } from "../../persistence/operational-store.js";
@@ -480,5 +480,59 @@ test("shutdown during a run writes a failed result.md", async () => {
     assert.equal((await store.listTaskRuns(taskId))[0]?.state, "failed");
     const result = await readFile(join(instance.runtimeHome.directory, "results", "1", "1", "result.md"), "utf8");
     assert.match(result, /- State: failed\n[\s\S]*## Failure\n\nInterrupted by shutdown\n/);
+  });
+});
+
+test("cancel between the completed result.md and completeTaskRun leaves a cancelled result.md", async () => {
+  await withUiTask("cancel-race", async ({ store, instance, taskId }) => {
+    let runner!: TaskRunExecutor;
+    // The owner's cancel lands after result.md says completed and before completeTaskRun commits.
+    const racingStore = { ...store, completeTaskRun: async (...args: Parameters<typeof store.completeTaskRun>) => {
+      assert.equal(await runner.cancel(taskId), true);
+      return store.completeTaskRun(...args);
+    } };
+    runner = new TaskRunExecutor(racingStore, writingRuntime([], "Done"), instance.runtimeHome, recordingTransport([]),
+      { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await runner.start(taskId), "started");
+    await until(async () => (await store.listTaskRuns(taskId))[0]?.state !== "processing");
+    await runner.stop();
+    assert.equal((await store.listTaskRuns(taskId))[0]?.state, "cancelled");
+    const result = await readFile(join(instance.runtimeHome.directory, "results", "1", "1", "result.md"), "utf8");
+    assert.match(result, /- State: cancelled\n[\s\S]*## Cancellation\n\nCancelled by the owner\.\n/);
+    assert.doesNotMatch(result, /## Answer/);
+  });
+});
+
+test("cancel during a turn writes a cancelled result.md", async () => {
+  await withUiTask("cancel-turn", async ({ store, instance, sessionId, taskId }) => {
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => { finish = resolve; });
+    const runtime: AgentRuntime = { ...writingRuntime([], "Done"), cancel: async () => { finish(); },
+      async *runTurn(): AsyncIterable<RuntimeEvent> { await blocked; yield { type: "answer", text: "Too late" }; } };
+    const runner = new TaskRunExecutor(store, runtime, instance.runtimeHome, recordingTransport([]),
+      { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await runner.start(taskId), "started");
+    await until(async () => (await store.getSession(sessionId))?.agent_session_id === "runtime-session");
+    assert.equal(await runner.cancel(taskId), true);
+    await runner.stop();
+    assert.equal((await store.listTaskRuns(taskId))[0]?.state, "cancelled");
+    const result = await readFile(join(instance.runtimeHome.directory, "results", "1", "1", "result.md"), "utf8");
+    assert.match(result, /- State: cancelled\n[\s\S]*## Cancellation\n\nCancelled by the owner\.\n\n## Files\n/);
+  });
+});
+
+test("writeTaskRunResult creates a missing run folder and refuses a symlinked Task folder", async () => {
+  await withUiTask("create-folder", async ({ store, instance, taskId, directory }) => {
+    const task = (await store.getTask(taskId))!;
+    const home = instance.runtimeHome.directory;
+    assert.deepEqual(await writeTaskRunResult(home, task, { id: 7, startedAt: 1_800_000_000 },
+      { state: "cancelled", endedAt: 1_800_000_060 }, { createFolder: true }), []);
+    assert.match(await readFile(join(home, "results", "1", "7", "result.md"), "utf8"), /- Run: #7\n- State: cancelled\n/);
+    await mkdir(join(directory, "elsewhere"));
+    await rm(join(home, "results", "1"), { recursive: true });
+    await symlink(join(directory, "elsewhere"), join(home, "results", "1"));
+    await assert.rejects(writeTaskRunResult(home, task, { id: 8, startedAt: 1_800_000_000 },
+      { state: "cancelled", endedAt: 1_800_000_060 }, { createFolder: true }), /Unsafe results directory/);
+    await assert.rejects(access(join(directory, "elsewhere", "8")));
   });
 });
