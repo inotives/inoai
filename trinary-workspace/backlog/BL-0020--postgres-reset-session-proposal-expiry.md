@@ -22,6 +22,7 @@ The PostgreSQL adapter's `resetSession` (`src/inoai/persistence/operational-stor
 
 None
 - [2026-10-30] IP-0005 T-0003 reviewer: the PostgreSQL adapter also does not implement `recoverTaskRuns`, which now returns the recovered runs so startup can write their result.md. Add both if PostgreSQL ever runs Tasks.
+- [2026-10-30] IP-0006 adds SQLite-only Memory kinds, `memory_proposals`, and `memory_uses`. The PostgreSQL store treats every Memory as `topic` and has no proposals or usage records.
 
 ## Open questions
 
