@@ -2,10 +2,10 @@
 id: BL-0013
 title: UI task edit and run history hardening
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-23T15:50:00Z
 source: IP-0002 T-0005 reviewer handoffs 1–2 and worker handoffs 1–2
-promoted_to: null
+promoted_to: IP-0005
 ---
 
 # BL-0013: UI task edit and run history hardening
@@ -25,7 +25,7 @@ Follow-ups from the IP-0002 Tasks drawer:
 
 ## Discussion
 
-None
+- [2026-10-30] Promoted to IP-0005 (Task run reliability) on branch `feat/task-run-reliability`. The feature README is canonical from now on.
 
 ## Open questions
 

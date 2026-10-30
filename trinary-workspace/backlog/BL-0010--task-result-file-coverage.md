@@ -2,10 +2,10 @@
 id: BL-0010
 title: result.md for cancelled and recovered Task Runs
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-23T15:08:00Z
 source: IP-0002 T-0003 reviewer handoffs 1–3
-promoted_to: null
+promoted_to: IP-0005
 ---
 
 # BL-0010: result.md for cancelled and recovered Task Runs
@@ -30,7 +30,7 @@ IP-0002 T-0003 writes `results/<task>/<run>/result.md` for completed and failed 
 
 ## Discussion
 
-None
+- [2026-10-30] Promoted to IP-0005 (Task run reliability) on branch `feat/task-run-reliability`. The feature README is canonical from now on.
 
 ## Open questions
 

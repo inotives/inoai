@@ -317,3 +317,33 @@ test("resume and restart recovery recalculate scheduled Tasks from their schedul
   assert.equal(row?.state, "completed");
   assert.equal(row?.next_due_at, null);
 });
+
+test("switchTaskSessionProvider moves an active Session once and records one event", async (t) => {
+  const { home, store, session } = await fixture(t);
+  const task = await store.createTask({ goal: "write report", task_type: "one_time", conversation_id: "thread", session_id: session.id });
+  const change = { taskId: task.id, runId: 4, fromProvider: "codex", toProvider: "claude" };
+  // A second connection to the same home competes the way another process would.
+  const other = createSqliteOperationalStore(openDatabase(home));
+  try {
+    const outcomes = await Promise.all([store.switchTaskSessionProvider(session.id, change, 1500, "task-runtime"),
+      other.switchTaskSessionProvider(session.id, change, 1501, "task-runtime"),
+      store.switchTaskSessionProvider(session.id, change, 1502, "task-runtime")]);
+    assert.deepEqual(outcomes.filter(Boolean).length, 1);
+  } finally { await other.close(); }
+  const switched = (await store.getSession(session.id))!;
+  assert.equal(switched.agent_provider, "claude");
+  assert.match(switched.agent_session_id, /^pending:task:switch:[0-9a-f-]{36}$/);
+  assert.equal(switched.updated_by, "task-runtime");
+  assert.equal(switched.state, "active");
+  assert.equal(switched.created_by, "session:test");
+  const events = (await store.listEvents(session.id)).filter((event) => event.event_type === "task_provider_switched");
+  assert.deepEqual(events.map((event) => event.detail), [`task=${task.id}; run=4; from=codex; agent_session=agent-session`]);
+
+  // Switching back gives another fresh id, so the (agent_provider, agent_session_id) index stays satisfied.
+  assert.equal(await store.switchTaskSessionProvider(session.id, { ...change, fromProvider: "claude", toProvider: "codex" }, 1600), true);
+  assert.notEqual((await store.getSession(session.id))!.agent_session_id, switched.agent_session_id);
+  assert.equal(await store.resetSession(session.id, "user:owner"), true);
+  assert.equal(await store.switchTaskSessionProvider(session.id, { ...change, fromProvider: "codex", toProvider: "claude" }, 1700), false);
+  assert.equal((await store.getSession(session.id))!.agent_provider, "codex");
+  assert.equal((await store.listEvents(session.id)).filter((event) => event.event_type === "task_provider_switched").length, 2);
+});

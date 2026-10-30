@@ -319,8 +319,9 @@ type ResultFile = { text: string | null; note: string | null; bytes: number };
 
 // Reads results/<task>/<run>/result.md. Every folder on the path must be a real
 // directory inside results/, and the file is opened with O_NOFOLLOW, so a
-// symlink is refused. Files over 64 KB are not read.
-async function readResultFile(home: RuntimeHome, taskId: number, runId: number, budget: number): Promise<ResultFile> {
+// symlink is refused. Files over 64 KB are not read. `resultsReal` is the
+// realpath of results/, resolved once per UI data request (null if missing).
+async function readResultFile(home: RuntimeHome, resultsReal: string | null, taskId: number, runId: number, budget: number): Promise<ResultFile> {
   const results = join(home.directory, "results");
   const folders = [results, join(results, String(taskId)), join(results, String(taskId), String(runId))];
   try {
@@ -328,13 +329,15 @@ async function readResultFile(home: RuntimeHome, taskId: number, runId: number, 
       const info = await lstat(folder);
       if (info.isSymbolicLink() || !info.isDirectory()) return { text: null, note: "result.md is unavailable", bytes: 0 };
     }
-    if (!(await realpath(folders[2]!)).startsWith(`${await realpath(results)}${sep}`)) return { text: null, note: "result.md is unavailable", bytes: 0 };
+    if (resultsReal === null) return { text: null, note: "No result.md", bytes: 0 };
+    if (!(await realpath(folders[2]!)).startsWith(`${resultsReal}${sep}`)) return { text: null, note: "result.md is unavailable", bytes: 0 };
   } catch {
     return { text: null, note: "No result.md", bytes: 0 };
   }
+  const file = join(folders[2]!, "result.md");
   let handle;
   try {
-    handle = await open(join(folders[2]!, "result.md"), constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (error) {
     return { text: null, note: (error as NodeJS.ErrnoException).code === "ENOENT" ? "No result.md" : "result.md is unavailable", bytes: 0 };
   }
@@ -342,6 +345,9 @@ async function readResultFile(home: RuntimeHome, taskId: number, runId: number, 
     const info = await handle.stat();
     // A hard link could point at a file outside results/, such as the runtime home's env file.
     if (!info.isFile() || info.nlink !== 1) return { text: null, note: "result.md is unavailable", bytes: 0 };
+    // The opened file must still be the file at the checked path; a swap after the checks is refused.
+    const checked = await lstat(file).catch(() => null);
+    if (!checked || checked.dev !== info.dev || checked.ino !== info.ino) return { text: null, note: "result.md is unavailable", bytes: 0 };
     if (info.size > RESULT_TEXT_LIMIT) return { text: null, note: "result.md is larger than 64 KB", bytes: 0 };
     if (info.size > budget) return { text: null, note: "result.md not loaded: too many results in one view", bytes: 0 };
     const buffer = Buffer.alloc(info.size);
@@ -357,8 +363,9 @@ async function readResultFile(home: RuntimeHome, taskId: number, runId: number, 
 async function loadTaskRuns(home: RuntimeHome, rows: RunRow[]): Promise<UiTaskRun[]> {
   let budget = RESULT_TOTAL_LIMIT;
   const runs: UiTaskRun[] = [];
+  const resultsReal = rows.length ? await realpath(join(home.directory, "results")).catch(() => null) : null;
   for (const row of rows) {
-    const file = row.state === "processing" ? { text: null, note: "Run in progress", bytes: 0 } : await readResultFile(home, row.taskId, row.id, budget);
+    const file = row.state === "processing" ? { text: null, note: "Run in progress", bytes: 0 } : await readResultFile(home, resultsReal, row.taskId, row.id, budget);
     budget -= file.bytes;
     runs.push({ id: row.id, taskId: row.taskId, state: row.state, startedAt: timestamp(row.startedAt), completedAt: timestamp(row.completedAt),
       failureDetail: row.failureDetail === null ? null : redact(row.failureDetail), result: file.text, resultNote: file.note });

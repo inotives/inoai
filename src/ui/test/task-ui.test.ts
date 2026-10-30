@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import fsPromises, { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import test from "node:test";
 import { bootstrapRuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
 import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
 import { nextRunAt, type TaskSpec } from "../../inoai/tasks/schedule.js";
+import { loadUiData } from "../api/read-model.js";
 import { renderAppShell } from "../pages/app-shell.js";
 import { launchUi, uiTokenHeader } from "../server.js";
 
@@ -229,6 +231,10 @@ test("task form and controls work end to end against the UI server on a demo hom
     const blocked = await client.saveTask(shown, unchanged);
     assert.deepEqual([blocked.ok, blocked.status, Object.keys(blocked.fields!)], [false, 0, ["instruction"]]);
     assert.equal(calls.length, callsBefore, "no PATCH is sent");
+    // Text kept around the placeholder is refused too, not only the whole prefill.
+    const prefixed = await client.saveTask(shown, { ...unchanged, instruction: "Also check retries. " + shown.goal });
+    assert.deepEqual([prefixed.ok, prefixed.status, Object.keys(prefixed.fields!)], [false, 0, ["instruction"]]);
+    assert.equal(calls.length, callsBefore, "no PATCH is sent for an edited prefix");
     const saved = await client.saveTask(shown, { ...unchanged, instruction: raw });
     assert.deepEqual([saved.ok, calls.at(-1)!.method], [true, "PATCH"]);
     const stored = new DatabaseSync(home.databaseFile, { readOnly: true });
@@ -240,6 +246,84 @@ test("task form and controls work end to end against the UI server on a demo hom
   } finally {
     await new Promise<void>((resolve) => ui.server.close(() => resolve()));
     await chmod(home.envFile, 0o600);
+    await rm(deploymentDirectory, { recursive: true, force: true });
+  }
+});
+
+// Runs a slice of the page script between two markers with a minimal DOM stub.
+function pageHelpers(html: string) {
+  const script = pageScript(html);
+  const slice = (from: string, to: string) => {
+    const start = script.indexOf(from), end = script.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, `page has ${from}`);
+    return script.slice(start, end);
+  };
+  class Node { tag = ""; className = ""; children: unknown[] = []; text = ""; style = { cssText: "" };
+    append(...kids: unknown[]) { for (const kid of kids) { if (kid instanceof Node) this.children.push(kid); this.text += kid instanceof Node ? kid.text : String(kid); } }
+    setAttribute() {} addEventListener() {} }
+  const document = { createElement: (tag: string) => Object.assign(new Node(), { tag }) };
+  const source = [slice("const HOUR = ", "\n"), slice("const h = (tag", "const pill"), slice("const empty = ", "\n"), slice("const NEWLINE = ", "// Skill drill-in")].join("\n");
+  return new Function("document", "Node", `${source}\nreturn { when, markdown };`)(document, Node) as {
+    when: (iso: string) => string; markdown: (source: string, keepTitle?: boolean, emptyText?: string) => { className: string; text: string } };
+}
+
+test("result.md that renders to nothing is not called agent.md, and future times show the date", () => {
+  const html = renderAppShell("ab".repeat(32));
+  const { when, markdown } = pageHelpers(html);
+  const frontMatterOnly = markdown("---\nstate: completed\n---\n", true, "result.md has no text to show");
+  assert.deepEqual([frontMatterOnly.className, frontMatterOnly.text], ["empty", "result.md has no text to show"]);
+  assert.match(pageScript(html), /markdown\(selected\.result, true, 'result\.md has no text to show'\)/, "the run viewer passes its own empty text");
+  assert.equal(markdown("").text, "agent.md is empty", "agent.md keeps its message");
+  const recent = when(new Date(Date.now() - 60_000).toISOString());
+  assert.match(recent, /^\d\d:\d\d$/, "a recent past time shows only the clock");
+  const future = new Date(Date.now() + 3 * 86_400_000);
+  const shown = when(future.toISOString());
+  assert.equal(shown, `${future.toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${future.toTimeString().slice(0, 5)}`);
+});
+
+test("result.md swapped after it is opened is refused, and results/ is resolved once per request", async () => {
+  const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-result-swap-"));
+  const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-demo");
+  const database = openDatabase(home);
+  database.prepare("INSERT INTO users (transport, workspace_id, external_user_id) VALUES ('discord', 'w', 'owner')").run();
+  database.prepare("INSERT INTO sessions (user_id, transport, workspace_id, parent_conversation_id, conversation_id, initiating_external_message_id, agent_provider, agent_session_id, project_path) VALUES (1, 'discord', 'w', 'p', 'c1', 'e1', 'codex', 's1', ?)").run(deploymentDirectory);
+  database.prepare("INSERT INTO tasks (goal, task_type, interval_seconds, state, conversation_id, session_id, next_due_at) VALUES ('Report', 'recurring', 3600, 'active', 'c1', 1, 2000000000)").run();
+  const run = database.prepare("INSERT INTO task_runs (task_id, state, started_at, completed_at) VALUES (1, 'completed', ?, ?)");
+  run.run(100, 110);
+  run.run(200, 210);
+  database.close();
+  const results = join(home.directory, "results");
+  const swapped = join(results, "1", "2", "result.md");
+  for (const runId of [1, 2]) {
+    await mkdir(join(results, "1", String(runId)), { recursive: true });
+    await writeFile(join(results, "1", String(runId), "result.md"), `run ${runId} text\n`, "utf8");
+  }
+  const original = { lstat: fsPromises.lstat, realpath: fsPromises.realpath };
+  let swaps = 0, resultsRealpaths = 0;
+  // Replaces run 2's result.md with another file right after it was opened.
+  fsPromises.lstat = (async (path: any, ...rest: any[]) => {
+    if (String(path) === swapped && swaps === 0) {
+      swaps += 1;
+      await rename(swapped, `${swapped}.old`);
+      await writeFile(swapped, "swapped in\n", "utf8");
+    }
+    return (original.lstat as any)(path, ...rest);
+  }) as typeof fsPromises.lstat;
+  fsPromises.realpath = (async (path: any, ...rest: any[]) => {
+    if (String(path) === results) resultsRealpaths += 1;
+    return (original.realpath as any)(path, ...rest);
+  }) as typeof fsPromises.realpath;
+  syncBuiltinESMExports();
+  try {
+    const data = await loadUiData(home);
+    const byId = new Map(data.taskRuns.map((x) => [x.id, x]));
+    assert.equal(swaps, 1);
+    assert.deepEqual([byId.get(2)?.result, byId.get(2)?.resultNote], [null, "result.md is unavailable"]);
+    assert.deepEqual([byId.get(1)?.result, byId.get(1)?.resultNote], ["run 1 text\n", null]);
+    assert.equal(resultsRealpaths, 1, "results/ is resolved once for both runs");
+  } finally {
+    Object.assign(fsPromises, original);
+    syncBuiltinESMExports();
     await rm(deploymentDirectory, { recursive: true, force: true });
   }
 });

@@ -21,6 +21,7 @@ The PostgreSQL adapter's `resetSession` (`src/inoai/persistence/operational-stor
 ## Discussion
 
 None
+- [2026-10-30] IP-0005 T-0003 reviewer: the PostgreSQL adapter also does not implement `recoverTaskRuns`, which now returns the recovered runs so startup can write their result.md. Add both if PostgreSQL ever runs Tasks.
 
 ## Open questions
 

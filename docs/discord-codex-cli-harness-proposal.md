@@ -115,7 +115,7 @@ The Claude adapter spawns the owner's installed `claude -p --output-format strea
 - At startup inoai asks the CLI which credential it will use and refuses to start unless it will use the interactive subscription login (`/login`); an API key, auth token, `CLAUDE_CODE_OAUTH_TOKEN`, `apiKeyHelper`, cloud provider, or Anthropic profile causes refusal. It never edits the owner's shell, settings, or credentials.
 - Anthropic's Agent SDK documentation states that third-party developers may not offer claude.ai login for their products without approval. inoai offers no login: each owner runs it on their own machine with their own locally signed-in CLI.
 - Claude permission prompts fail closed exactly like Codex approval requests ([ADR 0007](adr/0007-claude-matches-codex-fail-closed-approvals.md)).
-- A Session bound to a different provider than the runtime home's current `AGENT_PROVIDER` is not resumed; the owner uses `/inoai reset` or a new thread.
+- A chat Session bound to a different provider than the runtime home's current `AGENT_PROVIDER` is not resumed; the owner uses `/inoai reset` or a new thread. A Task Run moves its Task's Session to the current provider instead ([ADR 0028](adr/0028-task-runs-follow-active-provider.md)).
 
 ### OpenCode runtime (Phase 5b)
 

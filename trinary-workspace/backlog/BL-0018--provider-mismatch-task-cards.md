@@ -2,10 +2,10 @@
 id: BL-0018
 title: Task cards allow actions on Tasks bound to another agent provider
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-24T06:15:00Z
 source: IP-0003 live owner check
-promoted_to: null
+promoted_to: IP-0005
 ---
 
 # BL-0018: Task cards allow actions on Tasks bound to another agent provider
@@ -48,6 +48,7 @@ Each Task is bound to the Agent Session it was created in, including its `agent_
   - Rejected alternatives: a fresh CLI session on every run (loses continuity every time); only warning or refusing (the current fix ideas; safe but keeps Tasks provider-bound).
   - Keep normal chat threads as they are: a thread bound to another provider still asks for `/inoai reset`, because chat context lives in the CLI session.
   - Needs its own feature and an ADR, because it changes Task run behaviour.
+- [2026-10-30] Promoted to IP-0005 (Task run reliability) on branch `feat/task-run-reliability`. The feature README is canonical from now on.
 
 ## Open questions
 

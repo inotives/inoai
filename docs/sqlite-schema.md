@@ -295,7 +295,7 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - Daily scheduling uses Events rather than new tables: one `memory_review_cycle` Event per local date, `memory_review_deferred` when chat preempts a review (five per review per day at most), and `memory_review_skipped` for a runtime without review support. Reviews may update or delete only `origin = review` Memory; dropped actions are recorded as non-secret `ignored` outcomes.
 - `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history.
 - `tasks` binds one bounded goal to its Conversation and Agent Session. `goal` holds the instruction. A legacy Task (`schedule_kind` NULL, created by `/inoai task create`) keeps its earlier behaviour: a one-time Task has no interval or automatic due time, and a recurring interval uses whole hours stored as seconds, with the first due time one interval after creation. A scheduled Task (`schedule_kind` set) follows the rules in [Task schedules](#task-schedules). The cursor is the newest archived message consumed by the Task.
-- `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
+- `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. `start()` runs this recovery (`recoverTaskRuns`) after it takes the Runtime Home Lock and bootstraps the owner; `openDatabase` no longer does. Recovery returns the runs it failed, and `start()` writes their `result.md` (see [Result file](#result-file)). It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
 - `task_proposals` holds a Task create, edit, or management action that the agent proposed in chat, until the owner confirms or cancels it on its Discord card (ADR 0027). It never changes `tasks` by itself. See [Chat-proposed Tasks](#chat-proposed-tasks).
 - `approvals` remains in the schema for compatibility, but V1 creates no new pending approvals or Discord approval controls (ADR 0003). Codex approval requests are declined immediately; only a non-secret outcome Event is stored. On restart, any pending row left by an earlier local build becomes `failed`; legacy summaries and linked agent-authored request bodies are redacted, without changing user-authored Messages. Its saved data is never authority to answer or replay a lost runtime request (ADR 0001).
 
@@ -339,6 +339,8 @@ The UI server creates a placeholder `sessions` row and the Task in one immediate
 - `conversation_id` and `initiating_external_message_id`: `pending:ui:<uuid>`; the Task's `conversation_id` has the same value;
 - `parent_conversation_id`: `pending:ui`;
 - `agent_session_id`: `pending:task:<uuid>`; the first run replaces it when it starts the Agent Session.
+
+A run of any Task may also move the Task's Session to another provider; see [Task Session provider switch](#task-session-provider-switch).
 
 When `DISCORD_TASK_CHANNEL_ID` is unset, a run of a UI-created Task whose `conversation_id` starts with `pending:ui:` makes no Discord calls. A run that has no thread posts no report. When `DISCORD_TASK_CHANNEL_ID` is set, the first run posts a starter message in that channel and opens a thread named after the title. `bindTaskConversation` then updates, in one immediate transaction, `tasks.conversation_id` and the session's `conversation_id`, `parent_conversation_id` (the task channel), and `initiating_external_message_id` (the starter). Each update is guarded on the old `pending:ui:` value and must change exactly one row; otherwise the transaction rolls back. If thread creation fails, the agent deletes the starter and thread when it can, records a `task_thread_failed` Event with detail `task=<id>; run=<id>`, and continues the run without a thread. The IDs stay pending, and the next run tries again.
 
@@ -392,14 +394,31 @@ The created and rejected Events are best effort. The confirmed, cancelled, expir
 
 A confirmed `create` makes its Task with `created_by='discord:owner'`. A confirmed edit, pause, or resume updates the Task as `discord:owner`. A confirmed run now or cancel uses the Task runner, with its own actors, as `/inoai task run` and `/inoai task cancel` do. Without `DISCORD_TASK_CHANNEL_ID`, it creates a Session with `agent_session_id` `pending:task:<thread id>` for a new thread in the conversation's parent channel. With the task channel set, it creates the same `pending:ui:` placeholder Session as a UI-created Task, and the first run binds the thread.
 
+### Task Session provider switch
+
+A Task Run follows the runtime home's `AGENT_PROVIDER` (ADR 0028). When a run starts and its Task's Session is `active`, not deleted, and bound to another provider, `switchTaskSessionProvider` changes the Session in one immediate transaction with actor `task-runtime`:
+
+- It sets `agent_provider` to the active provider, `agent_session_id` to `pending:task:switch:<uuid>`, `updated_at`, and `updated_by`. No row is deleted.
+- The `UPDATE` is guarded on the Session id, the old provider, the old `agent_session_id`, `state='active'`, and `deleted_at IS NULL`. When it matches no row, for example because another run start switched first, nothing changes and the run re-reads the Session.
+- It records a `task_provider_switched` Event on the Session with detail `task=<task id>; run=<run id>; from=<old provider>; agent_session=<old Agent Session ID>`.
+
+The run then starts a fresh Agent Session on the `pending:` id. Carryover detection parses the run id from the latest `task_provider_switched` detail, so the detail format must not change. A run gets carryover until a run of the Task with an id at or after the switching run completes. A Session that is not `active` is not switched; the run fails with "Task Agent Session unavailable". Chat Sessions are never switched.
+
 ### Result file
 
-The agent writes `results/<task-id>/<run-id>/result.md` for every completed and failed run whose run folder was created. This includes runs interrupted by shutdown. These runs get no `result.md`: a run that fails before its folder exists (for example "Task unavailable" or an unsafe `results/` or Task directory), a run failed by startup recovery, a cancelled run, and a run whose `result.md` path is an unsafe link. The file contains:
+The agent writes `results/<task-id>/<run-id>/result.md` for every completed and failed run whose run folder was created. This includes runs interrupted by shutdown. It also writes one for every cancelled run and every run failed by startup recovery; for these it creates a missing `results/`, Task folder, or run folder one level at a time, with the same checks at each level:
+
+- A cancelled run gets `State: cancelled` and a `## Cancellation` section ("Cancelled by the owner.") in place of the answer. SQLite decides: when a cancel lands after the completed `result.md` was written but before the run completed in SQLite, the file is rewritten as cancelled.
+- A run failed by startup recovery gets `State: failed` with the failure "Interrupted by restart". Its end time is the recovery time.
+
+When one of these writes fails, for example because a folder is unsafe, the run gets no `result.md` and its SQLite state stays as is. For a recovered run, startup logs `Task Run #<id> result.md write failed: <message>` and continues.
+
+These runs get no `result.md`: a run that fails before its folder exists (for example "Task unavailable" or an unsafe `results/` or Task directory), and a run whose `result.md` path is an unsafe link. The file contains:
 
 - a heading with the title, or `Task #<id>`;
 - the Task and Run IDs, the state, and the ISO start and end times;
 - the instruction and the expected output (`Not set.` when empty);
-- the full answer, or for a failed run a safe failure reason only;
+- the full answer, for a failed run a safe failure reason only, or for a cancelled run the cancellation note;
 - the list of other files in the run folder.
 
 `results/`, the Task folder, and the run folder must be real directories inside `results/`. The agent opens `result.md` with `O_NOFOLLOW` and writes it only when it is a regular file with one link, so a planted symlink or hard link fails the run instead. `result.md` is not uploaded to Discord and is not listed in the Discord report.

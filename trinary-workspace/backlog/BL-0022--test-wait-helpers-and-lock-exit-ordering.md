@@ -22,6 +22,7 @@ promoted_to: null
 ## Discussion
 
 - [2026-10-24] IP-0004 T-0003 reviewer handoff 1 adds: the "cancel before init" wait in `claude-runtime.test.ts:476` is a bounded `for` loop (200 × 10 ms) that falls through silently; and `calls()` in the fake CLIs parses append-only JSONL, so a read overlapping an append could in theory see a partial line (never observed in 60+ stressed runs).
+- [2026-10-30] IP-0005 T-0003 reviewer: the startup-recovery symlink test in `runtime-home.test.ts` does not assert the `Task Run #<id> result.md write failed` log line; optional test hardening.
 
 ## Open questions
 

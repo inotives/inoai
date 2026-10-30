@@ -10,7 +10,7 @@ import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-d
 import { createUiTask, noSessionMessage, TaskWriteError } from "../api/task-writes.js";
 import { launchUi, uiTokenHeader } from "../server.js";
 
-type Reply = { status: number; body: any; text: string };
+type Reply = { status: number; body: any; text: string; allow?: string };
 type Send = (method: string, path: string, body?: unknown, headers?: Record<string, string | undefined>) => Promise<Reply>;
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
@@ -28,7 +28,7 @@ function httpRequest(port: number, method: string, path: string, headers: Record
       reply.on("end", () => {
         let body: unknown = null;
         try { body = JSON.parse(text); } catch { /* HTML */ }
-        resolve({ status: reply.statusCode ?? 0, body, text });
+        resolve({ status: reply.statusCode ?? 0, body, text, allow: reply.headers.allow });
       });
     });
     outgoing.on("error", reject);
@@ -289,5 +289,19 @@ test("UI write returns a retryable error when the database stays busy", async ()
     }
     assert.equal(snapshot(home), before);
     assert.equal((await send("POST", "/api/tasks", spec())).status, 201, "a retry succeeds once the database is free");
+  });
+});
+
+test("a wrong method on a Tasks API path gets 405 with the matching Allow header", async () => {
+  await withUi("allow", async ({ send }) => {
+    for (const [method, path, allow] of [
+      ["GET", "/api/tasks", "POST"], ["PUT", "/api/tasks", "POST"],
+      ["GET", "/api/tasks/1", "PATCH"], ["POST", "/api/tasks/1", "PATCH"],
+      ["GET", "/api/tasks/1/run", "POST"], ["PATCH", "/api/tasks/1/cancel", "POST"],
+    ] as const) {
+      const reply = await send(method, path);
+      assert.equal(reply.status, 405, `${method} ${path}`);
+      assert.equal(reply.allow, allow, `${method} ${path}`);
+    }
   });
 });

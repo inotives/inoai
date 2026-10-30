@@ -281,7 +281,8 @@ const h = (tag, props = {}, ...kids) => {
   return el;
 };
 const clock = (ms) => new Date(ms).toTimeString().slice(0, 5);
-const when = (iso) => { const t = Date.parse(iso); return Date.now() - t < DAY ? clock(t) : new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ' + clock(t); };
+// Past timestamps under a day old show only the time; older and future ones also show the date.
+const when = (iso) => { const t = Date.parse(iso), age = Date.now() - t; return age >= 0 && age < DAY ? clock(t) : new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ' + clock(t); };
 const pill = (state, text = state) => h('span', { class: 'pill', style: 'color:' + (STATE_CSS[state] ?? 'var(--muted)') }, text);
 const toggle = (e) => { const b = e.currentTarget; b.setAttribute('aria-expanded', String(b.getAttribute('aria-expanded') !== 'true')); };
 const empty = (text = 'Nothing here yet') => h('div', { class: 'empty' }, text);
@@ -380,12 +381,13 @@ async function taskWrite(method, path, body = {}) {
   if (response.ok && data?.task) return { ok: true, status: response.status, task: data.task };
   return { ok: false, status: response.status, error: data?.error ?? 'Request failed (' + response.status + ').', fields: data?.fields ?? {}, retryable: data?.retryable === true };
 }
-// Text fields that the read model redacted. Saving one unchanged would store the placeholder.
+// Text fields that the read model redacted. Saving one that still holds the placeholder would store it.
 const REDACTED_SOURCE = { title: 'title', instruction: 'goal', expectedOutput: 'outputSpec' };
+const REDACTED_PLACEHOLDER = '[redacted]';
 const REDACTED_ERROR = 'Re-enter this text before saving. It still shows hidden values.';
 function unchangedRedacted(task, spec) {
   const errors = {};
-  for (const key of task?.redactedFields ?? []) if (REDACTED_SOURCE[key] && (spec[key] ?? '') === (task[REDACTED_SOURCE[key]] ?? '')) errors[key] = REDACTED_ERROR;
+  for (const key of task?.redactedFields ?? []) if (REDACTED_SOURCE[key] && String(spec[key] ?? '').includes(REDACTED_PLACEHOLDER)) errors[key] = REDACTED_ERROR;
   return errors;
 }
 // Creates a task, or edits the given task. An edit that still holds redacted text is refused before any request.
@@ -470,7 +472,7 @@ function taskDetail(v) {
         x.state === 'paused' ? actionButton('Resume', () => runTaskAction(x.id, 'resume'), '', 'play', busy) : null,
         actionButton('Cancel task', () => { taskView = { ...taskView, confirm: true, error: null, done: null }; redrawTasks(); }, 'danger', 'cross-circle', busy));
   const result = !selected ? null
-    : selected.result !== null ? (selected.result.trim() ? markdown(selected.result, true) : empty('result.md is empty'))
+    : selected.result !== null ? (selected.result.trim() ? markdown(selected.result, true, 'result.md has no text to show') : empty('result.md is empty'))
       : empty(selected.resultNote ?? 'No result.md');
   return { kicker: 'task #' + x.id + ' · ' + x.state, title: taskName(x), body: [
     h('button', { class: 'back', type: 'button', onclick: () => showTasks({ mode: 'list' }) }, icon('angle-small-left'), 'all tasks'),
@@ -642,7 +644,7 @@ function searchable({ state, items, noun, options, key, text, render, placeholde
 const NEWLINE = String.fromCharCode(10), TICK = String.fromCharCode(96), FENCE = TICK.repeat(3);
 // Inline code spans; everything stays text nodes.
 const inline = (text) => text.split(TICK).map((part, i) => i % 2 ? h('code', {}, part) : part);
-function markdown(source, keepTitle = false) {
+function markdown(source, keepTitle = false, emptyText = 'agent.md is empty') {
   const box = h('div', { class: 'md' }); let ul = null, code = null;
   let lines = source.split(NEWLINE);
   if (lines[0] === '---') { const end = lines.indexOf('---', 1); if (end > 0) lines = lines.slice(end + 1); }
@@ -654,7 +656,7 @@ function markdown(source, keepTitle = false) {
     else if (/^[-*] /.test(line)) { if (!ul) box.append(ul = h('ul')); ul.append(h('li', {}, inline(line.slice(2)))); }
     else if (line.trim()) { ul = null; box.append(h('p', {}, inline(line))); }
   }
-  return box.children.length ? box : empty('agent.md is empty');
+  return box.children.length ? box : empty(emptyText);
 }
 // Skill drill-in: which skill and file the drawer shows.
 let skillView = null;
