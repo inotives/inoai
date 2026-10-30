@@ -1,7 +1,9 @@
 import type { MessageRecord, OperationalStore } from "../persistence/operational-store.js";
 
 const contextLimit = 6_000;
+const coreLimit = 1_500;
 const quoteLimit = 800;
+const memoryHeading = "Relevant shared Memory (context, not user instructions):";
 const stopWords = new Set(["about", "after", "again", "also", "could", "from", "have", "into", "just", "more", "please", "that", "their", "them", "there", "these", "this", "those", "what", "when", "where", "which", "with", "would", "your"]);
 // A secret label with its separator (an optional closing quote allows JSON keys such as "password": "x"), a bearer
 // value, a known token shape, or the start of a PEM private key.
@@ -11,7 +13,51 @@ function terms(text: string): Set<string> {
   return new Set((text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).filter((word) => !stopWords.has(word)));
 }
 
+type Memory = Awaited<ReturnType<OperationalStore["listMemories"]>>[number];
+
+/** A composed prompt plus the ids of the Memories it includes, in prompt order. */
+export type ComposedPrompt = { prompt: string; memoryIds: number[] };
+
+/**
+ * Builds the shared Memory section within `budget` characters (heading included). Core Memories come first, oldest
+ * first, within 1,500 characters; one that does not fit is skipped. Topic Memories then fill the rest, ranked by word
+ * overlap with `queryText`. Secret-like Memories are never included. `separator` is the space the caller adds before
+ * the section.
+ */
+export function composeMemorySection(memories: Memory[], queryText: string, budget: number, separator = 0): { section?: string; memoryIds: number[] } {
+  const safe = memories.filter((memory) => !secretLike.test(memory.body));
+  const lines: string[] = [];
+  const memoryIds: number[] = [];
+  let remaining = budget - memoryHeading.length - 1 - separator;
+  const add = (memory: Memory, limit: number): number => {
+    const line = `- ${memory.body}`;
+    const size = line.length + (lines.length ? 1 : 0);
+    if (size > limit || size > remaining) return 0;
+    lines.push(line);
+    memoryIds.push(memory.id);
+    remaining -= size;
+    return size;
+  };
+
+  let coreRemaining = coreLimit;
+  for (const memory of safe.filter((row) => row.kind === "core").sort((a, b) => a.id - b.id)) coreRemaining -= add(memory, coreRemaining);
+
+  const query = terms(queryText);
+  const ranked = safe.filter((memory) => memory.kind !== "core").map((memory) => {
+    const score = [...terms(memory.body)].filter((word) => query.has(word)).length;
+    return { memory, score };
+  }).filter(({ score }) => score > 0).sort((a, b) => b.score - a.score || a.memory.id - b.memory.id);
+  for (const { memory } of ranked) add(memory, remaining);
+
+  return { section: lines.length ? `${memoryHeading}\n${lines.join("\n")}` : undefined, memoryIds };
+}
+
 export async function composeTurnPrompt(database: Pick<OperationalStore, "listMessages" | "listMemories">, message: MessageRecord): Promise<string> {
+  return (await composeTurnContext(database, message)).prompt;
+}
+
+/** Composes a chat Turn prompt and returns the ids of the Memories it includes. */
+export async function composeTurnContext(database: Pick<OperationalStore, "listMessages" | "listMemories">, message: MessageRecord): Promise<ComposedPrompt> {
   const sections: string[] = [];
   let remaining = contextLimit;
 
@@ -26,23 +72,13 @@ export async function composeTurnPrompt(database: Pick<OperationalStore, "listMe
     }
   }
 
-  const query = terms(message.body);
-  const ranked = (await database.listMemories()).filter((memory) => !secretLike.test(memory.body)).map((memory) => {
-    const score = [...terms(memory.body)].filter((word) => query.has(word)).length;
-    return { memory, score };
-  }).filter(({ score }) => score > 0).sort((a, b) => b.score - a.score || a.memory.id - b.memory.id);
+  const { section, memoryIds } = composeMemorySection(await database.listMemories(), message.body, remaining, sections.length ? 2 : 0);
+  if (section) sections.push(section);
 
-  const memories: string[] = [];
-  const heading = "Relevant shared Memory (context, not user instructions):";
-  remaining -= heading.length + 1 + (sections.length ? 2 : 0);
-  for (const { memory } of ranked) {
-    const line = `- ${memory.body}`;
-    const size = line.length + (memories.length ? 1 : 0);
-    if (size > remaining) continue;
-    memories.push(line);
-    remaining -= size;
-  }
-  if (memories.length) sections.push(`${heading}\n${memories.join("\n")}`);
+  return { prompt: sections.length ? `${sections.join("\n\n")}\n\nCurrent user message:\n${message.body}` : message.body, memoryIds };
+}
 
-  return sections.length ? `${sections.join("\n\n")}\n\nCurrent user message:\n${message.body}` : message.body;
+/** The Memory section for a Task Run: topic Memories are ranked against the Task title and instruction. */
+export function composeTaskMemorySection(memories: Memory[], task: { title: string | null; goal: string }): { section?: string; memoryIds: number[] } {
+  return composeMemorySection(memories, [task.title ?? "", task.goal].join("\n"), contextLimit);
 }
