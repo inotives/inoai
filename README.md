@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="Status: V1 in progress" src="https://img.shields.io/badge/status-V1%20in%20progress-white?style=for-the-badge&labelColor=000000">
-  <img alt="Runtime: Node.js 22" src="https://img.shields.io/badge/runtime-node.js%2022-white?style=for-the-badge&labelColor=000000">
+  <img alt="Runtime: Node.js 26" src="https://img.shields.io/badge/runtime-node.js%2026-white?style=for-the-badge&labelColor=000000">
   <img alt="Language: TypeScript" src="https://img.shields.io/badge/language-typescript-white?style=for-the-badge&labelColor=000000">
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-white?style=for-the-badge&labelColor=000000">
 </p>
@@ -50,8 +50,8 @@ On Apple Silicon, the [standalone macOS CLI](INSTRUCTIONS.md#standalone-macos-cl
 runs without installing Node or cloning this repository. It guides you through
 creating an agent and starts the agent and UI together.
 
-For a source checkout, you need Node.js 22 or newer on macOS, a Discord bot,
-and a signed-in `codex` CLI.
+For a source checkout, you need Node.js 22.23.4+, 24.22.1+, or 26.12.1+ on
+macOS (`.nvmrc` pins 26.12.1), a Discord bot, and a signed-in `codex` CLI.
 
 ```bash
 npm install

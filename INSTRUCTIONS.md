@@ -35,7 +35,7 @@ see [README.md](README.md). For the architecture and folder layout, see
 ## Dependencies
 
 ```text
-Node.js 22 or newer for source builds (not needed for the standalone CLI)
+Node.js 22.23.4+, 24.22.1+, or 26.12.1+ for source builds (not needed for the standalone CLI)
 macOS (V1 release target)
 A Discord bot per concurrently running Agent Instance
 One signed-in agent CLI per runtime home: codex, claude, or opencode
@@ -50,7 +50,10 @@ checkout at runtime. Install and sign in to the provider CLI you want to use
 token, server ID, owner user ID and status channel ID. Use a different bot
 for each concurrently running agent.
 
-Build the executable on an Apple Silicon Mac with Node 22 or newer:
+Build the executable on an Apple Silicon Mac with Node.js 22.23.4+, 24.22.1+,
+or 26.12.1+. The executable embeds the Node that builds it, so the build
+refuses an unpatched Node. `npm install` also refuses it (`.npmrc` sets
+`engine-strict=true`):
 
 ```bash
 npm install
@@ -413,7 +416,8 @@ selects `.inoai-connect`. LaunchAgent commands default to `.robin-xai-test`.
 
 ### Prepare and test in the foreground
 
-Run commands from the selected checkout. Use Node.js 22 or newer on macOS.
+Run commands from the selected checkout. Use Node.js 22.23.4+, 24.22.1+,
+or 26.12.1+ on macOS.
 Build the checkout and configure the selected runtime home with a valid `.env`
 and `agent.md`. The child opens or creates its local `inoai.sqlite`; no PostgreSQL
 service, provisioning, or Docker step is required. The child also
@@ -595,7 +599,7 @@ processes, and service controls; they do not write the real LaunchAgents folder.
 ```sh
 npm run typecheck
 npm run build
-node --test dist/test/heartbeat*.test.js dist/platform/runtime-home.test.js dist/persistence/sqlite-operational-store.test.js
+node --test dist/inoai/test/heartbeat/*.test.js dist/inoai/test/agent-instance/runtime-home.test.js dist/inoai/test/connectors/sqlite/sqlite-operational-store.test.js
 npm test
 git diff --check
 ```

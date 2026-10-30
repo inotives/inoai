@@ -3,8 +3,10 @@ import { spawnSync } from "node:child_process";
 import { copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { assertPatchedNode } from "./node-version.mjs";
 
 if (process.platform !== "darwin" || process.arch !== "arm64") throw new Error("Build requires Apple Silicon macOS");
+assertPatchedNode();
 const root = resolve(import.meta.dirname, "..");
 const temporary = await mkdtemp(join(tmpdir(), "inoai-standalone-"));
 const output = join(root, "dist", "standalone", "inoai");
@@ -47,7 +49,7 @@ try {
   const noticesFile = join(temporary, "THIRD_PARTY_NOTICES.txt");
   await writeFile(noticesFile, notices);
   const main = join(temporary, "main.cjs");
-  await writeFile(main, `const { getAsset } = require('node:sea');\nif (process.argv[2] === '--licenses') { console.log(getAsset('THIRD_PARTY_NOTICES.txt', 'utf8')); }\nelse { const skills = process.argv[2] === '--internal-skills';\nif (skills) process.argv.splice(2, 1);\nconst asset = skills ? 'skills.mjs' : 'app.mjs';\nimport('data:text/javascript;base64,' + Buffer.from(getAsset(asset)).toString('base64')).catch(error => { console.error(error.message); process.exitCode = 1; }); }\n`);
+  await writeFile(main, `const { getAsset } = require('node:sea');\nconst vm = require('node:vm');\n// SEA main scripts may import only built-ins; use the default loader for the bundled app.\nconst load = new vm.Script('(url) => import(url)', { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER }).runInThisContext();\nif (process.argv[2] === '--licenses') { console.log(getAsset('THIRD_PARTY_NOTICES.txt', 'utf8')); }\nelse { const skills = process.argv[2] === '--internal-skills';\nif (skills) process.argv.splice(2, 1);\nconst asset = skills ? 'skills.mjs' : 'app.mjs';\nload('data:text/javascript;base64,' + Buffer.from(getAsset(asset)).toString('base64')).catch(error => { console.error(error.message); process.exitCode = 1; }); }\n`);
   const blob = join(temporary, "sea.blob");
   const config = join(temporary, "sea.json");
   await writeFile(config, JSON.stringify({ main, output: blob, assets: { "app.mjs": join(temporary, "app.mjs"), "skills.mjs": join(temporary, "skills.mjs"), "sqlite-probe.cjs": join(temporary, "sqlite-probe.cjs"), "THIRD_PARTY_NOTICES.txt": noticesFile } }));
