@@ -23,7 +23,8 @@ export type TransportHealth = {
 };
 
 export type ThreadControl = {
-  command: "status" | "cancel" | "reset" | "task-create" | "task-list" | "task-pause" | "task-resume" | "task-run" | "task-cancel";
+  command: "status" | "cancel" | "reset" | "task-create" | "task-list" | "task-pause" | "task-resume" | "task-run" | "task-cancel"
+    | "memory-list" | "memory-forget" | "memory-review";
   workspaceId: string | null;
   conversationId: string;
   parentConversationId: string | null;
@@ -34,6 +35,7 @@ export type ThreadControl = {
   taskType?: "one_time" | "recurring";
   intervalSeconds?: number;
   taskId?: number;
+  memoryId?: number;
   respond(text: string): Promise<void>;
 };
 

@@ -18,7 +18,8 @@ import { TaskProposalCards } from "./conversation/task-proposal-cards.js";
 import { MemoryProposalCards, type MemoryCardStore } from "./conversation/memory-proposal-cards.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
-import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
+import type { MemoryReviewRequest, SchedulerClock } from "./memory/memory-review-scheduler.js";
+import { secretLike } from "./conversation/prompt-context.js";
 import { OpenCodeRuntime } from "./connectors/agent-runtime/opencode-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome, inspectRuntimeHomeLock, resolveRuntimeHome } from "./agent-instance/runtime-home.js";
 import { normalizeDirectoryArgs } from "./agent-instance/direct-directory.js";
@@ -137,6 +138,7 @@ export async function startTransport(
   taskCards?: TaskProposalCards,
   approvalRelay?: ApprovalRelay,
   memoryCards?: MemoryProposalCards,
+  memoryReview?: { requestCycle(): Promise<MemoryReviewRequest> },
 ): Promise<ChatTransport> {
   const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
@@ -254,6 +256,45 @@ export async function startTransport(
   })().catch((error: unknown) => console.error("Discord message handling failed:", error instanceof Error ? error.message : error)); });
   const control = async (request: ThreadControl) => {
     const denied = "This control is available only in your active inoai thread.";
+    if (request.command.startsWith("memory-")) {
+      const unavailable = "Memory control unavailable in this channel.";
+      if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
+        || request.externalUserId !== instance.configuration.discordOwnerUserId) {
+        await request.respond(unavailable);
+        return;
+      }
+      const owner = await store.findUser("discord", request.workspaceId, request.externalUserId);
+      if (!owner || owner.id !== instance.owner.id) { await request.respond(unavailable); return; }
+      if (request.command === "memory-review") {
+        if (!memoryReview) { await request.respond("Memory Review unavailable right now."); return; }
+        const result = await memoryReview.requestCycle();
+        await request.respond(result.state === "started"
+          ? result.enqueued === 0 ? "Memory Review found nothing new to review."
+            : `Memory Review started for ${result.enqueued} Session${result.enqueued === 1 ? "" : "s"}. A summary appears in the status channel when it changes Memory or has proposals.`
+          : result.state === "chat_busy" || result.state === "task_busy" ? "Chat or a Task Run is active. Try again when it finishes."
+            : result.state === "reviewing" ? "A Memory Review is already running. Try again when it finishes."
+              : result.state === "unsupported" ? "Memory Review is not supported by this agent runtime."
+                : result.state === "failed" ? "Memory Review failed. Try again later."
+                  : "Memory Review unavailable right now.");
+        return;
+      }
+      const memories = await store.listMemories();
+      if (request.command === "memory-list") {
+        // Bodies are cut short, and one that looks like it holds a secret is never shown.
+        const lines = memories.map((memory) => {
+          const body = memory.body.replace(/\s+/g, " ").trim();
+          return `#${memory.id} ${memory.kind}: ${secretLike.test(memory.body) ? "[hidden: may contain a secret]"
+            : body.length > 80 ? `${body.slice(0, 79)}…` : body}`;
+        });
+        await request.respond((lines.join("\n") || "No active Memories.").slice(0, 1900));
+        return;
+      }
+      const memory = memories.find((item) => item.id === request.memoryId);
+      if (!memory) { await request.respond("Memory not found. Use /inoai memory list to see Memory IDs."); return; }
+      await store.softDeleteMemory(memory.id, "user:owner");
+      await request.respond(`Memory #${memory.id} forgotten.`);
+      return;
+    }
     if (request.command.startsWith("task-")) {
       if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
         || request.externalUserId !== instance.configuration.discordOwnerUserId || !request.guildTextChannelId
@@ -891,7 +932,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         console.error(failure instanceof Error ? failure.message : failure);
         process.exitCode = 1;
       });
-    }, worker, undefined, taskRunner, taskCards, approvalRelay, memoryCards);
+    }, worker, undefined, taskRunner, taskCards, approvalRelay, memoryCards, scheduler);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();

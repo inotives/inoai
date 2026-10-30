@@ -181,6 +181,31 @@ test("Discord Task command maps options and disables mentions in its private rep
   await transport.stop();
 });
 
+test("Discord Memory commands map to memory controls with the forget id", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const replies: unknown[] = [];
+  const controls: unknown[] = [];
+  await transport.start(() => undefined, undefined, undefined, async (control) => {
+    controls.push({ command: control.command, memoryId: control.memoryId });
+    await control.respond("done");
+  });
+  for (const command of ["list", "forget", "review", "unknown"]) {
+    fake.emit(Events.InteractionCreate, {
+      isChatInputCommand: () => true, commandName: "inoai", options: {
+        getSubcommand: () => command, getSubcommandGroup: () => "memory",
+        getInteger: (name: string, required?: boolean) => name === "id" && required === true ? 7 : null,
+      }, guildId: "guild", channelId: "status", channel: { type: ChannelType.GuildText, isThread: () => false }, user: { id: "owner" },
+      deferReply: async (value: unknown) => { replies.push(value); },
+      editReply: async (value: unknown) => { replies.push(value); },
+    });
+  }
+  await until(() => replies.length === 6);
+  assert.deepEqual(controls, [{ command: "memory-list", memoryId: undefined }, { command: "memory-forget", memoryId: 7 },
+    { command: "memory-review", memoryId: undefined }]);
+  await transport.stop();
+});
+
 test("Discord sends and edits button messages without mentions", async () => {
   const fake = new FakeClient();
   const transport = new DiscordTransport("", fake as unknown as Client);
@@ -608,7 +633,10 @@ test("startup announces once and archives one health Event across reconnects", a
       const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(fake.registeredGuild, "guild");
-      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset", "task"]);
+      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset", "task", "memory"]);
+      const memory = (fake.registeredCommands[0] as { options: Array<{ name: string; options?: Array<{ name: string; options?: Array<{ name: string; required?: boolean }> }> }> }).options[4]!;
+      assert.deepEqual(memory.options?.map((option) => [option.name, option.options?.map((item) => [item.name, item.required])]),
+        [["list", []], ["forget", [["id", true]]], ["review", []]]);
       assert.deepEqual(fake.sentChannelIds, ["status"]);
       const event = listEvents(instance.database)[0];
       assert.equal(event.event_type, "startup_online");
