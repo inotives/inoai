@@ -6,7 +6,7 @@ import type { OperationalStore } from "../persistence/operational-store.js";
 
 // The daily Memory Review cycle (Phase 6). It enqueues one memory_reviews row per Session with new settled
 // Messages and runs due rows one at a time, only while no user Message is pending or processing. It holds no
-// transport: reviews are silent. Scheduling fields (next_attempt_at, started_at) use the injected clock; audit
+// transport: the optional onReviewCompleted callback reports completed reviews to the caller. Scheduling fields (next_attempt_at, started_at) use the injected clock; audit
 // columns keep SQLite's own time.
 
 const actor = "memory-review-scheduler";
@@ -31,6 +31,8 @@ export type MemoryReviewSchedulerOptions = {
   maxChars: number;
   clock?: SchedulerClock;
   onFailure?: (error: Error) => void;
+  /** Called once per completed review, after its commit. It must not wait for transport work. */
+  onReviewCompleted?: (result: Extract<MemoryReviewResult, { state: "completed" }>) => void;
 };
 
 type ActiveReview = { controller: AbortController; done: Promise<void> };
@@ -239,6 +241,7 @@ export class MemoryReviewScheduler {
     const now = this.clock.now();
     const update = (values: { state?: string; attempts?: number; failureDetail?: string | null; nextAttemptAt?: number | null }) => this.database.updateMemoryReview(row.id, values, actor);
     if (result.state === "completed") {
+      try { this.options.onReviewCompleted?.(result); } catch (error) { this.fail(error); }
       // The engine's window cap ended the range early: the remainder is reviewed next, in this same cycle.
       if (result.throughMessageId < row.through_message_id) {
         const messages = await this.database.messagesForMemoryReview(row.session_id);

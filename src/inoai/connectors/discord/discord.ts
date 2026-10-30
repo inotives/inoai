@@ -68,6 +68,8 @@ export class DiscordTransport implements ChatTransport {
       });
     });
     this.client.on(Events.InteractionCreate, (interaction) => {
+      // Button clicks are accepted in every channel, including the status channel whose messages are ignored: Memory
+      // proposal cards live there.
       if (this.state === "ready" && !interaction.isChatInputCommand() && interaction.isButton() && interaction.customId.startsWith("inoai:")) {
         void this.handleButton(interaction);
         return;

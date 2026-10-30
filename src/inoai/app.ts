@@ -15,6 +15,7 @@ import { ConversationWorker } from "./conversation/conversation-worker.js";
 import { TaskRunExecutor, writeTaskRunResult } from "./conversation/task-run-executor.js";
 import { TaskScheduler } from "./conversation/task-scheduler.js";
 import { TaskProposalCards } from "./conversation/task-proposal-cards.js";
+import { MemoryProposalCards, type MemoryCardStore } from "./conversation/memory-proposal-cards.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
@@ -135,6 +136,7 @@ export async function startTransport(
   taskRunner?: TaskRunExecutor,
   taskCards?: TaskProposalCards,
   approvalRelay?: ApprovalRelay,
+  memoryCards?: MemoryProposalCards,
 ): Promise<ChatTransport> {
   const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
@@ -382,15 +384,17 @@ export async function startTransport(
   // Cards share the configured owner check; each handler also checks its original message and conversation.
   transport.onButtonClick?.(async (click) => {
     const approvalClick = click.customId.startsWith("inoai:approval:");
-    if (instance.closing || (approvalClick ? !approvalRelay : !taskCards)) { await click.replyEphemeral("This card is unavailable right now."); return; }
+    const memoryClick = click.customId.startsWith("inoai:memory:");
+    const cards = approvalClick ? approvalRelay : memoryClick ? memoryCards : taskCards;
+    if (instance.closing || !cards) { await click.replyEphemeral("This card is unavailable right now."); return; }
     const owner = click.workspaceId === instance.configuration.discordGuildId && click.externalUserId === instance.configuration.discordOwnerUserId
       ? await store.findUser("discord", click.workspaceId, click.externalUserId) : undefined;
     if (!owner || owner.id !== instance.owner.id) {
-      await click.replyEphemeral(approvalClick ? "Only the owner can use this approval card." : "Only the owner can use this task card.");
+      await click.replyEphemeral(approvalClick ? "Only the owner can use this approval card."
+        : memoryClick ? "Only the owner can use this Memory card." : "Only the owner can use this task card.");
       return;
     }
-    if (approvalClick) await approvalRelay!.handleClick(click);
-    else await taskCards!.handleClick(click);
+    await cards.handleClick(click);
   });
   try {
     await transport.start(receive, async () => {
@@ -791,12 +795,19 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   }, transport, { store: instance.store! as OperationalStore & TaskOperationsStore, ownerUserId: instance.owner.id,
     ownerTimeZone: instance.configuration.ownerTimeZone, onProposal: (proposal) => taskCards?.deliver(proposal),
     now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000) });
-  // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
-  // chat always runs first.
+  // Memory proposal cards are SQLite only; the PostgreSQL store has no proposals.
+  const memoryCards = instance.store?.confirmMemoryProposal
+    ? new MemoryProposalCards(instance.store as MemoryCardStore, transport, {
+      statusChannelId: instance.configuration.discordStatusChannelId,
+      now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000) })
+    : undefined;
+  // Daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so chat
+  // always runs first. A completed review that changed Memory or stored proposals is summarized in the status channel.
   const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {
     reviewTime: instance.configuration.memoryReviewTime, maxChars: instance.configuration.memoryReviewMaxChars,
     clock: supplied.schedulerClock,
     onFailure: () => console.error("Memory review scheduler failed; the review stays queued"),
+    onReviewCompleted: (result) => { void memoryCards?.publishReview(result); },
   });
   const taskRunner = new TaskRunExecutor(instance.store! as OperationalStore & TaskOperationsStore,
     runtime, instance.runtimeHome, transport, worker, instance.configuration.agentProvider,
@@ -840,6 +851,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         instance.closing = true;
         await Promise.allSettled([...instance.pendingIngestion]);
         await taskCards?.stop();
+        await memoryCards?.stop();
         await transport.stop();
         await taskScheduler.stop();
         // Abort an active review and let it settle before the worker closes the runtime.
@@ -879,7 +891,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         console.error(failure instanceof Error ? failure.message : failure);
         process.exitCode = 1;
       });
-    }, worker, undefined, taskRunner, taskCards, approvalRelay);
+    }, worker, undefined, taskRunner, taskCards, approvalRelay, memoryCards);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();

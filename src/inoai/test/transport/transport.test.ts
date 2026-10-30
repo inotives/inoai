@@ -262,6 +262,20 @@ test("inoai button clicks reach the callback and other interactions do not", asy
   await transport.stop();
 });
 
+test("Memory card clicks in the status channel reach the callback", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const clicks: string[] = [];
+  const replies: unknown[] = [];
+  transport.onButtonClick(async (click: ButtonClick) => { clicks.push(`${click.conversationId} ${click.customId}`); await click.updateMessage("Confirmed."); });
+  await transport.start(() => undefined);
+  fake.emit(Events.InteractionCreate, { ...buttonInteraction("inoai:memory:3:confirm", replies), channelId: "status" });
+  await until(() => replies.length === 1);
+  assert.deepEqual(clicks, ["status inoai:memory:3:confirm"]);
+  assert.deepEqual(replies, [{ update: { content: "Confirmed.", components: [], allowedMentions: { parse: [] } } }]);
+  await transport.stop();
+});
+
 test("failed or unanswered button callbacks reply with a private error", async () => {
   const failure = { content: "Action unavailable. Please try again.", flags: MessageFlags.Ephemeral };
   const fake = new FakeClient();

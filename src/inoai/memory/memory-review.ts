@@ -72,11 +72,14 @@ export type MemoryReviewIgnoredReason =
 
 export type MemoryReviewFailureReason = RuntimeFailureKind | "unparseable" | "unsafe_recap" | "stale_range" | "range_not_ready";
 
+export type MemoryReviewChange = { op: "add" | "update" | "delete"; body: string };
+
 export type MemoryReviewResult =
   | { state: "skipped"; reason: "unsupported" }
   | { state: "empty" }
-  // proposalIds are the Memory proposals stored with this review, pending the owner's confirmation.
-  | { state: "completed"; reviewId: number; throughMessageId: number; added: number; updated: number; deleted: number; ignored: MemoryReviewIgnoredReason[]; proposalIds: number[] }
+  // proposalIds are the Memory proposals stored with this review, pending the owner's confirmation. changes lists the
+  // committed Memory actions in order: the new body for add and update, the removed body for delete.
+  | { state: "completed"; reviewId: number; throughMessageId: number; added: number; updated: number; deleted: number; ignored: MemoryReviewIgnoredReason[]; proposalIds: number[]; changes: MemoryReviewChange[] }
   // Every failure happens before the commit and leaves SQLite unchanged, so it is always replay-safe.
   | { state: "failed"; reason: MemoryReviewFailureReason };
 
@@ -443,6 +446,7 @@ function commit(
     const ignored: MemoryReviewIgnoredReason[] = [];
     const counts = { added: 0, updated: 0, deleted: 0 };
     const proposals: Proposal[] = [];
+    const changes: MemoryReviewChange[] = [];
     for (const [index, value] of proposed.entries()) {
       const action = index < maxActions ? validateAction(value, entries, memories, isPriorRecap, targeted) : "too_many_actions";
       if (typeof action === "string") {
@@ -459,6 +463,7 @@ function commit(
         createMemory(database, { body: action.body, source_message_id: action.sourceMessageId, created_by_user_id: null, review_id: row.id, origin: "review" }, actor);
       }
       counts[action.op === "add" ? "added" : action.op === "update" ? "updated" : "deleted"]++;
+      changes.push({ op: action.op, body: action.body ?? memories.get(action.memoryId!)!.body });
     }
     // Proposals go in after the actions, so one matching a Memory this review just added is a duplicate.
     const { ids: proposalIds, skipped } = storeReviewProposals(database, row.id, proposals, now, actor);
@@ -467,7 +472,7 @@ function commit(
     createEvent(database, { session_id: sessionId, message_id: null, event_type: "memory_review_completed",
       detail: `review=${row.id}; through=${throughId}; added=${counts.added}; updated=${counts.updated}; deleted=${counts.deleted}; ignored=${ignored.length}${reasons ? `; reasons=${reasons}` : ""}${proposalIds.length ? `; proposed=${proposalIds.length}` : ""}` }, actor);
     database.exec("COMMIT");
-    return { state: "completed", reviewId: row.id, throughMessageId: throughId, ...counts, ignored, proposalIds };
+    return { state: "completed", reviewId: row.id, throughMessageId: throughId, ...counts, ignored, proposalIds, changes };
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
@@ -535,18 +540,20 @@ export async function reviewSessionWithStore(store: AsyncMemoryReviewStore, runt
     const counts = { added: 0, updated: 0, deleted: 0 };
     const actions: MemoryReviewCommit["actions"] = [];
     const proposals: ReviewProposalDraft[] = [];
+    const changes: MemoryReviewChange[] = [];
     for (const [index, value] of result.actions.entries()) {
       const action = index < maxActions ? validateAction(value, entriesById, memories, (id) => priorRecaps.has(id) && id !== review?.id, targeted) : "too_many_actions";
       if (typeof action === "string") { ignored.push(action); continue; }
       if (action.op === "propose") { proposals.push({ body: action.body, kind: action.kind, sourceMessageIds: action.sourceMessageIds }); continue; }
       actions.push(action);
       counts[action.op === "add" ? "added" : action.op === "update" ? "updated" : "deleted"]++;
+      changes.push({ op: action.op, body: action.body ?? memories.get(action.memoryId!)!.body });
     }
     const committed = await store.commitMemoryReview({ sessionId, cursor: snapshot.cursor, reviewId: review?.id, fromMessageId: fromId, throughMessageId: throughId, recap, actions, ignored, counts, actor,
       proposals, now: options.now ?? Math.floor(Date.now() / 1000) });
     if (committed.state === "stale_range") return { state: "failed", reason: "stale_range" };
     return { state: "completed", reviewId: committed.reviewId, throughMessageId: throughId, ...counts,
-      ignored: [...ignored, ...(committed.skipped ?? [])], proposalIds: committed.proposalIds ?? [] };
+      ignored: [...ignored, ...(committed.skipped ?? [])], proposalIds: committed.proposalIds ?? [], changes };
   } catch (error) {
     if (error instanceof ReviewFailed) return { state: "failed", reason: error.reason };
     throw error;
