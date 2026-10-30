@@ -27,7 +27,7 @@ function respondMethodNotAllowed(response: ServerResponse<IncomingMessage>, allo
 }
 
 class RequestRejected extends Error {
-  constructor(readonly status: 400 | 403 | 404 | 405, readonly reason: string, readonly publicMessage: string) {
+  constructor(readonly status: 400 | 403 | 404 | 405, readonly reason: string, readonly publicMessage: string, readonly allow?: string) {
     super(reason);
   }
 }
@@ -72,7 +72,7 @@ type TaskRoute = { kind: "create" } | { kind: "edit"; id: number } | { kind: "ac
 
 function taskRoute(method: string, path: string): TaskRoute | undefined {
   if (path === "/api/tasks") {
-    if (method !== "POST") throw new RequestRejected(405, "method", "Method not allowed.");
+    if (method !== "POST") throw new RequestRejected(405, "method", "Method not allowed.", "POST");
     return { kind: "create" };
   }
   const match = /^\/api\/tasks\/(\d{1,15})(?:\/(run|pause|resume|cancel))?$/.exec(path);
@@ -82,10 +82,10 @@ function taskRoute(method: string, path: string): TaskRoute | undefined {
   }
   const id = Number(match[1]);
   if (match[2] === undefined) {
-    if (method !== "PATCH") throw new RequestRejected(405, "method", "Method not allowed.");
+    if (method !== "PATCH") throw new RequestRejected(405, "method", "Method not allowed.", "PATCH");
     return { kind: "edit", id };
   }
-  if (method !== "POST") throw new RequestRejected(405, "method", "Method not allowed.");
+  if (method !== "POST") throw new RequestRejected(405, "method", "Method not allowed.", "POST");
   return { kind: "action", id, action: match[2] as TaskAction };
 }
 
@@ -149,6 +149,7 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
     } catch (error) {
       const rejected = error as RequestRejected;
       logRejection(method, path, rejected.reason);
+      if (rejected.allow) response.setHeader("allow", rejected.allow);
       respondJson(response, rejected.status, { error: rejected.publicMessage });
       return;
     }
