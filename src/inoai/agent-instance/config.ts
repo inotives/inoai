@@ -35,6 +35,8 @@ export type Configuration = {
   postgresLeaseTtlMs?: number;
   postgresLeaseRefreshMs?: number;
   claudeModel?: string;
+  /** Owner opt-in from `CLAUDE_ALLOWED_TOOLS`: plain Claude tool names passed as `--allowedTools` for Turns and Task runs. */
+  claudeAllowedTools?: string[];
   memoryReviewTime: string;
   memoryReviewMaxChars: number;
   /** IANA time zone for Discord-created Tasks: `OWNER_TIMEZONE`, or the host time zone when unset. */
@@ -70,6 +72,15 @@ export function validateConfiguration(values: Record<string, string | undefined>
   if (claudeModel && !/^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]*$/.test(claudeModel)) {
     issues.push("CLAUDE_MODEL must start with a letter or digit and contain only letters, digits, and . _ : - [ ]");
   }
+  // Plain tool names only (for example WebFetch or mcp__server__tool). Tool rules such as `Bash(git *)` are refused:
+  // their spaces and wildcards widen permissions and the CLI splits its list on spaces.
+  const allowedToolsValue = values.CLAUDE_ALLOWED_TOOLS?.trim() || undefined;
+  const claudeAllowedTools = allowedToolsValue?.split(",").map((name) => name.trim());
+  if (claudeAllowedTools && values.AGENT_PROVIDER !== "claude") {
+    issues.push("CLAUDE_ALLOWED_TOOLS is only supported when AGENT_PROVIDER is claude");
+  } else if (claudeAllowedTools?.some((name) => !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(name))) {
+    issues.push("CLAUDE_ALLOWED_TOOLS must be a comma-separated list of tool names; each must start with a letter and contain only letters, digits, _ and -");
+  }
   if (values.MEMORY_REVIEW_TIME && !/^([01]\d|2[0-3]):[0-5]\d$/.test(values.MEMORY_REVIEW_TIME)) {
     issues.push("MEMORY_REVIEW_TIME must be HH:MM");
   }
@@ -93,6 +104,7 @@ export function validateConfiguration(values: Record<string, string | undefined>
     agentInstanceId: agentInstanceId!,
     ...(projectDirectory ? { projectDirectory } : {}),
     ...(claudeModel ? { claudeModel } : {}),
+    ...(claudeAllowedTools ? { claudeAllowedTools } : {}),
     memoryReviewTime: values.MEMORY_REVIEW_TIME!,
     memoryReviewMaxChars: limit,
     ownerTimeZone: ownerTimeZone!,

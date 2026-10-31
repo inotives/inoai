@@ -150,7 +150,7 @@ npm start
 
 Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it never starts conversations. The older `DISCORD_ALLOWED_CHANNEL_ID` key is no longer accepted; update existing local runtime-home `.env` files before starting this version. The bot needs access to the status channel and to every channel where you start conversations, including permission to create threads.
 
-`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
+`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a well-formed optional `CLAUDE_ALLOWED_TOOLS` (Claude homes only), a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
 
 ### Agent profile
 
@@ -242,6 +242,8 @@ npm start -- --connect-dir .inoai-connect-claude
 ```
 
 `CLAUDE_MODEL` is optional. Leave it blank for the CLI default, or set a model name or alias such as `sonnet`. It must start with a letter or digit and contain only letters, digits, and `. _ : - [ ]`. Other runtimes ignore it.
+
+`CLAUDE_ALLOWED_TOOLS` is optional and off by default. inoai runs the Claude CLI with `--permission-prompts none`, so any tool that would need a permission prompt is denied. Set this to a comma-separated list of Claude tool names to let chat Turns and Task runs use those tools, for example `CLAUDE_ALLOWED_TOOLS=WebFetch,WebSearch,mcp__plugin_context-mode_context-mode__ctx_fetch_and_index`. inoai passes the list to the CLI as one `--allowedTools=` argument. Every listed tool then runs without a prompt, so list only tools you trust the agent to use unattended. The setting is per runtime home: it lives in that home's `.env` and affects no other home. It never changes global Claude configuration, settings, plugins, hooks, or MCP servers. Memory Review and the startup concurrency probe stay tool-free and never receive the list. Each entry must be a plain tool name that starts with a letter and contains only letters, digits, `_`, and `-`; empty entries and tool rules such as `Bash(git status:*)` are rejected. A non-blank value with any `AGENT_PROVIDER` other than `claude` fails validation. Leave it blank or unset to keep the CLI arguments unchanged.
 
 **Credential guard.** inoai accepts only the interactive Claude subscription login. At `npm start` it asks the CLI which credential it will use (`claude auth status`) and refuses to start, naming the source, if any of these would take over:
 

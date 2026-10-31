@@ -803,6 +803,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         case "claude":
           // The CLI denies prompts itself; the notifier only reports denials. A failed probe keeps global FIFO.
           runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
+            allowedTools: instance.configuration.claudeAllowedTools,
             onPermissionDenied: claudePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
           probeConcurrency = () => probeClaudeConcurrency({ signal: startupAbort.signal });
           break;

@@ -131,6 +131,21 @@ test("Claude review runs one text-only throwaway CLI call in a fresh cwd and ret
   } finally { await fake.cleanup(); }
 });
 
+test("Claude review never passes the configured allowed tools", async () => {
+  const fake = await fakeClaude({ lines: [init, text(answer), success(answer)], folder: "memory" });
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, homeDir: fake.home, allowedTools: ["WebFetch", "WebSearch"] });
+    assert.equal(await runtime.review("review prompt"), answer);
+    const [call] = await fake.calls();
+    assert.deepEqual(call!.argv, [
+      "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+      "--permission-prompts", "none", "--tools", "", "--strict-mcp-config", "--safe-mode",
+      "--system-prompt", reviewInstructions,
+    ]);
+    assert.equal(call!.argv.some((arg) => /allowed-?tools|WebFetch/i.test(arg)), false);
+  } finally { await fake.cleanup(); }
+});
+
 test("Claude review fails closed and replay-safe on any unsafe init or tool signal, killing the CLI at once", async () => {
   const fake = await fakeClaude({});
   try {

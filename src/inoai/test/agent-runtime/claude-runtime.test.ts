@@ -191,6 +191,39 @@ test("passes the model as one --model= argv element only when configured", async
   } finally { await fake.cleanup(); }
 });
 
+test("passes configured allowed tools as one --allowedTools= argv element for new and resumed sessions", async () => {
+  const fake = await fakeCli([{ lines: [init, success("ok")] }, { lines: [init, success("again")] }]);
+  const tools = ["WebFetch", "WebSearch", "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"];
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, allowedTools: tools, model: "sonnet" });
+    const id = await runtime.createSession(fake.dir, "personality");
+    await collect(runtime.runTurn(id, "question"));
+    await collect(runtime.runTurn(id, "follow-up"));
+    const calls = await fake.calls();
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.deepEqual(call.argv.slice(-4), ["--permission-prompts", "none",
+        "--allowedTools=WebFetch,WebSearch,mcp__plugin_context-mode_context-mode__ctx_fetch_and_index", "--model=sonnet"]);
+      assert.equal(call.argv.filter((arg) => /^--allowed-?tools/i.test(arg)).length, 1);
+      assert.equal(call.argv.includes("--allowedTools"), false);
+    }
+    assert.deepEqual([calls[0]!.argv[5], calls[1]!.argv[5]], ["--session-id", "--resume"]);
+    assert.equal(calls[1]!.stdin, "follow-up");
+  } finally { await fake.cleanup(); }
+});
+
+test("an empty allowed tools list leaves the argv unchanged", async () => {
+  const fake = await fakeCli([{ lines: [init, success("ok")] }]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, allowedTools: [] });
+    const id = await runtime.createSession(fake.dir, "personality");
+    await collect(runtime.runTurn(id, "question"));
+    const [call] = await fake.calls();
+    assert.deepEqual(call.argv, ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+      "--session-id", id, "--append-system-prompt=personality", "--system-prompt-snapshot", "off", "--permission-prompts", "none"]);
+  } finally { await fake.cleanup(); }
+});
+
 test("binds the assigned UUID with the Claude runtime actor and uses neutral resume errors", async () => {
   const project = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {

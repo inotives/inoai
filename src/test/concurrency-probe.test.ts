@@ -125,6 +125,7 @@ test("Claude probe runs two tool-free sessions concurrently and removes only its
     assert.equal(calls.length, 2);
     for (const call of calls) {
       assert.deepEqual(call.argv, claudeProbeArgs);
+      assert.equal(call.argv.some((arg) => /allowed-?tools/i.test(arg)), false);
       assert.match(call.stdin, /1 to 150/);
       assert.equal(await gone(call.cwd), true);
     }

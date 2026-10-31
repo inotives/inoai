@@ -26,7 +26,8 @@ type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: bool
 // Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
 export type PermissionDenialListener = (sessionId: string, count: number) => void;
 // homeDir locates `~/.claude/projects` for review cleanup only; reviewTimeoutMs bounds one whole review.
-export type ClaudeRuntimeOptions = { executable?: string; model?: string; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
+// allowedTools is the owner's opt-in list for Turns and Task runs only; Memory Review stays tool-free.
+export type ClaudeRuntimeOptions = { executable?: string; model?: string; allowedTools?: string[]; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
 type ReviewEvent = {
   type?: string; subtype?: string; apiKeySource?: unknown; tools?: unknown; mcp_servers?: unknown; memory_paths?: unknown; error?: unknown;
   message?: { content?: unknown }; rate_limit_info?: { status?: string };
@@ -47,15 +48,17 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly active = new Map<string, ActiveTurn>();
   private readonly executable: string;
   private readonly model?: string;
+  private readonly allowedTools?: string[];
   private readonly idleTimeoutMs: number;
   private readonly reviewTimeoutMs: number;
   private readonly homeDir: string;
   private readonly onPermissionDenied?: PermissionDenialListener;
   private closed = false;
 
-  constructor({ executable = "claude", model, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
+  constructor({ executable = "claude", model, allowedTools, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
     this.executable = executable;
     this.model = model;
+    this.allowedTools = allowedTools?.length ? [...allowedTools] : undefined;
     this.idleTimeoutMs = idleTimeoutMs;
     this.reviewTimeoutMs = reviewTimeoutMs;
     this.homeDir = homeDir;
@@ -280,6 +283,8 @@ export class ClaudeRuntime implements AgentRuntime {
       session.state === "new" ? "--session-id" : "--resume", sessionId,
       `--append-system-prompt=${session.instructions}`, "--system-prompt-snapshot", "off",
       "--permission-prompts", "none",
+      // One `--allowedTools=` element: the CLI option is variadic, and the joined form cannot consume later arguments.
+      ...(this.allowedTools ? [`--allowedTools=${this.allowedTools.join(",")}`] : []),
       ...(this.model ? [`--model=${this.model}`] : []),
     ];
   }
