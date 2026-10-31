@@ -68,6 +68,8 @@ export class DiscordTransport implements ChatTransport {
       });
     });
     this.client.on(Events.InteractionCreate, (interaction) => {
+      // Button clicks are accepted in every channel, including the status channel whose messages are ignored: Memory
+      // proposal cards live there.
       if (this.state === "ready" && !interaction.isChatInputCommand() && interaction.isButton() && interaction.customId.startsWith("inoai:")) {
         void this.handleButton(interaction);
         return;
@@ -76,11 +78,12 @@ export class DiscordTransport implements ChatTransport {
       const command = interaction.options.getSubcommand(false);
       const group = interaction.options.getSubcommandGroup(false);
       if (command !== "status" && command !== "cancel" && command !== "reset"
-         && !(group === "task" && (command === "create" || command === "list" || command === "pause" || command === "resume" || command === "run" || command === "cancel"))) return;
+         && !(group === "task" && (command === "create" || command === "list" || command === "pause" || command === "resume" || command === "run" || command === "cancel"))
+         && !(group === "memory" && (command === "list" || command === "forget" || command === "review"))) return;
       void (async () => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await onControl({
-          command: (group === "task" ? `task-${command}` : command) as ThreadControl["command"],
+          command: (group === "task" || group === "memory" ? `${group}-${command}` : command) as ThreadControl["command"],
           workspaceId: interaction.guildId, conversationId: interaction.channelId,
           parentConversationId: interaction.channel?.isThread() ? interaction.channel.parentId : null,
           guildTextChannelId: interaction.channel?.type === ChannelType.GuildText ? interaction.channelId
@@ -95,6 +98,7 @@ export class DiscordTransport implements ChatTransport {
             return interval && unit ? interval * (unit === "days" ? 86400 : 3600) : undefined;
           })() : undefined,
            taskId: group === "task" && (command === "pause" || command === "resume" || command === "run" || command === "cancel") ? interaction.options.getInteger("id") ?? undefined : undefined,
+          memoryId: group === "memory" && command === "forget" ? interaction.options.getInteger("id", true) : undefined,
           respond: (text) => interaction.editReply({ content: text, allowedMentions: { parse: [] } }).then(() => undefined),
         });
       })().catch(() => { void interaction.editReply({ content: "Control unavailable. Please try again." }).catch(() => undefined); });
@@ -160,7 +164,12 @@ export class DiscordTransport implements ChatTransport {
         .addSubcommand((part) => part.setName("run").setDescription("Run a Task now")
           .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1)))
         .addSubcommand((part) => part.setName("cancel").setDescription("Cancel a Task and its active run")
-          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1))));
+          .addIntegerOption((option) => option.setName("id").setDescription("Task ID; optional in its thread").setMinValue(1))))
+      .addSubcommandGroup((group) => group.setName("memory").setDescription("Manage inoai Memory")
+        .addSubcommand((part) => part.setName("list").setDescription("List active Memories"))
+        .addSubcommand((part) => part.setName("forget").setDescription("Forget a Memory")
+          .addIntegerOption((option) => option.setName("id").setDescription("Memory ID").setRequired(true).setMinValue(1)))
+        .addSubcommand((part) => part.setName("review").setDescription("Run a Memory Review now")));
     if (!this.client.application) throw new Error("Discord application unavailable for command registration");
     await this.client.application.commands.create(command.toJSON(), guildId);
   }

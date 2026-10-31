@@ -6,7 +6,7 @@ import type { OperationalStore } from "../persistence/operational-store.js";
 
 // The daily Memory Review cycle (Phase 6). It enqueues one memory_reviews row per Session with new settled
 // Messages and runs due rows one at a time, only while no user Message is pending or processing. It holds no
-// transport: reviews are silent. Scheduling fields (next_attempt_at, started_at) use the injected clock; audit
+// transport: the optional onReviewCompleted callback reports completed reviews to the caller. Scheduling fields (next_attempt_at, started_at) use the injected clock; audit
 // columns keep SQLite's own time.
 
 const actor = "memory-review-scheduler";
@@ -31,7 +31,13 @@ export type MemoryReviewSchedulerOptions = {
   maxChars: number;
   clock?: SchedulerClock;
   onFailure?: (error: Error) => void;
+  /** Called once per completed review, after its commit. It must not wait for transport work. */
+  onReviewCompleted?: (result: Extract<MemoryReviewResult, { state: "completed" }>) => void;
 };
+
+/** The answer to an owner's request to run a review cycle now. */
+export type MemoryReviewRequest = { state: "started"; enqueued: number }
+  | { state: "unavailable" | "unsupported" | "task_busy" | "reviewing" | "chat_busy" | "failed" };
 
 type ActiveReview = { controller: AbortController; done: Promise<void> };
 
@@ -111,6 +117,35 @@ export class MemoryReviewScheduler {
     }
   }
 
+  /**
+   * Runs a review cycle now on the owner's request, through the same guards as the daily cycle: never while a Task run
+   * holds the scheduler, a review is active, or chat work is pending or processing. The cycle Event is labelled
+   * `trigger=owner`, so it does not replace the daily cycle. Enqueued reviews start on the following poke.
+   */
+  async requestCycle(): Promise<MemoryReviewRequest> {
+    while (this.pokePromise) await this.pokePromise;
+    if (!this.started || this.stopped) return { state: "unavailable" };
+    if (!this.runtime.review) return { state: "unsupported" };
+    if (this.taskHeld) return { state: "task_busy" };
+    if (this.active) return { state: "reviewing" };
+    let result: MemoryReviewRequest = { state: "chat_busy" };
+    // Holding pokePromise keeps a timer or queue poke, and a Task run's pause, from overlapping the enqueue.
+    // Like runPoke, the held promise never rejects, so pauseForTask, idle, and stop keep working after a failure.
+    this.pokePromise = (async () => {
+      try {
+        if (await this.chatBusy()) return;
+        const now = this.clock.now();
+        result = { state: "started", enqueued: await this.runCycle(now, `trigger=owner; date=${localDate(now)}`) };
+      } catch (error) {
+        result = { state: "failed" };
+        this.fail(error);
+      }
+    })().finally(() => { this.pokePromise = undefined; });
+    await this.pokePromise;
+    void this.poke();
+    return result;
+  }
+
   async idle(): Promise<void> {
     while (this.active || this.pokePromise) await Promise.all([...(this.active ? [this.active.done] : []), ...(this.pokePromise ? [this.pokePromise] : [])]);
   }
@@ -157,17 +192,25 @@ export class MemoryReviewScheduler {
     if (now < this.scheduledOn(now)) return;
     const date = localDate(now);
     if ((await this.database.listEvents()).some((event) => event.event_type === "memory_review_cycle" && (event.detail ?? "").startsWith(`date=${date};`))) return;
+    await this.runCycle(now, `date=${date}`);
+  }
+
+  // Enqueues one review per Session with new settled Messages and records the cycle Event with `label` and the count.
+  private async runCycle(now: Date, label: string): Promise<number> {
+    // Memory proposals the owner left unanswered for 7 days expire (SQLite only; the PostgreSQL store has none).
+    await this.database.expireDueMemoryProposals?.(seconds(now), actor);
     let enqueued = 0;
       if (!this.runtime.review) {
         // Codex and OpenCode in V1: nothing is enqueued and every cursor stays where it is.
         await this.database.createEvent({ session_id: null, message_id: null, event_type: "memory_review_skipped",
-          detail: `date=${date}; reason=unsupported_runtime` }, actor);
+          detail: `${label}; reason=unsupported_runtime` }, actor);
       } else {
         const sessions = await this.database.listSessions();
         for (const { id } of sessions) if (await this.enqueue(id, now)) enqueued++;
       }
       await this.database.createEvent({ session_id: null, message_id: null, event_type: "memory_review_cycle",
-        detail: `date=${date}; enqueued=${enqueued}` }, actor);
+        detail: `${label}; enqueued=${enqueued}` }, actor);
+      return enqueued;
   }
 
   // The range a row for this Session must cover now: from the first Message after the completed cursor (whatever its
@@ -220,7 +263,7 @@ export class MemoryReviewScheduler {
     const done = (async () => {
       let result: MemoryReviewResult | { state: "failed"; reason: "commit_error" };
       try {
-        result = await reviewSessionWithStore(this.database, this.runtime, row.session_id, { reviewId: row.id, maxChars: this.options.maxChars, signal: controller.signal });
+        result = await reviewSessionWithStore(this.database, this.runtime, row.session_id, { reviewId: row.id, maxChars: this.options.maxChars, signal: controller.signal, now: seconds(this.clock.now()) });
       } catch {
         // The engine rolled its commit back, so a thrown error is a failed, replay-safe attempt.
         result = { state: "failed", reason: "commit_error" };
@@ -237,6 +280,7 @@ export class MemoryReviewScheduler {
     const now = this.clock.now();
     const update = (values: { state?: string; attempts?: number; failureDetail?: string | null; nextAttemptAt?: number | null }) => this.database.updateMemoryReview(row.id, values, actor);
     if (result.state === "completed") {
+      try { this.options.onReviewCompleted?.(result); } catch (error) { this.fail(error); }
       // The engine's window cap ended the range early: the remainder is reviewed next, in this same cycle.
       if (result.throughMessageId < row.through_message_id) {
         const messages = await this.database.messagesForMemoryReview(row.session_id);

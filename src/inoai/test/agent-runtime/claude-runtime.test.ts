@@ -191,6 +191,39 @@ test("passes the model as one --model= argv element only when configured", async
   } finally { await fake.cleanup(); }
 });
 
+test("passes configured allowed tools as one --allowedTools= argv element for new and resumed sessions", async () => {
+  const fake = await fakeCli([{ lines: [init, success("ok")] }, { lines: [init, success("again")] }]);
+  const tools = ["WebFetch", "WebSearch", "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"];
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, allowedTools: tools, model: "sonnet" });
+    const id = await runtime.createSession(fake.dir, "personality");
+    await collect(runtime.runTurn(id, "question"));
+    await collect(runtime.runTurn(id, "follow-up"));
+    const calls = await fake.calls();
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.deepEqual(call.argv.slice(-4), ["--permission-prompts", "none",
+        "--allowedTools=WebFetch,WebSearch,mcp__plugin_context-mode_context-mode__ctx_fetch_and_index", "--model=sonnet"]);
+      assert.equal(call.argv.filter((arg) => /^--allowed-?tools/i.test(arg)).length, 1);
+      assert.equal(call.argv.includes("--allowedTools"), false);
+    }
+    assert.deepEqual([calls[0]!.argv[5], calls[1]!.argv[5]], ["--session-id", "--resume"]);
+    assert.equal(calls[1]!.stdin, "follow-up");
+  } finally { await fake.cleanup(); }
+});
+
+test("an empty allowed tools list leaves the argv unchanged", async () => {
+  const fake = await fakeCli([{ lines: [init, success("ok")] }]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, allowedTools: [] });
+    const id = await runtime.createSession(fake.dir, "personality");
+    await collect(runtime.runTurn(id, "question"));
+    const [call] = await fake.calls();
+    assert.deepEqual(call.argv, ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+      "--session-id", id, "--append-system-prompt=personality", "--system-prompt-snapshot", "off", "--permission-prompts", "none"]);
+  } finally { await fake.cleanup(); }
+});
+
 test("binds the assigned UUID with the Claude runtime actor and uses neutral resume errors", async () => {
   const project = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {
@@ -541,8 +574,11 @@ test("Claude permission denials fail closed with one non-secret notice and Event
     await worker.idle();
 
     const notice = "Claude permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local Claude for the blocked action.";
+    const skipped = "Claude skipped some tool calls that need approval and answered without them. To allow a tool, add it to CLAUDE_ALLOWED_TOOLS in this runtime home's .env.";
     const bodies = sends.map((args) => args[1]);
-    assert.equal(bodies.filter((body) => body === notice).length, 2);
+    // The answered Turn gets the skipped note; only the failed Turn gets the declined warning.
+    assert.equal(bodies.filter((body) => body === skipped).length, 1);
+    assert.equal(bodies.filter((body) => body === notice).length, 1);
     assert.ok(bodies.includes("Both actions were blocked; nothing changed."));
     assert.ok(bodies.includes("Plain answer"));
     // Plain text sends only: no reply reference, components, or other actionable controls.
@@ -550,10 +586,10 @@ test("Claude permission denials fail closed with one non-secret notice and Event
 
     const events = database.prepare("SELECT session_id, message_id, detail, created_by FROM events WHERE event_type = 'approval_unsupported' ORDER BY id").all();
     assert.deepEqual(events.map((row) => ({ ...row })), [
-      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; denials=2", created_by: "runtime:claude" },
-      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; denials=1", created_by: "runtime:claude" },
+      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; turn=completed; denials=2", created_by: "runtime:claude" },
+      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; turn=failed; denials=1", created_by: "runtime:claude" },
     ]);
-    const archived = listMessages(database, session.id).filter((row) => row.direction === "agent" && row.body === notice);
+    const archived = listMessages(database, session.id).filter((row) => row.direction === "agent" && (row.body === notice || row.body === skipped));
     assert.equal(archived.length, 2);
     assert.ok(archived.every((row) => row.state === "completed" && row.external_message_id?.startsWith("discord-")));
     const turns = listMessages(database, session.id).filter((row) => row.direction === "user").map((row) => row.state);
@@ -582,10 +618,10 @@ test("Claude permission denials fail closed with one non-secret notice and Event
 test("a throwing denial listener never changes the Turn outcome", async () => {
   const fake = await fakeCli([{ lines: [init, { type: "system", subtype: "permission_denied", tool_name: "Bash", message: secret }, success("ok")] }]);
   try {
-    const reported: Array<[string, number]> = [];
-    const runtime = new ClaudeRuntime({ executable: fake.executable, onPermissionDenied: (id, count) => { reported.push([id, count]); throw new Error("listener failed"); } });
+    const reported: Array<[string, number, boolean]> = [];
+    const runtime = new ClaudeRuntime({ executable: fake.executable, onPermissionDenied: (id, count, completed) => { reported.push([id, count, completed]); throw new Error("listener failed"); } });
     const id = await runtime.createSession(fake.dir, "personality");
     assert.deepEqual(await collect(runtime.runTurn(id, "question")), [{ type: "answer", text: "ok" }]);
-    assert.deepEqual(reported, [[id, 1]]);
+    assert.deepEqual(reported, [[id, 1, true]]);
   } finally { await fake.cleanup(); }
 });

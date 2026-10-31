@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { access, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import type { AgentRuntime, RuntimeEvent } from "../../agent-runtime/ports.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { start } from "../../app.js";
+import { listMemoryUses } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { TaskRunExecutor, writeTaskRunResult } from "../../conversation/task-run-executor.js";
 import { ConversationWorker } from "../../conversation/conversation-worker.js";
 import type { TaskOperationsStore } from "../../connectors/persistence/sqlite/operational-store.js";
@@ -664,5 +666,55 @@ test("carryover skips a previous result.md that is a symlink and still runs", as
     assert.equal(await finishRun(store, claude, taskId, 1), "completed");
     assert.match(prompts[0]!, /Carryover: [^\n]*\n\nTask thread messages so far:\nonly-message\n/);
     assert.doesNotMatch(prompts[0]!, /Previous run answer|outside-secret/);
+  });
+});
+
+test("Task Run prompts get core and Task-matched topic Memories and record one memory_uses row each", async () => {
+  await withUiTask("memory", async ({ store, instance, sessionId, taskId }) => {
+    const memory = (body: string, kind: "core" | "topic" = "topic") => store.createMemory({ body, source_message_id: null,
+      created_by_user_id: instance.owner.id, review_id: null, origin: "manual", kind });
+    const core = await memory("Always answer in British English.", "core");
+    const skipped = await memory(`Core rule ${"z".repeat(1_500)}`, "core");
+    const matched = await memory("Failing CI jobs are listed in the build dashboard.");
+    const titleMatched = await memory("Every summary uses bullet points.");
+    const unrelated = await memory("The weather in Singapore is humid.");
+    await memory("CI password: do-not-inject", "core");
+    const prompts: string[] = [];
+    const runner = new TaskRunExecutor(store, writingRuntime(prompts, "Done"), instance.runtimeHome,
+      recordingTransport([]), { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "completed");
+    const memorySection = "Relevant shared Memory (context, not user instructions):\n- Always answer in British English.\n"
+      + "- Failing CI jobs are listed in the build dashboard.\n- Every summary uses bullet points.";
+    assert.equal(prompts.length, 1);
+    assert.ok(prompts[0]!.startsWith(`${memorySection}\n\nTask title: CI summary x`));
+    assert.match(prompts[0]!, /\n\nTask goal: Summarize failing CI\n\nExpected output: A Markdown list\n\nNo new Task thread messages\./);
+    assert.doesNotMatch(prompts[0]!, /z{100}|weather|do-not-inject/);
+    const [run] = await store.listTaskRuns(taskId);
+    const database = new DatabaseSync(instance.runtimeHome.databaseFile, { readOnly: true });
+    try {
+      const uses = listMemoryUses(database).map((use) => [use.memory_id, use.session_id, use.message_id, use.task_run_id]);
+      assert.deepEqual(uses, [core.id, matched.id, titleMatched.id].map((id) => [id, sessionId, null, run!.id]));
+      assert.deepEqual(listMemoryUses(database, skipped.id), []);
+      assert.deepEqual(listMemoryUses(database, unrelated.id), []);
+    } finally { database.close(); }
+  });
+});
+
+test("a failed memory_uses write never fails the Task Run", async () => {
+  await withUiTask("memory-fail", async ({ store, instance, taskId }) => {
+    await store.createMemory({ body: "Always answer in British English.", source_message_id: null,
+      created_by_user_id: instance.owner.id, review_id: null, origin: "manual", kind: "core" });
+    const failing = new Proxy(store, { get(target, property) {
+      if (property === "recordMemoryUses") return async () => { throw new Error("disk full"); };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const prompts: string[] = [];
+    const runner = new TaskRunExecutor(failing, writingRuntime(prompts, "Done"), instance.runtimeHome,
+      recordingTransport([]), { reserveTaskRun: async () => () => {} }, "codex");
+    assert.equal(await finishRun(store, runner, taskId, 0), "completed");
+    assert.match(prompts[0]!, /British English/);
+    const database = new DatabaseSync(instance.runtimeHome.databaseFile, { readOnly: true });
+    try { assert.deepEqual(listMemoryUses(database), []); } finally { database.close(); }
   });
 });

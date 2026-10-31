@@ -23,10 +23,11 @@ type StreamEvent = {
 };
 type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: boolean; authentication: boolean; usage: boolean; spawnFailed: boolean; timedOut: boolean; mismatched: boolean; deniedEvents: number };
 
-// Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
-export type PermissionDenialListener = (sessionId: string, count: number) => void;
+// Called at most once per Turn with only the Agent Session ID, a denial count, and whether the Turn answered; it never sees tool input.
+export type PermissionDenialListener = (sessionId: string, count: number, completed: boolean) => void;
 // homeDir locates `~/.claude/projects` for review cleanup only; reviewTimeoutMs bounds one whole review.
-export type ClaudeRuntimeOptions = { executable?: string; model?: string; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
+// allowedTools is the owner's opt-in list for Turns and Task runs only; Memory Review stays tool-free.
+export type ClaudeRuntimeOptions = { executable?: string; model?: string; allowedTools?: string[]; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
 type ReviewEvent = {
   type?: string; subtype?: string; apiKeySource?: unknown; tools?: unknown; mcp_servers?: unknown; memory_paths?: unknown; error?: unknown;
   message?: { content?: unknown }; rate_limit_info?: { status?: string };
@@ -47,15 +48,17 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly active = new Map<string, ActiveTurn>();
   private readonly executable: string;
   private readonly model?: string;
+  private readonly allowedTools?: string[];
   private readonly idleTimeoutMs: number;
   private readonly reviewTimeoutMs: number;
   private readonly homeDir: string;
   private readonly onPermissionDenied?: PermissionDenialListener;
   private closed = false;
 
-  constructor({ executable = "claude", model, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
+  constructor({ executable = "claude", model, allowedTools, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
     this.executable = executable;
     this.model = model;
+    this.allowedTools = allowedTools?.length ? [...allowedTools] : undefined;
     this.idleTimeoutMs = idleTimeoutMs;
     this.reviewTimeoutMs = reviewTimeoutMs;
     this.homeDir = homeDir;
@@ -113,17 +116,19 @@ export class ClaudeRuntime implements AgentRuntime {
       const newSession = session.state === "new";
       const attempt = yield* this.attempt(sessionId, session, prompt, active);
       const { result } = attempt;
+      // Classify from the final result event, not the exit code: SIGINT exits 0 and a login error can report "success".
+      const answered = !attempt.spawnFailed && !attempt.credentialRefused && !attempt.mismatched
+        && result?.is_error === false && result.subtype === "success" && typeof result.result === "string";
       // The CLI already denied these prompts; reporting them never changes the Turn's own outcome.
       const denials = Math.max(attempt.deniedEvents, Array.isArray(result?.permission_denials) ? result.permission_denials.length : 0);
       if (denials > 0) {
-        try { this.onPermissionDenied?.(sessionId, denials); } catch { /* the notice is best-effort */ }
+        try { this.onPermissionDenied?.(sessionId, denials, answered); } catch { /* the notice is best-effort */ }
       }
       if (attempt.spawnFailed) throw new RuntimeFailure("pre_start", true);
       // Not replay-safe: the CLI had already initialized, and a replay would meet the same credential.
       if (attempt.credentialRefused) throw new RuntimeFailure("authentication");
       if (attempt.mismatched) throw new RuntimeFailure("uncertain");
-      // Classify from the final result event, not the exit code: SIGINT exits 0 and a login error can report "success".
-      if (result?.is_error === false && result.subtype === "success" && typeof result.result === "string") {
+      if (answered && typeof result.result === "string") {
         const usage = usageEvent(result, newSession);
         if (usage) yield usage;
         yield { type: "answer", text: result.result };
@@ -280,6 +285,8 @@ export class ClaudeRuntime implements AgentRuntime {
       session.state === "new" ? "--session-id" : "--resume", sessionId,
       `--append-system-prompt=${session.instructions}`, "--system-prompt-snapshot", "off",
       "--permission-prompts", "none",
+      // One `--allowedTools=` element: the CLI option is variadic, and the joined form cannot consume later arguments.
+      ...(this.allowedTools ? [`--allowedTools=${this.allowedTools.join(",")}`] : []),
       ...(this.model ? [`--model=${this.model}`] : []),
     ];
   }

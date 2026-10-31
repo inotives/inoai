@@ -10,14 +10,16 @@ import { CodexRuntime } from "./connectors/agent-runtime/codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "./connectors/agent-runtime/concurrency-probe.js";
 import { loadConfiguration } from "./agent-instance/config.js";
 import type { UserRecord } from "./connectors/persistence/sqlite/legacy-database.js";
-import type { MemoryRecord } from "./memory/ports.js";
+import type { MemoryKind, MemoryRecord } from "./memory/ports.js";
 import { ConversationWorker } from "./conversation/conversation-worker.js";
 import { TaskRunExecutor, writeTaskRunResult } from "./conversation/task-run-executor.js";
 import { TaskScheduler } from "./conversation/task-scheduler.js";
 import { TaskProposalCards } from "./conversation/task-proposal-cards.js";
+import { MemoryProposalCards, type MemoryCardStore } from "./conversation/memory-proposal-cards.js";
 import { classifyIncomingMessage } from "./conversation/inbound-policy.js";
 import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
-import type { SchedulerClock } from "./memory/memory-review-scheduler.js";
+import type { MemoryReviewRequest, SchedulerClock } from "./memory/memory-review-scheduler.js";
+import { secretLike } from "./conversation/prompt-context.js";
 import { OpenCodeRuntime } from "./connectors/agent-runtime/opencode-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome, inspectRuntimeHomeLock, resolveRuntimeHome } from "./agent-instance/runtime-home.js";
 import { normalizeDirectoryArgs } from "./agent-instance/direct-directory.js";
@@ -135,6 +137,8 @@ export async function startTransport(
   taskRunner?: TaskRunExecutor,
   taskCards?: TaskProposalCards,
   approvalRelay?: ApprovalRelay,
+  memoryCards?: MemoryProposalCards,
+  memoryReview?: { requestCycle(): Promise<MemoryReviewRequest> },
 ): Promise<ChatTransport> {
   const store: OperationalStore & Partial<TaskOperationsStore> = operationalStore ?? instance.store;
   const inFlight = new Set<string>();
@@ -252,6 +256,45 @@ export async function startTransport(
   })().catch((error: unknown) => console.error("Discord message handling failed:", error instanceof Error ? error.message : error)); });
   const control = async (request: ThreadControl) => {
     const denied = "This control is available only in your active inoai thread.";
+    if (request.command.startsWith("memory-")) {
+      const unavailable = "Memory control unavailable in this channel.";
+      if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
+        || request.externalUserId !== instance.configuration.discordOwnerUserId) {
+        await request.respond(unavailable);
+        return;
+      }
+      const owner = await store.findUser("discord", request.workspaceId, request.externalUserId);
+      if (!owner || owner.id !== instance.owner.id) { await request.respond(unavailable); return; }
+      if (request.command === "memory-review") {
+        if (!memoryReview) { await request.respond("Memory Review unavailable right now."); return; }
+        const result = await memoryReview.requestCycle();
+        await request.respond(result.state === "started"
+          ? result.enqueued === 0 ? "Memory Review found nothing new to review."
+            : `Memory Review started for ${result.enqueued} Session${result.enqueued === 1 ? "" : "s"}. A summary appears in the status channel when it changes Memory or has proposals.`
+          : result.state === "chat_busy" || result.state === "task_busy" ? "Chat or a Task Run is active. Try again when it finishes."
+            : result.state === "reviewing" ? "A Memory Review is already running. Try again when it finishes."
+              : result.state === "unsupported" ? "Memory Review is not supported by this agent runtime."
+                : result.state === "failed" ? "Memory Review failed. Try again later."
+                  : "Memory Review unavailable right now.");
+        return;
+      }
+      const memories = await store.listMemories();
+      if (request.command === "memory-list") {
+        // Bodies are cut short, and one that looks like it holds a secret is never shown.
+        const lines = memories.map((memory) => {
+          const body = memory.body.replace(/\s+/g, " ").trim();
+          return `#${memory.id} ${memory.kind}: ${secretLike.test(memory.body) ? "[hidden: may contain a secret]"
+            : body.length > 80 ? `${body.slice(0, 79)}…` : body}`;
+        });
+        await request.respond((lines.join("\n") || "No active Memories.").slice(0, 1900));
+        return;
+      }
+      const memory = memories.find((item) => item.id === request.memoryId);
+      if (!memory) { await request.respond("Memory not found. Use /inoai memory list to see Memory IDs."); return; }
+      await store.softDeleteMemory(memory.id, "user:owner");
+      await request.respond(`Memory #${memory.id} forgotten.`);
+      return;
+    }
     if (request.command.startsWith("task-")) {
       if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
         || request.externalUserId !== instance.configuration.discordOwnerUserId || !request.guildTextChannelId
@@ -382,15 +425,17 @@ export async function startTransport(
   // Cards share the configured owner check; each handler also checks its original message and conversation.
   transport.onButtonClick?.(async (click) => {
     const approvalClick = click.customId.startsWith("inoai:approval:");
-    if (instance.closing || (approvalClick ? !approvalRelay : !taskCards)) { await click.replyEphemeral("This card is unavailable right now."); return; }
+    const memoryClick = click.customId.startsWith("inoai:memory:");
+    const cards = approvalClick ? approvalRelay : memoryClick ? memoryCards : taskCards;
+    if (instance.closing || !cards) { await click.replyEphemeral("This card is unavailable right now."); return; }
     const owner = click.workspaceId === instance.configuration.discordGuildId && click.externalUserId === instance.configuration.discordOwnerUserId
       ? await store.findUser("discord", click.workspaceId, click.externalUserId) : undefined;
     if (!owner || owner.id !== instance.owner.id) {
-      await click.replyEphemeral(approvalClick ? "Only the owner can use this approval card." : "Only the owner can use this task card.");
+      await click.replyEphemeral(approvalClick ? "Only the owner can use this approval card."
+        : memoryClick ? "Only the owner can use this Memory card." : "Only the owner can use this task card.");
       return;
     }
-    if (approvalClick) await approvalRelay!.handleClick(click);
-    else await taskCards!.handleClick(click);
+    await cards.handleClick(click);
   });
   try {
     await transport.start(receive, async () => {
@@ -429,15 +474,16 @@ export async function startTransport(
   }
 }
 
-export function manageMemory(operation: "add", argument: string, launchDirectory?: string, connectDirectory?: string): Promise<MemoryRecord>;
+export function manageMemory(operation: "add", argument: string, launchDirectory?: string, connectDirectory?: string, kind?: MemoryKind): Promise<MemoryRecord>;
 export function manageMemory(operation: "list", argument: undefined, launchDirectory?: string, connectDirectory?: string): Promise<MemoryRecord[]>;
 export function manageMemory(operation: "delete", argument: string, launchDirectory?: string, connectDirectory?: string): Promise<void>;
-export function manageMemory(operation: "add" | "list" | "delete", argument: string | undefined, launchDirectory?: string, connectDirectory?: string): Promise<MemoryRecord | MemoryRecord[] | void>;
+export function manageMemory(operation: "add" | "list" | "delete", argument: string | undefined, launchDirectory?: string, connectDirectory?: string, kind?: MemoryKind): Promise<MemoryRecord | MemoryRecord[] | void>;
 export async function manageMemory(
   operation: "add" | "list" | "delete",
   argument: string | undefined,
   launchDirectory = process.cwd(),
   connectDirectory?: string,
+  kind: MemoryKind = "topic",
 ): Promise<MemoryRecord | MemoryRecord[] | void> {
   try {
     const runtimeHome = resolveRuntimeHome(launchDirectory, connectDirectory);
@@ -448,13 +494,13 @@ export async function manageMemory(
         if (operation === "list") return manageMemoryWithStore(store, operation, argument);
         const owner = await store.findUser("discord", configuration.discordGuildId, configuration.discordOwnerUserId);
         if (!owner || owner.role !== "owner") throw new Error("Configured Discord owner is missing from the runtime database");
-        return manageMemoryWithStore(store, operation, argument, owner.id);
+        return manageMemoryWithStore(store, operation, argument, owner.id, kind);
       });
     }
 
     const instance = await start(launchDirectory, connectDirectory);
     try {
-      return await manageMemoryWithStore(instance.store, operation, argument, instance.owner.id);
+      return await manageMemoryWithStore(instance.store, operation, argument, instance.owner.id, kind);
     } finally {
       await instance.release();
     }
@@ -491,13 +537,16 @@ export function parseConnectDirectory(args: string[]): string | undefined {
   throw new Error("Usage: inoai [--connect-dir .inoai-connect*]");
 }
 
-function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "delete"; argument: string | undefined; connectDirectory: string | undefined } {
+function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "delete"; argument: string | undefined; connectDirectory: string | undefined; kind: MemoryKind } {
   const connectDirectory = args.length >= 2 && args.at(-2) === "--connect-dir" ? args.at(-1) : undefined;
   const command = connectDirectory === undefined ? args : args.slice(0, -2);
   const [operation, ...values] = command;
-  if ((operation === "add" || operation === "delete") && values.length === 1) return { operation, argument: values[0], connectDirectory };
-  if (operation === "list" && values.length === 0) return { operation, argument: undefined, connectDirectory };
-  throw new Error("Usage: inoai memory <add <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
+  if (operation === "add" && values.length === 2 && values.filter((value) => value === "--core").length === 1) {
+    return { operation, argument: values.find((value) => value !== "--core"), connectDirectory, kind: "core" };
+  }
+  if ((operation === "add" || operation === "delete") && values.length === 1) return { operation, argument: values[0], connectDirectory, kind: "topic" };
+  if (operation === "list" && values.length === 0) return { operation, argument: undefined, connectDirectory, kind: "topic" };
+  throw new Error("Usage: inoai memory <add [--core] <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
 }
 
 function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation; userId: string; displayName?: string; connectDirectory?: string } {
@@ -644,8 +693,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     return;
   }
   if (args[0] === "memory") {
-    const { operation, argument, connectDirectory } = parseMemoryCommand(args.slice(1));
-    const result = await manageMemory(operation, argument, process.cwd(), connectDirectory);
+    const { operation, argument, connectDirectory, kind } = parseMemoryCommand(args.slice(1));
+    const result = await manageMemory(operation, argument, process.cwd(), connectDirectory, kind);
     console.log(JSON.stringify(result));
     return;
   }
@@ -754,6 +803,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         case "claude":
           // The CLI denies prompts itself; the notifier only reports denials. A failed probe keeps global FIFO.
           runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
+            allowedTools: instance.configuration.claudeAllowedTools,
             onPermissionDenied: claudePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
           probeConcurrency = () => probeClaudeConcurrency({ signal: startupAbort.signal });
           break;
@@ -787,12 +837,19 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   }, transport, { store: instance.store! as OperationalStore & TaskOperationsStore, ownerUserId: instance.owner.id,
     ownerTimeZone: instance.configuration.ownerTimeZone, onProposal: (proposal) => taskCards?.deliver(proposal),
     now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000) });
-  // Silent daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so
-  // chat always runs first.
+  // Memory proposal cards are SQLite only; the PostgreSQL store has no proposals.
+  const memoryCards = instance.store?.confirmMemoryProposal
+    ? new MemoryProposalCards(instance.store as MemoryCardStore, transport, {
+      statusChannelId: instance.configuration.discordStatusChannelId,
+      now: () => Math.floor((supplied.schedulerClock?.now() ?? new Date()).getTime() / 1000) })
+    : undefined;
+  // Daily Memory Review cycle: it has no transport, and the worker tells it about every chat queue change so chat
+  // always runs first. A completed review that changed Memory or stored proposals is summarized in the status channel.
   const scheduler = new MemoryReviewScheduler(instance.store!, runtime, {
     reviewTime: instance.configuration.memoryReviewTime, maxChars: instance.configuration.memoryReviewMaxChars,
     clock: supplied.schedulerClock,
     onFailure: () => console.error("Memory review scheduler failed; the review stays queued"),
+    onReviewCompleted: (result) => { void memoryCards?.publishReview(result); },
   });
   const taskRunner = new TaskRunExecutor(instance.store! as OperationalStore & TaskOperationsStore,
     runtime, instance.runtimeHome, transport, worker, instance.configuration.agentProvider,
@@ -836,6 +893,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         instance.closing = true;
         await Promise.allSettled([...instance.pendingIngestion]);
         await taskCards?.stop();
+        await memoryCards?.stop();
         await transport.stop();
         await taskScheduler.stop();
         // Abort an active review and let it settle before the worker closes the runtime.
@@ -875,7 +933,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
         console.error(failure instanceof Error ? failure.message : failure);
         process.exitCode = 1;
       });
-    }, worker, undefined, taskRunner, taskCards, approvalRelay);
+    }, worker, undefined, taskRunner, taskCards, approvalRelay, memoryCards, scheduler);
     await startup;
     if (concurrentSessionsValidated) worker.enablePerSessionConcurrency();
     scheduler.start();

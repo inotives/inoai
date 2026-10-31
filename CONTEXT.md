@@ -68,6 +68,22 @@ _Avoid_: Memory, transcript
 An important Memory item created directly through inoai's local management CLI (`memory add`), without waiting for a Recap. The UI does not write Memory.
 _Avoid_: Chat command, transcript item
 
+**Memory Proposal**:
+A Memory that a Memory Review suggests from an implicit owner preference, decision, or correction, without an explicit request. It becomes Memory only when the owner clicks Confirm on its status-channel card; it expires after 7 days (ADR 0029).
+_Avoid_: Memory Signal, draft Memory
+
+**Core Memory**:
+A Memory of kind `core`: a standing rule included in every chat Turn and Task Run. Core Memories together use at most 1,500 characters of the prompt.
+_Avoid_: Pinned Memory, profile
+
+**Topic Memory**:
+A Memory of kind `topic`: included only when it matches the current message or the Task title and instruction. Every Memory from before kinds existed is a Topic Memory.
+_Avoid_: Relevant Memory, normal Memory
+
+**Memory Use**:
+An append-only record that one Memory was added to one chat Turn or Task Run prompt, stored in `memory_uses`.
+_Avoid_: Memory hit, citation
+
 **Analytics Sink**:
 An optional external store that receives a one-way, redacted copy of an Agent Instance's local history for analysis. It is never the operational source of truth.
 _Avoid_: Primary database, archive

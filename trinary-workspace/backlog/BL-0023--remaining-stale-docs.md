@@ -32,6 +32,7 @@ Doc drift left outside IP-0004 T-0004 scope:
 - [2026-10-24] IP-0004 T-0005 worker follow-ups: the `INSTRUCTIONS.md` Heartbeat "Isolated acceptance checks" command names test paths that do not exist (heartbeat tests are in `dist/inoai/test/heartbeat/`); `src/platform/README.md` and `src/persistence/README.md` describe removed files; `npm test` globs `dist/platform/*.test.js`, which matches nothing; the deployment tree lists `backups/`, which nothing creates.
 - [2026-10-24] IP-0004 T-0005 reviewer: `docs/adr/0009-opencode-uses-its-configured-provider.md:3` says the README documents the OpenCode data flow; it now lives in `INSTRUCTIONS.md#opencode`.
 - [2026-10-30] RF-0001 (branch `chore/node-security-update`) fixed two items here at the owner's request: `npm test` no longer lists the empty `dist/platform/*.test.js` glob, and the `INSTRUCTIONS.md` Heartbeat "Isolated acceptance checks" command now names `dist/inoai/test/...` paths. The other items stay open.
+- [2026-10-30] IP-0006 T-0006 reviewer handoff 1: `README.md:41` still says "A silent Daily Memory Review …". Since IP-0006 (ADR 0029), a review that changes Memory or stores proposals posts a status-channel summary. Drop "silent" or describe the summary.
 
 ## Open questions
 

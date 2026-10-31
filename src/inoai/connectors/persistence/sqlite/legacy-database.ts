@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS memories (
   review_id INTEGER REFERENCES memory_reviews(id),
   origin TEXT NOT NULL CHECK (origin IN ('manual', 'review')),
   state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'deleted')),
+  kind TEXT NOT NULL DEFAULT 'topic' CHECK (kind IN ('core', 'topic')),
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   created_by TEXT NOT NULL DEFAULT 'system',
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -161,6 +162,48 @@ CREATE TABLE IF NOT EXISTS memories (
   CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS active_memories ON memories(state, id);
+
+CREATE TABLE IF NOT EXISTS memory_proposals (
+  id INTEGER PRIMARY KEY,
+  body TEXT NOT NULL CHECK (length(trim(body)) > 0),
+  normalized_body TEXT NOT NULL CHECK (length(normalized_body) > 0),
+  kind TEXT NOT NULL DEFAULT 'topic' CHECK (kind IN ('core', 'topic')),
+  review_id INTEGER NOT NULL REFERENCES memory_reviews(id),
+  source_message_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_message_ids_json)),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'confirmed', 'rejected', 'expired')),
+  card_message_id TEXT,
+  expires_at INTEGER NOT NULL,
+  answered_at INTEGER,
+  created_memory_id INTEGER REFERENCES memories(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((state = 'pending' AND answered_at IS NULL) OR (state != 'pending' AND answered_at IS NOT NULL)),
+  CHECK (created_memory_id IS NULL OR state = 'confirmed'),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS pending_memory_proposals ON memory_proposals(state, expires_at, id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS memory_proposals_by_normalized_body ON memory_proposals(normalized_body, state) WHERE deleted_at IS NULL;
+
+-- Append-only: one row per Memory added to a chat Turn (message_id) or Task run (task_run_id).
+CREATE TABLE IF NOT EXISTS memory_uses (
+  id INTEGER PRIMARY KEY,
+  memory_id INTEGER NOT NULL REFERENCES memories(id),
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  message_id INTEGER REFERENCES messages(id),
+  task_run_id INTEGER REFERENCES task_runs(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  CHECK (message_id IS NOT NULL OR task_run_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS memory_uses_by_memory ON memory_uses(memory_id, id);
+CREATE TRIGGER IF NOT EXISTS memory_uses_no_update BEFORE UPDATE ON memory_uses
+  BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS memory_uses_no_delete BEFORE DELETE ON memory_uses
+  BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY,
@@ -352,6 +395,21 @@ function migrateTasks(database: DatabaseSync): void {
   }
 }
 
+/** Adds `memories.kind` to a database created before Memory kinds. Existing Memories become `topic`. */
+function migrateMemories(database: DatabaseSync): void {
+  const hasKind = () => (database.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>).some(({ name }) => name === "kind");
+  if (hasKind()) return;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    // Another connection may have added the column before this one took the write lock.
+    if (!hasKind()) database.exec("ALTER TABLE memories ADD COLUMN kind TEXT NOT NULL DEFAULT 'topic' CHECK (kind IN ('core', 'topic'))");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function openDatabase(home: RuntimeHome): DatabaseSync {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
@@ -366,6 +424,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     database.exec(initialSchema);
     migrateMessages(database);
     migrateTasks(database);
+    migrateMemories(database);
     migrateTaskProposals(database);
     recoverStaleWork(database);
     recoverLegacyApprovals(database);
@@ -391,7 +450,8 @@ function validateMaintenanceDatabase(database: DatabaseSync): void {
     throw new MaintenanceDatabaseUnavailableError("schema initialization or migration is required");
   }
   const messageColumns = database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
-  if (!messageColumns.some(({ name }) => name === "delivery_state")) {
+  const memoryColumns = database.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+  if (!messageColumns.some(({ name }) => name === "delivery_state") || !memoryColumns.some(({ name }) => name === "kind")) {
     throw new MaintenanceDatabaseUnavailableError("schema migration is required");
   }
   const recovery = database.prepare(`SELECT
@@ -535,7 +595,40 @@ export type MemoryRecord = AuditColumns & {
   review_id: number | null;
   origin: "manual" | "review";
   state: "active" | "deleted";
+  kind: MemoryKind;
 };
+
+export type MemoryKind = "core" | "topic";
+
+export type MemoryProposalRecord = AuditColumns & {
+  id: number;
+  body: string;
+  normalized_body: string;
+  kind: MemoryKind;
+  review_id: number;
+  source_message_ids: number[];
+  state: "pending" | "confirmed" | "rejected" | "expired";
+  card_message_id: string | null;
+  expires_at: number;
+  answered_at: number | null;
+  created_memory_id: number | null;
+};
+export type NewMemoryProposal = Pick<MemoryProposalRecord, "body" | "kind" | "review_id" | "source_message_ids" | "expires_at">;
+/** `answered` is false when the proposal was not pending and unexpired; nothing changed then. */
+export type MemoryProposalAnswer = { answered: boolean; proposal: MemoryProposalRecord | undefined };
+/** `memory` is the created Memory, or the active Memory with the same normalized body when confirm was a no-op. */
+export type MemoryProposalConfirmation = MemoryProposalAnswer & { memory?: MemoryRecord; duplicate: boolean };
+
+export type MemoryUseRecord = {
+  id: number;
+  memory_id: number;
+  session_id: number;
+  message_id: number | null;
+  task_run_id: number | null;
+  created_at: number;
+  created_by: string;
+};
+export type NewMemoryUse = Pick<MemoryUseRecord, "memory_id" | "session_id" | "message_id" | "task_run_id">;
 
 export type MemoryReviewRecord = AuditColumns & {
   id: number;
@@ -616,7 +709,7 @@ export type NewMessage = Omit<MessageRecord, keyof AuditColumns | "id" | "failur
 export type NewAgentResponse = Omit<NewMessage, "session_id" | "direction" | "in_reply_to_message_id" | "state">;
 export type MessageQueueMode = "per-session" | "global";
 export type NewEvent = Omit<EventRecord, keyof AuditColumns | "id">;
-export type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state">;
+export type NewMemory = Omit<MemoryRecord, keyof AuditColumns | "id" | "state" | "kind"> & { kind?: MemoryKind };
 export type NewMemoryReview = Omit<MemoryReviewRecord, keyof AuditColumns | "id" | "attempts" | "next_attempt_at" | "recap" | "failure_detail" | "started_at" | "completed_at" | "state">;
 
 function activeRow<T>(database: DatabaseSync, sql: string, ...values: Array<string | number | bigint | Uint8Array | null>): T | undefined {
@@ -1369,7 +1462,7 @@ export function failApproval(database: DatabaseSync, id: number): void {
 }
 
 export function createMemory(database: DatabaseSync, memory: NewMemory, actor = "system"): MemoryRecord {
-  const result = database.prepare("INSERT INTO memories (body, source_message_id, created_by_user_id, review_id, origin, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)").run(memory.body, memory.source_message_id, memory.created_by_user_id, memory.review_id, memory.origin, actor, actor);
+  const result = database.prepare("INSERT INTO memories (body, source_message_id, created_by_user_id, review_id, origin, kind, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(memory.body, memory.source_message_id, memory.created_by_user_id, memory.review_id, memory.origin, memory.kind ?? "topic", actor, actor);
   return activeRow<MemoryRecord>(database, "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL", Number(result.lastInsertRowid))!;
 }
 
@@ -1379,6 +1472,142 @@ export function listMemories(database: DatabaseSync): MemoryRecord[] {
 
 export function softDeleteMemory(database: DatabaseSync, id: number, actor = "system"): void {
   database.prepare("UPDATE memories SET state = 'deleted', updated_at = unixepoch(), updated_by = ?, deleted_at = unixepoch(), deleted_by = ? WHERE id = ? AND deleted_at IS NULL").run(actor, actor, id);
+}
+
+/** Memory text compared for duplicates and rejections: lower-case, trimmed, inner whitespace collapsed. */
+export function normalizeMemoryBody(body: string): string {
+  return body.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+type MemoryProposalRow = Omit<MemoryProposalRecord, "source_message_ids"> & { source_message_ids_json: string };
+function memoryProposal(row: MemoryProposalRow | undefined): MemoryProposalRecord | undefined {
+  if (!row) return undefined;
+  const { source_message_ids_json, ...record } = row;
+  return { ...record, source_message_ids: JSON.parse(source_message_ids_json) as number[] };
+}
+
+/** Stores a pending Memory proposal. Runs in the caller's transaction, if any. */
+export function createMemoryProposal(database: DatabaseSync, proposal: NewMemoryProposal, now: number, actor = "memory-review"): MemoryProposalRecord {
+  const body = proposal.body.trim();
+  const result = database.prepare(`INSERT INTO memory_proposals (body,normalized_body,kind,review_id,source_message_ids_json,expires_at,
+    created_at,created_by,updated_at,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(body, normalizeMemoryBody(body), proposal.kind,
+    proposal.review_id, JSON.stringify(proposal.source_message_ids), proposal.expires_at, now, actor, now, actor);
+  return getMemoryProposal(database, Number(result.lastInsertRowid))!;
+}
+
+export function getMemoryProposal(database: DatabaseSync, id: number): MemoryProposalRecord | undefined {
+  return memoryProposal(activeRow<MemoryProposalRow>(database, "SELECT * FROM memory_proposals WHERE id=? AND deleted_at IS NULL", id));
+}
+
+/** Pending proposals that have not reached `expires_at`, oldest first. */
+export function listPendingMemoryProposals(database: DatabaseSync, now: number): MemoryProposalRecord[] {
+  return (database.prepare("SELECT * FROM memory_proposals WHERE state='pending' AND expires_at>? AND deleted_at IS NULL ORDER BY id")
+    .all(now) as MemoryProposalRow[]).map((row) => memoryProposal(row)!);
+}
+
+export function setMemoryProposalCardMessage(database: DatabaseSync, id: number, cardMessageId: string, now: number, actor = "transport:discord"): boolean {
+  return database.prepare(`UPDATE memory_proposals SET card_message_id=?,updated_at=?,updated_by=?
+    WHERE id=? AND state='pending' AND deleted_at IS NULL`).run(cardMessageId, now, actor, id).changes === 1;
+}
+
+// Moves a pending, unexpired proposal to `state`. Call inside the caller's transaction.
+function answerMemoryProposal(database: DatabaseSync, id: number, state: "confirmed" | "rejected", now: number, actor: string): MemoryProposalRecord | undefined {
+  return memoryProposal(database.prepare(`UPDATE memory_proposals SET state=?,answered_at=?,updated_at=?,updated_by=?
+    WHERE id=? AND state='pending' AND expires_at>? AND deleted_at IS NULL RETURNING *`).get(state, now, now, actor, id, now) as MemoryProposalRow | undefined);
+}
+
+// Expires matching pending proposals. Call inside the caller's transaction.
+function expireMemoryProposalsWhere(database: DatabaseSync, where: string, values: SQLInputValue[], now: number, actor: string): MemoryProposalRecord[] {
+  return (database.prepare(`UPDATE memory_proposals SET state='expired',answered_at=?,updated_at=?,updated_by=?
+    WHERE ${where} AND state='pending' AND deleted_at IS NULL RETURNING *`).all(now, now, actor, ...values) as MemoryProposalRow[])
+    .map((row) => memoryProposal(row)!);
+}
+
+/**
+ * Confirms a pending, unexpired proposal exactly once and creates its Memory with the proposed kind in the same
+ * transaction. When an active Memory already has the same normalized body, the proposal is confirmed and no Memory
+ * is created. A non-pending proposal changes nothing; an overdue pending proposal becomes `expired`.
+ */
+export function confirmMemoryProposal(database: DatabaseSync, id: number, now: number, actor = "discord:owner"): MemoryProposalConfirmation {
+  return inTransaction(database, () => {
+    const answered = answerMemoryProposal(database, id, "confirmed", now, actor);
+    if (!answered) {
+      expireMemoryProposalsWhere(database, "id=? AND expires_at<=?", [id, now], now, "system");
+      return { answered: false, duplicate: false, proposal: getMemoryProposal(database, id) };
+    }
+    const existing = listMemories(database).find((memory) => normalizeMemoryBody(memory.body) === answered.normalized_body);
+    if (existing) return { answered: true, duplicate: true, memory: existing, proposal: answered };
+    const memory = createMemory(database, { body: answered.body, source_message_id: answered.source_message_ids[0] ?? null,
+      created_by_user_id: null, review_id: answered.review_id, origin: "review", kind: answered.kind }, actor);
+    database.prepare("UPDATE memory_proposals SET created_memory_id=? WHERE id=?").run(memory.id, id);
+    return { answered: true, duplicate: false, memory, proposal: getMemoryProposal(database, id) };
+  });
+}
+
+/** Rejects a pending, unexpired proposal exactly once. A non-pending proposal changes nothing; an overdue one expires. */
+export function rejectMemoryProposal(database: DatabaseSync, id: number, now: number, actor = "discord:owner"): MemoryProposalAnswer {
+  return inTransaction(database, () => {
+    const answered = answerMemoryProposal(database, id, "rejected", now, actor);
+    if (!answered) expireMemoryProposalsWhere(database, "id=? AND expires_at<=?", [id, now], now, "system");
+    return { answered: answered !== undefined, proposal: answered ?? getMemoryProposal(database, id) };
+  });
+}
+
+/** Expires every pending proposal whose `expires_at` has passed and returns them. */
+export function expireDueMemoryProposals(database: DatabaseSync, now: number, actor = "system"): MemoryProposalRecord[] {
+  return inTransaction(database, () => expireMemoryProposalsWhere(database, "expires_at<=?", [now], now, actor));
+}
+
+/** True when a proposal with the same normalized body was rejected before. */
+export function wasMemoryProposalRejected(database: DatabaseSync, body: string): boolean {
+  return database.prepare("SELECT 1 FROM memory_proposals WHERE normalized_body=? AND state='rejected' AND deleted_at IS NULL LIMIT 1")
+    .get(normalizeMemoryBody(body)) !== undefined;
+}
+
+/** A Memory Review stores at most this many proposals; each one expires this many seconds after it is stored. */
+export const maxReviewProposals = 5;
+export const memoryProposalTtlSeconds = 7 * 24 * 60 * 60;
+/** A proposal that passed the review's own checks (owner citations, kind, body limit, no secret-like text). */
+export type ReviewProposalDraft = { body: string; kind: MemoryKind; sourceMessageIds: number[] };
+export type ReviewProposalSkip = "duplicate_memory" | "duplicate_proposal" | "rejected_proposal" | "too_many_proposals";
+
+/**
+ * Stores a review's proposals inside the caller's review commit transaction, in order. A proposal is skipped when its
+ * normalized text matches an active Memory, a pending unexpired proposal (including one stored earlier in this call),
+ * or a rejected proposal, and once maxReviewProposals are stored.
+ */
+export function storeReviewProposals(database: DatabaseSync, reviewId: number, drafts: ReviewProposalDraft[], now: number, actor = "memory-review"): { ids: number[]; skipped: ReviewProposalSkip[] } {
+  const memories = new Set(listMemories(database).map((memory) => normalizeMemoryBody(memory.body)));
+  const pending = database.prepare("SELECT 1 FROM memory_proposals WHERE normalized_body=? AND state='pending' AND expires_at>? AND deleted_at IS NULL LIMIT 1");
+  const ids: number[] = [];
+  const skipped: ReviewProposalSkip[] = [];
+  for (const draft of drafts) {
+    const normalized = normalizeMemoryBody(draft.body);
+    const skip: ReviewProposalSkip | undefined = memories.has(normalized) ? "duplicate_memory"
+      : pending.get(normalized, now) ? "duplicate_proposal"
+      : wasMemoryProposalRejected(database, normalized) ? "rejected_proposal"
+      : ids.length >= maxReviewProposals ? "too_many_proposals" : undefined;
+    if (skip) { skipped.push(skip); continue; }
+    ids.push(createMemoryProposal(database, { body: draft.body, kind: draft.kind, review_id: reviewId,
+      source_message_ids: draft.sourceMessageIds, expires_at: now + memoryProposalTtlSeconds }, now, actor).id);
+  }
+  return { ids, skipped };
+}
+
+/** Appends one `memory_uses` row per use in one transaction. Rows are never updated or deleted. */
+export function recordMemoryUses(database: DatabaseSync, uses: NewMemoryUse[], now: number, actor = "system"): number {
+  if (uses.length === 0) return 0;
+  return inTransaction(database, () => {
+    const insert = database.prepare("INSERT INTO memory_uses (memory_id,session_id,message_id,task_run_id,created_at,created_by) VALUES (?,?,?,?,?,?)");
+    for (const use of uses) insert.run(use.memory_id, use.session_id, use.message_id, use.task_run_id, now, actor);
+    return uses.length;
+  });
+}
+
+export function listMemoryUses(database: DatabaseSync, memoryId?: number): MemoryUseRecord[] {
+  return (memoryId === undefined
+    ? database.prepare("SELECT * FROM memory_uses ORDER BY id").all()
+    : database.prepare("SELECT * FROM memory_uses WHERE memory_id=? ORDER BY id").all(memoryId)) as MemoryUseRecord[];
 }
 
 export function createMemoryReview(database: DatabaseSync, review: NewMemoryReview, actor = "system"): MemoryReviewRecord {

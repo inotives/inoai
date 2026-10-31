@@ -181,6 +181,31 @@ test("Discord Task command maps options and disables mentions in its private rep
   await transport.stop();
 });
 
+test("Discord Memory commands map to memory controls with the forget id", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const replies: unknown[] = [];
+  const controls: unknown[] = [];
+  await transport.start(() => undefined, undefined, undefined, async (control) => {
+    controls.push({ command: control.command, memoryId: control.memoryId });
+    await control.respond("done");
+  });
+  for (const command of ["list", "forget", "review", "unknown"]) {
+    fake.emit(Events.InteractionCreate, {
+      isChatInputCommand: () => true, commandName: "inoai", options: {
+        getSubcommand: () => command, getSubcommandGroup: () => "memory",
+        getInteger: (name: string, required?: boolean) => name === "id" && required === true ? 7 : null,
+      }, guildId: "guild", channelId: "status", channel: { type: ChannelType.GuildText, isThread: () => false }, user: { id: "owner" },
+      deferReply: async (value: unknown) => { replies.push(value); },
+      editReply: async (value: unknown) => { replies.push(value); },
+    });
+  }
+  await until(() => replies.length === 6);
+  assert.deepEqual(controls, [{ command: "memory-list", memoryId: undefined }, { command: "memory-forget", memoryId: 7 },
+    { command: "memory-review", memoryId: undefined }]);
+  await transport.stop();
+});
+
 test("Discord sends and edits button messages without mentions", async () => {
   const fake = new FakeClient();
   const transport = new DiscordTransport("", fake as unknown as Client);
@@ -259,6 +284,20 @@ test("inoai button clicks reach the callback and other interactions do not", asy
   assert.deepEqual(controls, ["status"]);
   assert.equal(clicks.length, 2);
   assert.deepEqual(replies.slice(2), [{ defer: { flags: MessageFlags.Ephemeral } }, { edit: { content: "ok", allowedMentions: { parse: [] } } }]);
+  await transport.stop();
+});
+
+test("Memory card clicks in the status channel reach the callback", async () => {
+  const fake = new FakeClient();
+  const transport = new DiscordTransport("", fake as unknown as Client);
+  const clicks: string[] = [];
+  const replies: unknown[] = [];
+  transport.onButtonClick(async (click: ButtonClick) => { clicks.push(`${click.conversationId} ${click.customId}`); await click.updateMessage("Confirmed."); });
+  await transport.start(() => undefined);
+  fake.emit(Events.InteractionCreate, { ...buttonInteraction("inoai:memory:3:confirm", replies), channelId: "status" });
+  await until(() => replies.length === 1);
+  assert.deepEqual(clicks, ["status inoai:memory:3:confirm"]);
+  assert.deepEqual(replies, [{ update: { content: "Confirmed.", components: [], allowedMentions: { parse: [] } } }]);
   await transport.stop();
 });
 
@@ -594,7 +633,10 @@ test("startup announces once and archives one health Event across reconnects", a
       const transport = await startTransport(instance, undefined, new DiscordTransport("token", fake as unknown as Client), undefined, undefined, sqliteStore(instance.database));
       assert.deepEqual(fake.sent, [{ content: "inoai is online" }]);
       assert.equal(fake.registeredGuild, "guild");
-      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset", "task"]);
+      assert.deepEqual((fake.registeredCommands[0] as { options: Array<{ name: string }> }).options.map((option) => option.name), ["status", "cancel", "reset", "task", "memory"]);
+      const memory = (fake.registeredCommands[0] as { options: Array<{ name: string; options?: Array<{ name: string; options?: Array<{ name: string; required?: boolean }> }> }> }).options[4]!;
+      assert.deepEqual(memory.options?.map((option) => [option.name, option.options?.map((item) => [item.name, item.required])]),
+        [["list", []], ["forget", [["id", true]]], ["review", []]]);
       assert.deepEqual(fake.sentChannelIds, ["status"]);
       const event = listEvents(instance.database)[0];
       assert.equal(event.event_type, "startup_online");
@@ -986,7 +1028,7 @@ test("Claude credential guard refuses an API key before Discord starts and relea
   });
 });
 
-test("Claude startup with the subscription login wires the runtime and a denied Turn posts the fixed notice", async () => {
+test("Claude startup with the subscription login wires the runtime and an answered Turn with denials posts the skipped note", async () => {
   await withFakeClaude(claudeSubscription, async (directory, home) => {
     const fake = new FakeClient();
     const logged: unknown[] = [];
@@ -1002,7 +1044,7 @@ test("Claude startup with the subscription login wires the runtime and a denied 
         mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
       });
       const sentText = () => JSON.stringify(fake.sent);
-      for (let attempt = 0; attempt < 500 && !(sentText().includes("Use local Claude for the blocked action") && sentText().includes("claude answer")); attempt++) {
+      for (let attempt = 0; attempt < 500 && !(sentText().includes("Claude skipped some tool calls") && sentText().includes("claude answer")); attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       process.emit("SIGTERM");
@@ -1014,7 +1056,8 @@ test("Claude startup with the subscription login wires the runtime and a denied 
       console.log = originalLog;
       console.error = originalError;
     }
-    assert.match(JSON.stringify(fake.sent), /Claude permission request declined: .* Use local Claude for the blocked action\./);
+    assert.match(JSON.stringify(fake.sent), /Claude skipped some tool calls that need approval and answered without them\./);
+    assert.doesNotMatch(JSON.stringify(fake.sent), /permission request declined/);
     assert.match(JSON.stringify(fake.sent), /claude answer/);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
     assert.equal(/sentinel|rm -rf/i.test(JSON.stringify([fake.sent, logged])), false);
@@ -1083,7 +1126,7 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
       mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
     });
     const sentText = () => JSON.stringify(fake.sent);
-    for (let attempt = 0; attempt < 500 && !(sentText().includes("Use local OpenCode for the blocked action") && sentText().includes("opencode answer")); attempt++) {
+    for (let attempt = 0; attempt < 500 && !(sentText().includes("OpenCode skipped some tool calls") && sentText().includes("opencode answer")); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     process.emit("SIGTERM");
@@ -1096,7 +1139,8 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
     assert.match(JSON.stringify(fake.sent), /opencode answer/);
     assert.match(JSON.stringify(logged), /OpenCode cross-session concurrency: unavailable; using global FIFO/);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
-    const notice = "OpenCode permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local OpenCode for the blocked action.";
+    const notice = "OpenCode skipped some tool calls that need approval and answered without them.";
+    assert.doesNotMatch(JSON.stringify(fake.sent), /permission request declined/);
     assert.equal(fake.sent.filter((sent) => JSON.stringify(sent).includes(notice)).length, 1);
     const tokens = ["sk-test-AAAAAAAAAAAAAAAAAAAA", "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"];
     const leaks = (text: string) => tokens.some((token) => text.includes(token)) || /sentinel|permission requested|cannot ask the user|external_directory|Command failed/i.test(text);
@@ -1106,7 +1150,7 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
       const session = restarted.database.prepare("SELECT agent_provider, agent_session_id, updated_by FROM sessions").get();
       assert.deepEqual({ ...session }, { agent_provider: "opencode", agent_session_id: "ses_wired000000000000000000000", updated_by: "runtime:opencode" });
       const denied = restarted.database.prepare("SELECT detail, created_by FROM events WHERE event_type = 'approval_unsupported'").all();
-      assert.deepEqual(denied.map((row) => ({ ...row })), [{ detail: "declined: no safe action preview; denials=2", created_by: "runtime:opencode" }]);
+      assert.deepEqual(denied.map((row) => ({ ...row })), [{ detail: "declined: no safe action preview; turn=completed; denials=2", created_by: "runtime:opencode" }]);
       assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM messages WHERE direction = 'agent' AND body = ?").get(notice)?.count, 1);
       assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM approvals").get()?.count, 0);
       const tables = restarted.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;

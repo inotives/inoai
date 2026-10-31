@@ -9,6 +9,7 @@ import type { OperationalStore } from "../persistence/operational-store.js";
 import type { ChatTransport } from "../transport/ports.js";
 import { resumeAgentSession, startAgentSession } from "./agent-session.js";
 import { addUsage, recordUsage, type Usage } from "./runtime-turn.js";
+import { composeTaskMemorySection } from "./prompt-context.js";
 import type { ConversationWorker } from "./conversation-worker.js";
 
 type Store = OperationalStore & TaskOperationsStore;
@@ -126,7 +127,9 @@ export class TaskRunExecutor {
         ? await startAgentSession(this.store, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.store, this.runtime, session.id, this.home);
       if (active.cancelled) { await this.runtime.cancel(active.sessionId); return; }
+      const memory = composeTaskMemorySection(await this.store.listMemories(), task);
       const prompt = [
+        ...(memory.section ? [memory.section] : []),
         ...(task.title ? [`Task title: ${task.title}`] : []),
         `Task goal: ${task.goal}`,
         ...(task.output_spec ? [`Expected output: ${task.output_spec}`] : []),
@@ -134,6 +137,7 @@ export class TaskRunExecutor {
         messages.length ? `New Task thread messages:\n${messages.map((message) => message.body).join("\n\n")}` : "No new Task thread messages.",
         `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Do not create result.md; inoai writes it with your reply. Reply with a concise completion summary.`,
       ].join("\n\n");
+      await this.recordMemoryUses(session.id, runId, memory.memoryIds);
       let answer: string | undefined;
       const usage: Usage = {};
       try {
@@ -180,6 +184,17 @@ export class TaskRunExecutor {
     } finally {
       // A cancel can land at any point, including after the completed result.md was written; SQLite decides.
       if (!ended) await this.writeCancelledResult(taskId, active).catch(() => undefined);
+    }
+  }
+
+  /** One `memory_uses` row per Memory in the run's prompt. Best effort: a failed write never fails the run. */
+  private async recordMemoryUses(sessionId: number, runId: number, memoryIds: number[]): Promise<void> {
+    if (!memoryIds.length || !this.store.recordMemoryUses) return;
+    try {
+      await this.store.recordMemoryUses(memoryIds.map((memory_id) => ({ memory_id, session_id: sessionId, message_id: null,
+        task_run_id: runId })), this.now(), "task-runtime");
+    } catch {
+      // Usage records are best effort.
     }
   }
 

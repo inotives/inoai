@@ -117,6 +117,35 @@ test("ignores CLAUDE_MODEL for a Codex home", () => {
   assert.equal(configuration.claudeModel, undefined);
 });
 
+test("parses optional CLAUDE_ALLOWED_TOOLS for a Claude home", () => {
+  const claude = { ...validValues, AGENT_PROVIDER: "claude" };
+  assert.equal(validateConfiguration(claude).claudeAllowedTools, undefined);
+  assert.equal(validateConfiguration({ ...claude, CLAUDE_ALLOWED_TOOLS: "  " }).claudeAllowedTools, undefined);
+  assert.deepEqual(validateConfiguration({ ...claude, CLAUDE_ALLOWED_TOOLS: " WebFetch , WebSearch,mcp__plugin_context-mode_context-mode__ctx_fetch_and_index " }).claudeAllowedTools,
+    ["WebFetch", "WebSearch", "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"]);
+  // Blank is unset, so a shared sample line does not break other providers.
+  assert.equal(validateConfiguration({ ...validValues, CLAUDE_ALLOWED_TOOLS: "" }).claudeAllowedTools, undefined);
+});
+
+test("rejects malformed CLAUDE_ALLOWED_TOOLS and any value for a non-Claude home", () => {
+  const claude = { ...validValues, AGENT_PROVIDER: "claude" };
+  for (const value of ["WebFetch,", ",WebFetch", "WebFetch,,WebSearch", "WebFetch, ,WebSearch", "Web Fetch", "Bash(git status:*)", "Bash(*)",
+    "--dangerously-skip-permissions", "-p", "WebFetch;rm", "$(id)", "`x`", "a|b", "mcp__x/y", "Edit*", "_x", "1tool", "WebFetch=x", `a${"b".repeat(128)}`]) {
+    assert.throws(() => validateConfiguration({ ...claude, CLAUDE_ALLOWED_TOOLS: value }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /CLAUDE_ALLOWED_TOOLS must be a comma-separated list of tool names/);
+      return true;
+    }, value);
+  }
+  for (const provider of ["codex", "opencode"]) {
+    assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: provider, CLAUDE_ALLOWED_TOOLS: "WebFetch" }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /CLAUDE_ALLOWED_TOOLS is only supported when AGENT_PROVIDER is claude/);
+      return true;
+    });
+  }
+});
+
 test("rejects an unsupported provider before acquiring the runtime lock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {

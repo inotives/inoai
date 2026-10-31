@@ -3,7 +3,7 @@ import { resumeAgentSession, startAgentSession } from "./agent-session.js";
 import type { Configuration } from "../agent-instance/config.js";
 import type { MessageRecord, OperationalStore } from "../persistence/operational-store.js";
 import type { RuntimeHome } from "../agent-instance/runtime-home.js";
-import { composeTurnPrompt } from "./prompt-context.js";
+import { composeTurnContext } from "./prompt-context.js";
 import { runRuntimeTurn } from "./runtime-turn.js";
 import { KnownDeliveryFailure } from "./transport-port.js";
 import type { ConversationTransport } from "./transport-port.js";
@@ -208,7 +208,8 @@ export class ConversationWorker {
       const agentSessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.database, this.runtime, session.id, this.home)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
-      let prompt = await composeTurnPrompt(this.database, message);
+      const composed = await composeTurnContext(this.database, message);
+      let prompt = composed.prompt;
       const tasks = await this.chatTaskList(session, message);
       if (tasks) prompt += `\n\n${taskBlockInstruction(tasks, this.chatTasks!.ownerTimeZone, this.now())}`;
       const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
@@ -229,6 +230,7 @@ export class ConversationWorker {
         return;
       }
       this.activeAgentSessionIds.set(message.id, agentSessionId);
+      await this.recordMemoryUses(session.id, message.id, composed.memoryIds);
       const outcome = await runRuntimeTurn(this.database, this.runtime, session.id, agentSessionId, prompt, undefined, message.id, cancellation.signal);
       if (cancellation.signal.aborted) {
         await this.database.failProcessingMessage(message.id, "Cancelled by owner", "user:owner");
@@ -271,6 +273,17 @@ export class ConversationWorker {
   }
 
   private now(): number { return this.chatTasks?.now?.() ?? Math.floor(Date.now() / 1000); }
+
+  // One `memory_uses` row per Memory in the started Turn's prompt. Best effort: a failed write never fails the Turn.
+  private async recordMemoryUses(sessionId: number, messageId: number, memoryIds: number[]): Promise<void> {
+    if (!memoryIds.length || !this.database.recordMemoryUses) return;
+    try {
+      await this.database.recordMemoryUses(memoryIds.map((memory_id) => ({ memory_id, session_id: sessionId, message_id: messageId,
+        task_run_id: null })), this.now(), "conversation-worker");
+    } catch {
+      // Usage records are best effort.
+    }
+  }
 
   // Owner turns in normal conversations only. Task threads never reach this worker as pending turns, but a Task's
   // Session is excluded here too. Returns undefined when the turn gets no Task instruction.

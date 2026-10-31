@@ -1,3 +1,5 @@
+export type MemoryKind = "core" | "topic";
+
 export type MemoryRecord = {
   id: number;
   body: string;
@@ -6,6 +8,7 @@ export type MemoryRecord = {
   review_id: number | null;
   origin: "manual" | "review";
   state: "active" | "deleted";
+  kind: MemoryKind;
   created_at: number;
   created_by: string;
   updated_at: number;
@@ -22,6 +25,7 @@ export interface MemoryOperationsStore {
     created_by_user_id: number | null;
     review_id: number | null;
     origin: "manual" | "review";
+    kind?: MemoryKind;
   }, actor: string): Promise<MemoryRecord>;
   softDeleteMemory(id: number, actor: string): Promise<void>;
 }

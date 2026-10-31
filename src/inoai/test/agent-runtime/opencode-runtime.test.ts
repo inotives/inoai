@@ -540,9 +540,9 @@ test("OpenCode permission rejections fail closed with one non-secret notice and 
       async sendMessage(...args: unknown[]) { sends.push(args); return `discord-${sends.length}`; },
       async showWorking() {},
     };
-    const reported: Array<[string, number]> = [];
+    const reported: Array<[string, number, boolean]> = [];
     const notify = openCodePermissionDenialNotifier(sqliteStore(database), transport as never);
-    const runtime = new OpenCodeRuntime({ executable: fake.executable, onPermissionDenied: (id, count) => { reported.push([id, count]); notify(id, count); } });
+    const runtime = new OpenCodeRuntime({ executable: fake.executable, onPermissionDenied: (id, count, completed) => { reported.push([id, count, completed]); notify(id, count, completed); } });
     const worker = new ConversationWorker(sqliteStore(database), home, runtime, "opencode", () => {}, transport);
     for (const id of ["first", "second", "third"]) {
       archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: id, external_author_id: "owner", user_id: owner.id, direction: "user", body: id, reply_to_external_message_id: null, in_reply_to_message_id: null });
@@ -554,10 +554,13 @@ test("OpenCode permission rejections fail closed with one non-secret notice and 
     // The listener receives the streamed OpenCode ID, which SQLite already holds after the first-Turn rebind.
     const bound = "ses_fake0000000000000000000000";
     assert.equal(getSession(database, session.id)!.agent_session_id, bound);
-    assert.deepEqual(reported, [[bound, 2], [bound, 1]]);
+    assert.deepEqual(reported, [[bound, 2, true], [bound, 1, false]]);
     const notice = "OpenCode permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local OpenCode for the blocked action.";
+    const skipped = "OpenCode skipped some tool calls that need approval and answered without them.";
     const bodies = sends.map((args) => args[1]);
-    assert.equal(bodies.filter((body) => body === notice).length, 2);
+    // The answered Turn gets the skipped note; only the failed Turn gets the declined warning.
+    assert.equal(bodies.filter((body) => body === skipped).length, 1);
+    assert.equal(bodies.filter((body) => body === notice).length, 1);
     assert.ok(bodies.includes("Both actions were blocked; nothing changed."));
     assert.ok(bodies.includes("Plain answer"));
     // Plain text sends only: no reply reference, components, or other actionable controls.
@@ -565,10 +568,10 @@ test("OpenCode permission rejections fail closed with one non-secret notice and 
 
     const events = database.prepare("SELECT session_id, message_id, detail, created_by FROM events WHERE event_type = 'approval_unsupported' ORDER BY id").all();
     assert.deepEqual(events.map((row) => ({ ...row })), [
-      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; denials=2", created_by: "runtime:opencode" },
-      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; denials=1", created_by: "runtime:opencode" },
+      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; turn=completed; denials=2", created_by: "runtime:opencode" },
+      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; turn=failed; denials=1", created_by: "runtime:opencode" },
     ]);
-    const archived = listMessages(database, session.id).filter((row) => row.direction === "agent" && row.body === notice);
+    const archived = listMessages(database, session.id).filter((row) => row.direction === "agent" && (row.body === notice || row.body === skipped));
     assert.equal(archived.length, 2);
     assert.ok(archived.every((row) => row.state === "completed" && row.external_message_id?.startsWith("discord-") && row.created_by === "transport:discord"));
     const turns = listMessages(database, session.id).filter((row) => row.direction === "user").map((row) => row.state);
@@ -596,12 +599,12 @@ test("OpenCode permission rejections fail closed with one non-secret notice and 
 test("a throwing denial listener never changes the Turn outcome, and no rejection means no call", async () => {
   const fake = await fakeCli([{ lines: [stepStart, rejectedTool, toolStepFinish, stepStart, text("ok")] }, answered("clean")]);
   try {
-    const reported: Array<[string, number]> = [];
-    const runtime = new OpenCodeRuntime({ executable: fake.executable, onPermissionDenied: (id, count) => { reported.push([id, count]); throw new Error("listener failed"); } });
+    const reported: Array<[string, number, boolean]> = [];
+    const runtime = new OpenCodeRuntime({ executable: fake.executable, onPermissionDenied: (id, count, completed) => { reported.push([id, count, completed]); throw new Error("listener failed"); } });
     const id = await runtime.createSession(fake.dir, "personality");
     assert.deepEqual(await collect(runtime.runTurn(id, "question")), [{ type: "session", id: "ses_fake0000000000000000000000" }, { type: "answer", text: "ok" }]);
     assert.deepEqual(await collect(runtime.runTurn(id, "next")), [{ type: "answer", text: "clean" }]);
-    assert.deepEqual(reported, [["ses_fake0000000000000000000000", 1]]);
+    assert.deepEqual(reported, [["ses_fake0000000000000000000000", 1, true]]);
   } finally { await fake.cleanup(); }
 });
 

@@ -170,6 +170,7 @@ CREATE TABLE memories (
   origin TEXT NOT NULL CHECK (origin IN ('manual', 'review')),
   state TEXT NOT NULL DEFAULT 'active'
     CHECK (state IN ('active', 'deleted')),
+  kind TEXT NOT NULL DEFAULT 'topic' CHECK (kind IN ('core', 'topic')),
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   created_by TEXT NOT NULL DEFAULT 'system',
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -181,6 +182,56 @@ CREATE TABLE memories (
 
 CREATE INDEX active_memories
   ON memories(state, id);
+
+CREATE TABLE memory_proposals (
+  id INTEGER PRIMARY KEY,
+  body TEXT NOT NULL CHECK (length(trim(body)) > 0),
+  normalized_body TEXT NOT NULL CHECK (length(normalized_body) > 0),
+  kind TEXT NOT NULL DEFAULT 'topic' CHECK (kind IN ('core', 'topic')),
+  review_id INTEGER NOT NULL REFERENCES memory_reviews(id),
+  source_message_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_message_ids_json)),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'confirmed', 'rejected', 'expired')),
+  card_message_id TEXT,
+  expires_at INTEGER NOT NULL,
+  answered_at INTEGER,
+  created_memory_id INTEGER REFERENCES memories(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((state = 'pending' AND answered_at IS NULL) OR (state != 'pending' AND answered_at IS NOT NULL)),
+  CHECK (created_memory_id IS NULL OR state = 'confirmed'),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+
+CREATE INDEX pending_memory_proposals
+  ON memory_proposals(state, expires_at, id)
+  WHERE deleted_at IS NULL;
+CREATE INDEX memory_proposals_by_normalized_body
+  ON memory_proposals(normalized_body, state)
+  WHERE deleted_at IS NULL;
+
+-- Append-only: triggers replace the soft-deletion columns.
+CREATE TABLE memory_uses (
+  id INTEGER PRIMARY KEY,
+  memory_id INTEGER NOT NULL REFERENCES memories(id),
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  message_id INTEGER REFERENCES messages(id),
+  task_run_id INTEGER REFERENCES task_runs(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  CHECK (message_id IS NOT NULL OR task_run_id IS NOT NULL)
+);
+
+CREATE INDEX memory_uses_by_memory
+  ON memory_uses(memory_id, id);
+CREATE TRIGGER memory_uses_no_update BEFORE UPDATE ON memory_uses
+  BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
+CREATE TRIGGER memory_uses_no_delete BEFORE DELETE ON memory_uses
+  BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
 
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY,
@@ -283,6 +334,8 @@ CREATE UNIQUE INDEX one_pending_task_proposal_per_conversation
 
 Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`, `deleted_at`, and `deleted_by`. Actor fields are normalized text such as `system`, `user:42`, `transport:discord`, or `agent:codex`; this supports automated and human actions without a second actor table. `deleted_at` and `deleted_by` form a soft-delete pair: records are not physically removed in V1, and ordinary queries exclude soft-deleted rows. Soft-deleted records are hidden with no restore action in V1.
 
+`memory_uses` is the one exception. It has only `created_at` and `created_by`. Its rows are never updated or deleted: the `memory_uses_no_update` and `memory_uses_no_delete` triggers abort any `UPDATE` or `DELETE`.
+
 ## How the tables work
 
 - A transport-specific start action creates one `sessions` row and one initial `messages` row. `agent_provider` and `agent_session_id` identify the selected CLI runtime session; `conversation_id` is the transport conversation boundary (a Discord thread in v1).
@@ -292,8 +345,10 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - Phase 5 persists each agent response chunk before Discord delivery. An unsent chunk has a local `provisional_id` and a null `external_message_id`; the latter is filled only after Discord confirms delivery. `delivery_state` moves from `pending` to `uncertain` before send, then to `confirmed` or known `failed` when the outcome is known. A chunk left `uncertain` after restart is never resent automatically; the archived body remains available locally. Legacy agent Messages with an already-known external ID migrate as `confirmed`.
 - `events` stores health checks, connection changes, session lifecycle events, and errors. Its `session_id` is nullable so `inoai is online` can be recorded without a conversation.
 - A `memory_reviews` row is a timestamped recap entry. It records the source range since that Agent Session's last completed recap, its concise recap text, and any Memory actions. Only normal chat work runs ahead of it.
-- Daily scheduling uses Events rather than new tables: one `memory_review_cycle` Event per local date, `memory_review_deferred` when chat preempts a review (five per review per day at most), and `memory_review_skipped` for a runtime without review support. Reviews may update or delete only `origin = review` Memory; dropped actions are recorded as non-secret `ignored` outcomes.
-- `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history.
+- Daily scheduling uses Events rather than new tables: one daily `memory_review_cycle` Event per local date (detail `date=<local date>; enqueued=<n>`), `memory_review_deferred` when chat preempts a review (five per review per day at most), and `memory_review_skipped` for a runtime without review support. `/inoai memory review` adds an owner-requested `memory_review_cycle` Event with detail `trigger=owner; date=<local date>; enqueued=<n>`. Only a detail that starts with `date=` counts as the daily cycle, so a date can have several cycle Events. Reviews may update or delete only `origin = review` Memory; dropped actions are recorded as non-secret `ignored` outcomes.
+- `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history. `kind` is `core` or `topic`; see [Memory proposals and uses](#memory-proposals-and-uses).
+- `memory_proposals` holds a Memory that a review proposed from an implicit signal, until the owner confirms or rejects it on its status-channel card (ADR 0029). It never changes `memories` by itself.
+- `memory_uses` records each Memory added to a chat Turn or Task Run prompt. It is append-only.
 - `tasks` binds one bounded goal to its Conversation and Agent Session. `goal` holds the instruction. A legacy Task (`schedule_kind` NULL, created by `/inoai task create`) keeps its earlier behaviour: a one-time Task has no interval or automatic due time, and a recurring interval uses whole hours stored as seconds, with the first due time one interval after creation. A scheduled Task (`schedule_kind` set) follows the rules in [Task schedules](#task-schedules). The cursor is the newest archived message consumed by the Task.
 - `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. `start()` runs this recovery (`recoverTaskRuns`) after it takes the Runtime Home Lock and bootstraps the owner; `openDatabase` no longer does. Recovery returns the runs it failed, and `start()` writes their `result.md` (see [Result file](#result-file)). It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
 - `task_proposals` holds a Task create, edit, or management action that the agent proposed in chat, until the owner confirms or cancels it on its Discord card (ADR 0027). It never changes `tasks` by itself. See [Chat-proposed Tasks](#chat-proposed-tasks).
@@ -424,6 +479,62 @@ These runs get no `result.md`: a run that fails before its folder exists (for ex
 `results/`, the Task folder, and the run folder must be real directories inside `results/`. The agent opens `result.md` with `O_NOFOLLOW` and writes it only when it is a regular file with one link, so a planted symlink or hard link fails the run instead. `result.md` is not uploaded to Discord and is not listed in the Discord report.
 
 The UI reads `result.md` for the newest 20 runs of each listed Task, in `/api/ui-data` `taskRuns`. It applies the same folder and link checks, refuses files over 64 KB or with NUL bytes, redacts credential-shaped text, and returns at most 4 MB of result text per response. A run in progress shows "Run in progress".
+
+## Memory proposals and uses
+
+These tables and `memories.kind` exist only in SQLite (ADR 0029). The PostgreSQL store reads every Memory as `topic` and stores no proposals or uses.
+
+Startup adds `memories.kind` to an older database (`migrateMemories`) with default `topic`, so existing Memories become `topic`. The new tables use `CREATE TABLE IF NOT EXISTS`. A live maintenance connection refuses a database whose `memories` table has no `kind` column.
+
+### Memory kinds
+
+- A `core` Memory is included in every chat Turn and Task Run prompt, oldest first, within 1,500 characters. A core Memory that does not fit is skipped.
+- A `topic` Memory is included when it shares a word with the query text: the current message for a Turn, or the Task title and instruction for a Task Run. Topic Memories fill the rest of the 6,000-character context budget, best match first.
+- Secret-like Memories are never included. `memory add --core` creates a `core` Manual Memory Entry; other adds create `topic`.
+
+### Memory proposals
+
+The review's `propose` action creates `memory_proposals` rows inside the review commit transaction (`storeReviewProposals`), with actor `memory-review`. A stale-range commit stores none.
+
+Columns:
+
+- `body`: the proposed text, at most 500 characters, with no secret-like text. `normalized_body` is the lower-cased, trimmed text with inner whitespace collapsed (`normalizeMemoryBody`). Duplicate and rejection checks compare it.
+- `kind`: the kind the review suggested. Confirm uses it unchanged.
+- `review_id`: the review that proposed it. Required.
+- `source_message_ids_json`: the cited owner Message ids. Only owner Messages in the reviewed range are kept.
+- `card_message_id`: the Discord card in the status channel. It can be written only while the row is `pending`. It stays NULL when the card post failed.
+- `expires_at`: 7 days after the review commit.
+- `answered_at`: NULL while `pending`; set for every other state.
+- `created_memory_id`: the Memory a confirm created. NULL for every other outcome, also for a confirm whose text already matched an active Memory.
+
+A review skips a proposal, with an `ignored` reason, when its normalized text matches an active Memory (`duplicate_memory`), a pending unexpired proposal (`duplicate_proposal`), or a rejected proposal (`rejected_proposal`), or when 5 proposals are already stored for the review (`too_many_proposals`). A proposal that cites no owner Message is ignored as `no_owner_source`. The `memory_review_completed` Event detail ends in `; proposed=<n>` when the review stored at least one proposal.
+
+States and moves:
+
+| From | To | When | Actor |
+| --- | --- | --- | --- |
+| (new) | `pending` | The review commit stores a valid proposal. | `memory-review` |
+| `pending` | `confirmed` | An owner Confirm click before `expires_at`. The Memory is created in the same transaction. | `discord:owner` |
+| `pending` | `rejected` | An owner Reject click before `expires_at`. | `discord:owner` |
+| `pending` | `expired` | A review cycle starts after `expires_at`. | `memory-review-scheduler` |
+| `pending` | `expired` | A click after `expires_at`. | `system` |
+
+Rules:
+
+- Every move is guarded on `state = 'pending'`, so each proposal is answered exactly once. A click on an answered or expired proposal changes nothing.
+- A confirm creates a `memories` row with the proposal's `kind`, `origin = 'review'`, its `review_id`, the first source Message as `source_message_id`, and `created_by = 'discord:owner'`.
+- A rejected `normalized_body` is never proposed again.
+- Rows are never physically deleted.
+
+### Memory uses
+
+A `memory_uses` row records one Memory added to one prompt:
+
+- A chat Turn writes `session_id`, `message_id`, and NULL `task_run_id`, with actor `conversation-worker`. The rows are written after `markRuntimeStarted` succeeds. A Turn cancelled before that writes none; a Turn that later fails keeps its rows.
+- A Task Run writes `session_id`, `task_run_id`, and NULL `message_id`, with actor `task-runtime`. The rows are written just before the runtime turn, after the cancellation check. A run that later fails keeps its rows.
+- The CHECK requires `message_id` or `task_run_id`.
+- One batch is one transaction. The write is best effort: a failed write is dropped and never fails the Turn or the run.
+- Triggers reject every `UPDATE` and `DELETE`. Soft-deleting a Memory leaves its use rows unchanged.
 
 ## Worker rules
 

@@ -29,6 +29,9 @@ see [README.md](README.md). For the architecture and folder layout, see
   - [Isolated acceptance checks](#isolated-acceptance-checks)
 - [Runtime Behavior](#runtime-behavior)
 - [Daily Memory Review](#daily-memory-review)
+  - [Memory proposals](#memory-proposals)
+  - [Memory in prompts](#memory-in-prompts)
+  - [Memory commands](#memory-commands)
 - [Upgrading agent CLIs](#upgrading-agent-clis)
 - [Development](#development)
 
@@ -147,7 +150,7 @@ npm start
 
 Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it never starts conversations. The older `DISCORD_ALLOWED_CHANNEL_ID` key is no longer accepted; update existing local runtime-home `.env` files before starting this version. The bot needs access to the status channel and to every channel where you start conversations, including permission to create threads.
 
-`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
+`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a well-formed optional `CLAUDE_ALLOWED_TOOLS` (Claude homes only), a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
 
 ### Agent profile
 
@@ -240,6 +243,8 @@ npm start -- --connect-dir .inoai-connect-claude
 
 `CLAUDE_MODEL` is optional. Leave it blank for the CLI default, or set a model name or alias such as `sonnet`. It must start with a letter or digit and contain only letters, digits, and `. _ : - [ ]`. Other runtimes ignore it.
 
+`CLAUDE_ALLOWED_TOOLS` is optional and off by default. inoai runs the Claude CLI with `--permission-prompts none`, so any tool that would need a permission prompt is denied. Set this to a comma-separated list of Claude tool names to let chat Turns and Task runs use those tools, for example `CLAUDE_ALLOWED_TOOLS=WebFetch,WebSearch,mcp__plugin_context-mode_context-mode__ctx_fetch_and_index`. inoai passes the list to the CLI as one `--allowedTools=` argument. Every listed tool then runs without a prompt, so list only tools you trust the agent to use unattended. The setting is per runtime home: it lives in that home's `.env` and affects no other home. It never changes global Claude configuration, settings, plugins, hooks, or MCP servers. Memory Review and the startup concurrency probe stay tool-free and never receive the list. Each entry must be a plain tool name that starts with a letter and contains only letters, digits, `_`, and `-`; empty entries and tool rules such as `Bash(git status:*)` are rejected. A non-blank value with any `AGENT_PROVIDER` other than `claude` fails validation. Leave it blank or unset to keep the CLI arguments unchanged.
+
 **Credential guard.** inoai accepts only the interactive Claude subscription login. At `npm start` it asks the CLI which credential it will use (`claude auth status`) and refuses to start, naming the source, if any of these would take over:
 
 - an API key, such as `ANTHROPIC_API_KEY` or a Console key;
@@ -288,8 +293,9 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `npm start -- --connect-dir <home>` | Start a named runtime home. `npm run validate`, `ui`, and `memory` accept the same option. |
 | `npm start -- heartbeat --connect-dir .robin-xai-test` | Run the optional supervisor in the foreground with one inoai child. |
 | `npm start -- heartbeat launchagent render --connect-dir .robin-xai-test` | Print the optional macOS LaunchAgent plist without installing it. |
-| `npm start -- memory add "<text>"` | Add a Manual Memory Entry to local SQLite without starting an Agent Runtime. |
-| `npm start -- memory list` | List active Memory with `origin` (`manual` or `review`); review-made entries also show `review_id` and `source_message_id`. |
+| `npm start -- memory add "<text>"` | Add a Manual Memory Entry to local SQLite without starting an Agent Runtime. It is a topic Memory. |
+| `npm start -- memory add --core "<text>"` | Add a core Manual Memory Entry, included in every Turn and Task Run ([Memory in prompts](#memory-in-prompts)). |
+| `npm start -- memory list` | List active Memory with `kind` (`core` or `topic`) and `origin` (`manual` or `review`); review-made entries also show `review_id` and `source_message_id`. |
 | `npm start -- memory delete <id>` | Soft-delete a Memory entry of either origin. |
 | `npm run allowlist:add -- --connect-dir .robin-xai-test --user-id <discord-user-id> --display-name "Ada"` | Add or reactivate a Discord family user for the configured guild. |
 | `npm run allowlist:disable -- --connect-dir .robin-xai-test --user-id <discord-user-id>` | Disable a Discord family user without deleting its audit history. |
@@ -306,8 +312,11 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 | `/inoai task create` | Create a one-time or recurring Task in a guild text channel or an existing Task thread. |
 | `/inoai task list` | Show Task IDs, states, next due times, and thread links. |
 | `/inoai task run`, `pause`, `resume`, `cancel` | Manage a Task by ID, or omit `id` inside its Task thread. |
+| `/inoai memory list` | Show active Memory IDs, kinds, and short bodies. |
+| `/inoai memory forget id:<n>` | Soft-delete an active Memory. |
+| `/inoai memory review` | Run a Memory Review cycle now ([Memory commands](#memory-commands)). |
 
-The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel.
+The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel. Memory controls work in any channel of the configured guild.
 
 Allowlist commands use the selected runtime home's SQLite database and
 never print credentials. They can run while the core is running (ADR 0025). A
@@ -616,7 +625,7 @@ All three runtimes share the same queue, archive, and safety rules:
 
 - Turns run FIFO per Agent Session. When a runtime proves cross-session concurrency at startup (Codex and Claude probes), different threads run in parallel; otherwise, and always for OpenCode, all Turns share one global FIFO queue.
 - Only Turns proven never to have started are retried (at most three attempts in total). An uncertain outcome is recorded and you are asked for a fresh request ([ADR 0002](docs/adr/0002-retry-only-proven-safe-runtime-turns.md)).
-- A supported Codex command request shows its complete command and working directory in an owner-only Discord card. **Approve** accepts that one live request; **Reject** declines it. The card expires after 15 minutes. Missing, unsafe, network-specific, or broader permission requests still fail closed with a fixed notice to use local Codex ([ADR 0003](docs/adr/0003-fail-closed-on-unsafe-approval-previews.md)). SQLite stores a fixed summary and outcome, not the command or working directory. Claude and OpenCode prompts still fail closed and record only a denial count ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)).
+- A supported Codex command request shows its complete command and working directory in an owner-only Discord card. **Approve** accepts that one live request; **Reject** declines it. The card expires after 15 minutes. Missing, unsafe, network-specific, or broader permission requests still fail closed with a fixed notice to use local Codex ([ADR 0003](docs/adr/0003-fail-closed-on-unsafe-approval-previews.md)). SQLite stores a fixed summary and outcome, not the command or working directory. Claude and OpenCode prompts still fail closed and record only a denial count ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)). When the Turn still answers, inoai posts a short note that the agent skipped some tool calls that need approval and answered without them; for Claude, the note points to `CLAUDE_ALLOWED_TOOLS`. When the Turn does not answer, inoai posts the fixed notice to use local Claude or OpenCode for the blocked action. Neither message names the tools. The `approval_unsupported` Event detail records `turn=completed` or `turn=failed` and the denial count.
 - Each CLI's own settings, MCP servers, skills, sandbox, and permission rules apply unchanged to Turns; Memory Reviews run without them. For Claude, the CLI denies any action your settings do not already allow.
 - At startup, Codex and Claude run a concurrency probe; the Claude probe makes two short, tool-free `haiku` calls that count against your subscription usage. Startup logs which mode is active.
 - Sign-in and usage failures post the runtime's own fixed notice, for example to run `codex login` or `claude /login`.
@@ -633,15 +642,17 @@ What a review keeps:
 - Quoted, fenced, or inline-code text and agent replies never count as your request, and secret-like text is always dropped; the model is told to leave out one-off requests. Pasted text without quotes that contains a request like "Remember to…" cannot be told apart from your own request and may still count.
 - Deleting a review-made Memory needs evidence: one of your Messages in the reviewed range or at least two earlier Recaps. Replacing one needs the same evidence as a new Memory.
 - Reviews never change Manual Memory Entries. inoai checks every action the model proposes and drops the ones that fail.
+- A preference, decision, or correction you state without "remember" becomes a Memory proposal. It needs your click before it becomes Memory ([Memory proposals](#memory-proposals)).
 
 When it runs:
 
-- After `MEMORY_REVIEW_TIME` (local `HH:MM`, sample `06:00`), at most once per local date, caught up at startup or after the machine wakes.
+- After `MEMORY_REVIEW_TIME` (local `HH:MM`, sample `06:00`), the daily cycle runs at most once per local date, caught up at startup or after the machine wakes.
+- `/inoai memory review` runs an extra cycle on request ([Memory commands](#memory-commands)). It does not replace the daily cycle.
 - Chat comes first. A review starts only when no chat Message is waiting or being answered, and a new chat Message interrupts it without using a retry; after five interruptions in a day it waits for the next day's run.
 - A failed review is retried after 1, 2, and 4 hours, then waits for the next day's run.
 - `MEMORY_REVIEW_MAX_CHARS` sets how much text the model reads at a time; long ranges are split into chronological parts.
 
-Reviews are silent: they never post to Discord. Inspect Memory in the local UI or with `npm start -- memory list`; Recaps (`memory_reviews`) and the non-secret `memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, and `memory_review_skipped` Events are in the runtime home's SQLite database.
+A review that adds, updates, or deletes Memory, or stores proposals, posts a summary to the status channel ([Memory proposals](#memory-proposals)). A quiet review posts nothing. Inspect Memory in the local UI, with `npm start -- memory list`, or with `/inoai memory list`. Recaps (`memory_reviews`), proposals (`memory_proposals`), and the non-secret `memory_review_cycle`, `memory_review_completed`, `memory_review_deferred`, and `memory_review_skipped` Events are in the runtime home's SQLite database.
 
 Runtime support:
 
@@ -651,7 +662,41 @@ Runtime support:
 
 Codex and OpenCode homes record a `memory_review_skipped` Event and keep their review cursors, so no Messages are marked reviewed without a review.
 
-A review sends archived Message text, current Memory, and recent Recaps to the runtime's provider (Anthropic, for Claude homes), with secret-like lines replaced by `[redacted: secret-like text]`. inoai stores only the Recap and accepted Memory, never the prompt or the model's raw reply.
+A review sends archived Message text, current Memory, pending Memory proposals, and recent Recaps to the runtime's provider (Anthropic, for Claude homes), with secret-like lines replaced by `[redacted: secret-like text]`. inoai stores only the Recap, accepted Memory, and accepted proposals, never the prompt or the model's raw reply.
+
+### Memory proposals
+
+A review may propose a Memory from a preference, a decision you confirmed, or a correction of the agent, also when you did not say "remember" ([ADR 0029](docs/adr/0029-owner-confirmed-memory-proposals-and-kinds.md)). An explicit "remember" request still saves directly.
+
+- A proposal must cite at least one of your own Messages and pass the same length and secret checks as other Memory.
+- A review stores at most 5 proposals. It skips text that matches an active Memory, a pending proposal, or a proposal you rejected before. Text is compared without letter case and extra spaces.
+- The review prompt lists pending proposals and tells the model not to propose the same idea again, even in other words.
+- After the review, inoai posts one summary to the status channel: the counts of added, updated, and deleted Memory, up to 10 changes, and the number of new proposals. One card per proposal follows.
+- A card shows the text, the suggested kind (`core` or `topic`), and when it expires. **Confirm** saves the Memory with that kind. **Reject** discards it, and the same text is never proposed again. A later click changes nothing and shows the outcome.
+- If an active Memory already has the same text, Confirm saves nothing new.
+- A proposal expires 7 days after the review. Expiry runs at the start of each review cycle. A click on an expired card shows "Expired. Nothing was changed."
+- A summary or card that fails to post is not retried. Its proposal stays pending without a card until it expires.
+- Only the owner can click. Other users get a private refusal, and nothing changes.
+
+### Memory in prompts
+
+Each Memory is `core` or `topic`. Memory from before kinds existed is `topic`.
+
+- **Core** Memory is included in every chat Turn and Task Run, oldest first, within 1,500 characters. A core Memory that does not fit is skipped. Add one with `npm start -- memory add --core "<text>"` or by confirming a core proposal.
+- **Topic** Memory is included when it shares words with the current message, or for a Task Run with the Task title and instruction. It fills the rest of the 6,000-character context budget, best match first.
+- Secret-like Memory is never included.
+- A Task Run prompt starts with the Memory section, before the Task title.
+- inoai records each included Memory in the `memory_uses` table: for a Turn when the runtime starts, and for a Task Run just before the runtime turn. A Turn or run that later fails keeps its rows. Usage records are not shown in Discord or the UI.
+
+### Memory commands
+
+These owner-only slash commands reply privately and work in any channel of the configured guild:
+
+- `/inoai memory list` shows `#<id> <kind>: <body>` for each active Memory. A long body is cut to 80 characters. A body that looks like a secret shows as `[hidden: may contain a secret]`.
+- `/inoai memory forget id:<n>` soft-deletes that Memory. An unknown or already forgotten ID gets "Memory not found."
+- `/inoai memory review` runs a review cycle now. It replies with the number of Sessions it queued, or "found nothing new to review". It refuses while chat or a Task Run is active or a review is running; try again when it finishes. A failed cycle replies "Memory Review failed. Try again later." Codex and OpenCode homes reply that reviews are not supported. The cycle records a `memory_review_cycle` Event with detail `trigger=owner; date=<local date>; enqueued=<n>`. It does not count as the daily cycle.
+
+The local CLI `memory add`, `memory add --core`, `memory list`, and `memory delete` commands work as before, also while the runtime runs. Memory kinds, proposals, and usage records exist only in SQLite; the PostgreSQL store treats every Memory as `topic`.
 
 ## Upgrading agent CLIs
 
