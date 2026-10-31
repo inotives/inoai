@@ -23,8 +23,8 @@ type StreamEvent = {
 };
 type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: boolean; authentication: boolean; usage: boolean; spawnFailed: boolean; timedOut: boolean; mismatched: boolean; deniedEvents: number };
 
-// Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
-export type PermissionDenialListener = (sessionId: string, count: number) => void;
+// Called at most once per Turn with only the Agent Session ID, a denial count, and whether the Turn answered; it never sees tool input.
+export type PermissionDenialListener = (sessionId: string, count: number, completed: boolean) => void;
 // homeDir locates `~/.claude/projects` for review cleanup only; reviewTimeoutMs bounds one whole review.
 // allowedTools is the owner's opt-in list for Turns and Task runs only; Memory Review stays tool-free.
 export type ClaudeRuntimeOptions = { executable?: string; model?: string; allowedTools?: string[]; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
@@ -116,17 +116,19 @@ export class ClaudeRuntime implements AgentRuntime {
       const newSession = session.state === "new";
       const attempt = yield* this.attempt(sessionId, session, prompt, active);
       const { result } = attempt;
+      // Classify from the final result event, not the exit code: SIGINT exits 0 and a login error can report "success".
+      const answered = !attempt.spawnFailed && !attempt.credentialRefused && !attempt.mismatched
+        && result?.is_error === false && result.subtype === "success" && typeof result.result === "string";
       // The CLI already denied these prompts; reporting them never changes the Turn's own outcome.
       const denials = Math.max(attempt.deniedEvents, Array.isArray(result?.permission_denials) ? result.permission_denials.length : 0);
       if (denials > 0) {
-        try { this.onPermissionDenied?.(sessionId, denials); } catch { /* the notice is best-effort */ }
+        try { this.onPermissionDenied?.(sessionId, denials, answered); } catch { /* the notice is best-effort */ }
       }
       if (attempt.spawnFailed) throw new RuntimeFailure("pre_start", true);
       // Not replay-safe: the CLI had already initialized, and a replay would meet the same credential.
       if (attempt.credentialRefused) throw new RuntimeFailure("authentication");
       if (attempt.mismatched) throw new RuntimeFailure("uncertain");
-      // Classify from the final result event, not the exit code: SIGINT exits 0 and a login error can report "success".
-      if (result?.is_error === false && result.subtype === "success" && typeof result.result === "string") {
+      if (answered && typeof result.result === "string") {
         const usage = usageEvent(result, newSession);
         if (usage) yield usage;
         yield { type: "answer", text: result.result };

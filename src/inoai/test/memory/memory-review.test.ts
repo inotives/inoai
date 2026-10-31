@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { RuntimeFailure } from "../../agent-runtime/ports.js";
 import type { AgentRuntime, RuntimeFailureKind } from "../../agent-runtime/ports.js";
-import { permissionDeclinedNotice } from "../../transport/approval-relay.js";
+import { permissionDeclinedNotice, permissionSkippedNotice } from "../../transport/approval-relay.js";
 import { ClaudeRuntime } from "../../connectors/agent-runtime/claude-runtime.js";
 import { fixedTurnNotices, providerMismatchNotice } from "../../conversation/conversation-worker.js";
 import { archiveMessage, completeMemoryReview, createMemory, createMemoryProposal, createMemoryReview, createSession, listEvents, listMemories, messagesForMemoryReview, openDatabase, rejectMemoryProposal, upsertUser } from "../../connectors/persistence/sqlite/legacy-database.js";
@@ -174,7 +174,7 @@ test("a Session without new reviewable Messages creates no Recap and makes no ca
     const { runtime, prompts } = fakeRuntime(script(fenced({ recap: "r", actions: [] })));
     assert.deepEqual(await reviewSession(database, runtime, session.id, { maxChars: 20_000 }), { state: "empty" });
     add("user", "a failed request", "failed");
-    for (const notice of [...fixedTurnNotices, runtimeFailureNotice("usage", runtime), permissionDeclinedNotice("Claude")]) add("agent", notice);
+    for (const notice of [...fixedTurnNotices, runtimeFailureNotice("usage", runtime), permissionDeclinedNotice("Claude"), permissionSkippedNotice("Claude")]) add("agent", notice);
     add("user", "still queued", "pending");
     const before = snapshot();
     assert.deepEqual(await reviewSession(database, runtime, session.id, { maxChars: 20_000 }), { state: "empty" });
@@ -574,6 +574,7 @@ test("every provider's fixed notices and the legacy redaction body are excluded,
       ...providers.flatMap((provider) => kinds.map((kind) => runtimeFailureNotice(kind, provider))),
       ...["codex", "claude", "opencode", "other"].flatMap((stored) => providers.map((provider) => providerMismatchNotice(stored, provider.displayName))),
       ...providers.map((provider) => permissionDeclinedNotice(provider.displayName)),
+      ...providers.map((provider) => permissionSkippedNotice(provider.displayName)),
       "Legacy approval request redacted",
     ];
     assert(notices.includes(new OpenCodeRuntime({ executable: missing }).authenticationNotice!));

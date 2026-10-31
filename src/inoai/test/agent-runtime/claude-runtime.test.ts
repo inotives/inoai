@@ -574,8 +574,11 @@ test("Claude permission denials fail closed with one non-secret notice and Event
     await worker.idle();
 
     const notice = "Claude permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local Claude for the blocked action.";
+    const skipped = "Claude skipped some tool calls that need approval and answered without them. To allow a tool, add it to CLAUDE_ALLOWED_TOOLS in this runtime home's .env.";
     const bodies = sends.map((args) => args[1]);
-    assert.equal(bodies.filter((body) => body === notice).length, 2);
+    // The answered Turn gets the skipped note; only the failed Turn gets the declined warning.
+    assert.equal(bodies.filter((body) => body === skipped).length, 1);
+    assert.equal(bodies.filter((body) => body === notice).length, 1);
     assert.ok(bodies.includes("Both actions were blocked; nothing changed."));
     assert.ok(bodies.includes("Plain answer"));
     // Plain text sends only: no reply reference, components, or other actionable controls.
@@ -583,10 +586,10 @@ test("Claude permission denials fail closed with one non-secret notice and Event
 
     const events = database.prepare("SELECT session_id, message_id, detail, created_by FROM events WHERE event_type = 'approval_unsupported' ORDER BY id").all();
     assert.deepEqual(events.map((row) => ({ ...row })), [
-      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; denials=2", created_by: "runtime:claude" },
-      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; denials=1", created_by: "runtime:claude" },
+      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; turn=completed; denials=2", created_by: "runtime:claude" },
+      { session_id: session.id, message_id: null, detail: "declined: no safe action preview; turn=failed; denials=1", created_by: "runtime:claude" },
     ]);
-    const archived = listMessages(database, session.id).filter((row) => row.direction === "agent" && row.body === notice);
+    const archived = listMessages(database, session.id).filter((row) => row.direction === "agent" && (row.body === notice || row.body === skipped));
     assert.equal(archived.length, 2);
     assert.ok(archived.every((row) => row.state === "completed" && row.external_message_id?.startsWith("discord-")));
     const turns = listMessages(database, session.id).filter((row) => row.direction === "user").map((row) => row.state);
@@ -615,10 +618,10 @@ test("Claude permission denials fail closed with one non-secret notice and Event
 test("a throwing denial listener never changes the Turn outcome", async () => {
   const fake = await fakeCli([{ lines: [init, { type: "system", subtype: "permission_denied", tool_name: "Bash", message: secret }, success("ok")] }]);
   try {
-    const reported: Array<[string, number]> = [];
-    const runtime = new ClaudeRuntime({ executable: fake.executable, onPermissionDenied: (id, count) => { reported.push([id, count]); throw new Error("listener failed"); } });
+    const reported: Array<[string, number, boolean]> = [];
+    const runtime = new ClaudeRuntime({ executable: fake.executable, onPermissionDenied: (id, count, completed) => { reported.push([id, count, completed]); throw new Error("listener failed"); } });
     const id = await runtime.createSession(fake.dir, "personality");
     assert.deepEqual(await collect(runtime.runTurn(id, "question")), [{ type: "answer", text: "ok" }]);
-    assert.deepEqual(reported, [[id, 1]]);
+    assert.deepEqual(reported, [[id, 1, true]]);
   } finally { await fake.cleanup(); }
 });

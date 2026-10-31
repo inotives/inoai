@@ -17,8 +17,8 @@ type Spend = { input: number; output: number; reasoning: number; cacheRead: numb
 // spend: undefined until the first step_finish, null once any step's token counts are missing or malformed.
 type Attempt = { spawnFailed: boolean; timedOut: boolean; authentication: boolean; usage: boolean; errored: boolean; mismatched: boolean; exitCode: number | null; texts: string[]; denials: number; spend?: Spend | null };
 
-// Called at most once per Turn with only the Agent Session ID and a denial count; it never sees tool input.
-export type OpenCodePermissionDenialListener = (sessionId: string, count: number) => void;
+// Called at most once per Turn with only the Agent Session ID, a denial count, and whether the Turn answered; it never sees tool input.
+export type OpenCodePermissionDenialListener = (sessionId: string, count: number, completed: boolean) => void;
 export type OpenCodeRuntimeOptions = { executable?: string; idleTimeoutMs?: number; onPermissionDenied?: OpenCodePermissionDenialListener; signal?: AbortSignal };
 
 const newSessionPrefix = "inoai-new:";
@@ -113,15 +113,17 @@ export class OpenCodeRuntime implements AgentRuntime {
         if (this.closed) throw new RuntimeFailure("pre_start", true);
       }
       const attempt = yield* this.attempt(session, prompt, active);
+      const answer = attempt.texts.join("\n\n");
+      // An answer without an OpenCode session ID could not be resumed, so it would silently lose context next Turn.
+      const answered = !attempt.spawnFailed && attempt.exitCode === 0 && !attempt.errored && !attempt.mismatched && !attempt.timedOut
+        && Boolean(session.opencodeId) && answer.trim() !== "";
       // OpenCode already rejected these requests; reporting them never changes the Turn's own outcome. The streamed
       // OpenCode ID is passed when known because the yielded `session` event has already rebound SQLite to it.
       if (attempt.denials > 0) {
-        try { this.onPermissionDenied?.(session.opencodeId ?? sessionId, attempt.denials); } catch { /* the notice is best-effort */ }
+        try { this.onPermissionDenied?.(session.opencodeId ?? sessionId, attempt.denials, answered); } catch { /* the notice is best-effort */ }
       }
       if (attempt.spawnFailed) throw new RuntimeFailure("pre_start", true);
-      const answer = attempt.texts.join("\n\n");
-      // An answer without an OpenCode session ID could not be resumed, so it would silently lose context next Turn.
-      if (attempt.exitCode === 0 && !attempt.errored && !attempt.mismatched && !attempt.timedOut && session.opencodeId && answer.trim()) {
+      if (answered) {
         // Only a Turn that succeeded proves the session; a failed first Turn's ID is checked before its first resume.
         session.verified = true;
         if (attempt.spend) yield usageEvent(attempt.spend);

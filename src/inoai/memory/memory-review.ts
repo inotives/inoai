@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { RuntimeFailure } from "../agent-runtime/ports.js";
 import type { AgentRuntime, RuntimeFailureKind } from "../agent-runtime/ports.js";
-import { legacyApprovalNotice, permissionDeclinedNotice } from "../transport/approval-relay.js";
+import { legacyApprovalNotice, permissionDeclinedNotice, permissionSkippedNotice } from "../transport/approval-relay.js";
 import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conversation-worker.js";
 import { completeMemoryReview, createEvent, createMemory, createMemoryReview, listMemories, maxReviewProposals, messagesForMemoryReview, softDeleteMemory, storeReviewProposals } from "../connectors/persistence/sqlite/legacy-database.js";
 import type { MemoryRecord, MemoryReviewRecord, MessageRecord, ReviewProposalDraft, ReviewProposalSkip } from "../connectors/persistence/sqlite/legacy-database.js";
@@ -176,6 +176,7 @@ function fixedNotices(runtime: AgentRuntime): Set<string> {
     ...providers.flatMap((provider) => kinds.map((kind) => runtimeFailureNotice(kind, provider))),
     ...["codex", "claude", "opencode", "other"].flatMap((stored) => providers.map(({ displayName }) => providerMismatchNotice(stored, displayName))),
     ...providers.map(({ displayName }) => permissionDeclinedNotice(displayName)),
+    ...providers.map(({ displayName }) => permissionSkippedNotice(displayName)),
     legacyApprovalNotice,
     legacyRedactedBody,
   ]);

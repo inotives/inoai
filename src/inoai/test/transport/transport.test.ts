@@ -1028,7 +1028,7 @@ test("Claude credential guard refuses an API key before Discord starts and relea
   });
 });
 
-test("Claude startup with the subscription login wires the runtime and a denied Turn posts the fixed notice", async () => {
+test("Claude startup with the subscription login wires the runtime and an answered Turn with denials posts the skipped note", async () => {
   await withFakeClaude(claudeSubscription, async (directory, home) => {
     const fake = new FakeClient();
     const logged: unknown[] = [];
@@ -1044,7 +1044,7 @@ test("Claude startup with the subscription login wires the runtime and a denied 
         mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
       });
       const sentText = () => JSON.stringify(fake.sent);
-      for (let attempt = 0; attempt < 500 && !(sentText().includes("Use local Claude for the blocked action") && sentText().includes("claude answer")); attempt++) {
+      for (let attempt = 0; attempt < 500 && !(sentText().includes("Claude skipped some tool calls") && sentText().includes("claude answer")); attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       process.emit("SIGTERM");
@@ -1056,7 +1056,8 @@ test("Claude startup with the subscription login wires the runtime and a denied 
       console.log = originalLog;
       console.error = originalError;
     }
-    assert.match(JSON.stringify(fake.sent), /Claude permission request declined: .* Use local Claude for the blocked action\./);
+    assert.match(JSON.stringify(fake.sent), /Claude skipped some tool calls that need approval and answered without them\./);
+    assert.doesNotMatch(JSON.stringify(fake.sent), /permission request declined/);
     assert.match(JSON.stringify(fake.sent), /claude answer/);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
     assert.equal(/sentinel|rm -rf/i.test(JSON.stringify([fake.sent, logged])), false);
@@ -1125,7 +1126,7 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
       mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
     });
     const sentText = () => JSON.stringify(fake.sent);
-    for (let attempt = 0; attempt < 500 && !(sentText().includes("Use local OpenCode for the blocked action") && sentText().includes("opencode answer")); attempt++) {
+    for (let attempt = 0; attempt < 500 && !(sentText().includes("OpenCode skipped some tool calls") && sentText().includes("opencode answer")); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     process.emit("SIGTERM");
@@ -1138,7 +1139,8 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
     assert.match(JSON.stringify(fake.sent), /opencode answer/);
     assert.match(JSON.stringify(logged), /OpenCode cross-session concurrency: unavailable; using global FIFO/);
     assert.equal(await stat(home.lockFile).then(() => true, () => false), false);
-    const notice = "OpenCode permission request declined: this version cannot show a safe, complete action preview in Discord. No action was approved. Use local OpenCode for the blocked action.";
+    const notice = "OpenCode skipped some tool calls that need approval and answered without them.";
+    assert.doesNotMatch(JSON.stringify(fake.sent), /permission request declined/);
     assert.equal(fake.sent.filter((sent) => JSON.stringify(sent).includes(notice)).length, 1);
     const tokens = ["sk-test-AAAAAAAAAAAAAAAAAAAA", "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"];
     const leaks = (text: string) => tokens.some((token) => text.includes(token)) || /sentinel|permission requested|cannot ask the user|external_directory|Command failed/i.test(text);
@@ -1148,7 +1150,7 @@ test("OpenCode startup wires the runtime and notifier, binds the streamed sessio
       const session = restarted.database.prepare("SELECT agent_provider, agent_session_id, updated_by FROM sessions").get();
       assert.deepEqual({ ...session }, { agent_provider: "opencode", agent_session_id: "ses_wired000000000000000000000", updated_by: "runtime:opencode" });
       const denied = restarted.database.prepare("SELECT detail, created_by FROM events WHERE event_type = 'approval_unsupported'").all();
-      assert.deepEqual(denied.map((row) => ({ ...row })), [{ detail: "declined: no safe action preview; denials=2", created_by: "runtime:opencode" }]);
+      assert.deepEqual(denied.map((row) => ({ ...row })), [{ detail: "declined: no safe action preview; turn=completed; denials=2", created_by: "runtime:opencode" }]);
       assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM messages WHERE direction = 'agent' AND body = ?").get(notice)?.count, 1);
       assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM approvals").get()?.count, 0);
       const tables = restarted.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
