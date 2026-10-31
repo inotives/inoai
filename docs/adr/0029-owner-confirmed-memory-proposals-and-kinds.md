@@ -45,6 +45,8 @@ This was chosen over three alternatives:
 
 The review's aggregation step has a new action, `propose`. The model uses it for an implicit signal in the reviewed range: an owner preference, a decision the owner confirmed, or an owner correction of the agent. The action cites owner messages in `source_message_ids` and sets `kind`. The `add` rules are unchanged; an implicit signal sent as `add` is still ignored with `no_memory_signal`.
 
+The aggregation prompt lists active Memory in `<memory>` and pending, unexpired proposals in `<pending_proposals>`, oldest first, redacted, tag-escaped, and within 3,000 characters. The PostgreSQL store has no proposals, so its section shows `(none)`. The model must not propose an idea already in either section, even in other words. This prompt rule catches reworded repeats; the commit checks below catch only the same text.
+
 inoai checks each proposal before the commit. A failed check adds an `ignored` reason:
 
 - `invalid_action`, `missing_body`, `body_too_long` (over 500 characters), `secret_like`, `missing_source`, and `source_out_of_range`, as for other actions.

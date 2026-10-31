@@ -662,7 +662,7 @@ Runtime support:
 
 Codex and OpenCode homes record a `memory_review_skipped` Event and keep their review cursors, so no Messages are marked reviewed without a review.
 
-A review sends archived Message text, current Memory, and recent Recaps to the runtime's provider (Anthropic, for Claude homes), with secret-like lines replaced by `[redacted: secret-like text]`. inoai stores only the Recap, accepted Memory, and accepted proposals, never the prompt or the model's raw reply.
+A review sends archived Message text, current Memory, pending Memory proposals, and recent Recaps to the runtime's provider (Anthropic, for Claude homes), with secret-like lines replaced by `[redacted: secret-like text]`. inoai stores only the Recap, accepted Memory, and accepted proposals, never the prompt or the model's raw reply.
 
 ### Memory proposals
 
@@ -670,6 +670,7 @@ A review may propose a Memory from a preference, a decision you confirmed, or a 
 
 - A proposal must cite at least one of your own Messages and pass the same length and secret checks as other Memory.
 - A review stores at most 5 proposals. It skips text that matches an active Memory, a pending proposal, or a proposal you rejected before. Text is compared without letter case and extra spaces.
+- The review prompt lists pending proposals and tells the model not to propose the same idea again, even in other words.
 - After the review, inoai posts one summary to the status channel: the counts of added, updated, and deleted Memory, up to 10 changes, and the number of new proposals. One card per proposal follows.
 - A card shows the text, the suggested kind (`core` or `topic`), and when it expires. **Confirm** saves the Memory with that kind. **Reject** discards it, and the same text is never proposed again. A later click changes nothing and shows the outcome.
 - If an active Memory already has the same text, Confirm saves nothing new.
