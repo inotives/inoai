@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Build a small, personal Discord bot that lets an allowlisted owner continue Codex CLI conversations from Discord. It must use the locally signed-in ChatGPT account and its included Codex usage--not the OpenAI API and not an API key.
+Build a small, personal Discord bot that lets an allowlisted owner continue Codex CLI conversations from Discord. It must use the locally signed-in ChatGPT account and its included Codex usage--not the OpenAI API and not an API key. This boundary still holds for the `codex` and `claude` providers. Only the later `anthropic-api` provider uses an API key ([ADR 0030](adr/0030-anthropic-api-runtime.md)).
 
 The bot is a remote conversation surface for a local Codex installation. It is not a multi-tenant agent service, a general shell bot, or a replacement for Codex's permission model.
 
@@ -99,7 +99,7 @@ health() -> runtime status
 review?(prompt) -> text   (optional; text-only in a throwaway session per ADR 0010; a runtime without it does not review)
 ```
 
-`AGENT_PROVIDER` selects the Codex adapter, the Claude adapter (Phase 5a), or the OpenCode adapter (Phase 5b). The runtime selector is a simple TypeScript `switch`, not a plugin registry. Adding another adapter later means adding one adapter that satisfies this interface and one selection branch; Discord, SQLite, queueing, dashboard, and memory code stay unchanged.
+`AGENT_PROVIDER` selects the Codex adapter, the Claude adapter (Phase 5a), the OpenCode adapter (Phase 5b), or the Anthropic API adapter (`anthropic-api`, IP-0007). The runtime selector is a simple TypeScript `switch`, not a plugin registry. Adding another adapter later means adding one adapter that satisfies this interface and one selection branch; Discord, SQLite, queueing, dashboard, and memory code stay unchanged.
 
 Each `.inoai-connect*` runtime home selects exactly one provider. For example, `.inoai-connect/` may use `AGENT_PROVIDER=codex` and one Discord bot token, while `.inoai-connect-claude/` uses `AGENT_PROVIDER=claude` and another token. They are separate bot instances with separate SQLite archives and agent Memory; this is deliberate rather than per-user Memory isolation.
 
@@ -120,6 +120,10 @@ The Claude adapter spawns the owner's installed `claude -p --output-format strea
 ### OpenCode runtime (Phase 5b)
 
 The OpenCode adapter spawns the owner's installed `opencode run --format json --standalone` once per Turn in the project path, creating the Agent Session on the first Turn and resuming it with `--session` afterwards. It passes no model or provider, so OpenCode's configured default answers; today that is a free OpenCode Zen model, which sends prompts and project context to opencode.ai, and any provider the owner later configures will be used and billed as configured ([ADR 0009](adr/0009-opencode-uses-its-configured-provider.md)). OpenCode (2.0.22) ignores `instructions` config, so `agent.md` is sent as a delimited "inoai operating instructions (not a user message)" block at the start of every Turn's prompt, alongside the project's own `AGENTS.md`; inoai never edits OpenCode configuration. Headless runs auto-reject permission requests, and inoai reports them with the fixed fail-closed notice; it never passes `--auto`, `--yolo`, or `--dangerously-skip-permissions`. inoai keeps OpenCode's configured permission policy, whose built-in defaults allow shell and most tools without asking (ADR 0009). OpenCode homes use global FIFO, and a stored session that no longer exists fails closed with the `/inoai reset` notice.
+
+### Anthropic API runtime (IP-0007)
+
+The `anthropic-api` adapter calls the Anthropic Messages API directly with `ANTHROPIC_API_KEY` from the runtime home's `.env` ([ADR 0030](adr/0030-anthropic-api-runtime.md)). It has no local tools; it uses only Anthropic-hosted web search and web fetch, so nothing runs on the owner's machine. Prompts and web results go to Anthropic and are billed to the key's Console organization. inoai stores each Agent Session's history in append-only SQLite tables and replays it on every Turn. The Codex and Claude adapters keep their subscription-only rules; the Claude credential guard still refuses an API key.
 
 ### Dynamic chat transport
 
@@ -191,7 +195,7 @@ Important information can also bypass the daily Recap as a Manual Memory Entry. 
 inoai also distills useful memory from everyday conversation automatically. This is a separate, low-priority queue job:
 
 1. Once per local day, at or after `MEMORY_REVIEW_TIME` (caught up once at startup if missed), enqueue a `memory review` job for each Agent Session with completed messages since its last successful recap, including an ended Session's unreviewed tail.
-2. The normal message worker always runs first. A review starts only when no user message is pending or processing; a user message arriving mid-review cancels it and returns it to `pending` without consuming an attempt. Each review runs text-only in a throwaway runtime session, never the thread's own Agent Session ([ADR 0010](adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)); only Claude homes run reviews in V1; Codex and OpenCode homes skip them and keep their cursors.
+2. The normal message worker always runs first. A review starts only when no user message is pending or processing; a user message arriving mid-review cancels it and returns it to `pending` without consuming an attempt. Each review runs text-only in a throwaway runtime session, never the thread's own Agent Session ([ADR 0010](adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)); only Claude and `anthropic-api` homes run reviews in V1 ([ADR 0030](adr/0030-anthropic-api-runtime.md)); Codex and OpenCode homes skip them and keep their cursors.
 3. The review processes the new message range in chronological `MEMORY_REVIEW_MAX_CHARS` windows and creates bounded internal notes. A final aggregation with those notes, the owner's explicit memory requests detected by inoai's signal rule, active Memory, and relevant prior Recaps outputs one concise recap plus `add`, `update`, `delete`, or `ignore` actions. New Memory requires an explicit Memory Signal or a useful recurring pattern across Recaps.
 4. The bridge validates each action deterministically (owner-authored explicit signal, recurrence across at least two prior Recaps, existing IDs, in-range sources, length and secret filters; Manual Memory Entries are read-only to reviews), drops failing actions as `ignored`, and applies the rest transactionally to SQLite, preserving the source message IDs, recap text, and completion timestamp.
 5. It advances the review cursor only after the transaction completes. A failed review remains retryable and does not block conversation.
@@ -261,7 +265,7 @@ Discord messages are untrusted input, even in a personal server. The first relea
 
 ## Non-goals
 
-- OpenAI API integration, API-key management, usage resale, or per-user billing.
+- OpenAI API integration, API-key management, usage resale, or per-user billing. The one exception is the `anthropic-api` provider: it reads one Anthropic Console key from its runtime home's `.env` ([ADR 0030](adr/0030-anthropic-api-runtime.md)).
 - Public Discord access, teams, roles, or quota sharing.
 - Cloud hosting of the Codex credential or project workspace.
 - Agent-run file edits, commits, mutation-capable commands, scheduled or unbounded autonomous task loops, pull-request automation, or CI integration.

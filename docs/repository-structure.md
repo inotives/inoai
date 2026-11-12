@@ -10,7 +10,7 @@ Deploy inoai into the folder it should assist. Each hidden runtime directory is 
 
 On first start, the core creates the runtime home from bundled templates and never overwrites an existing one. It opens the runtime home's `inoai.sqlite`, creates a missing database through the existing schema path, and reuses existing SQLite data. There is no automatic PostgreSQL-to-SQLite migration. One core process owns each runtime home and holds its lock. The UI reads the database and writes only Tasks, through short-lived connections (ADR 0026). While the core runs, the local `allowlist:add`, `allowlist:disable`, `memory add`, and `memory delete` commands also write through short-lived connections (ADR 0025); do not stop the core for them. A write waits up to 5 seconds for SQLite; if it reports a retryable busy error, run the command again. Runtime homes are git-ignored and must never be committed. Do not share one runtime home between machines.
 
-`agent.md` defines that instance's role and personality. Project guidance comes from each CLI's own loading: `AGENTS.md` for Codex and OpenCode, `CLAUDE.md` for Claude.
+`agent.md` defines that instance's role and personality. Project guidance comes from each CLI's own loading: `AGENTS.md` for Codex and OpenCode, `CLAUDE.md` for Claude. The `anthropic-api` runtime has no local file access, so it reads no project guidance (ADR 0030).
 
 ## Deployment layout and runtime home
 
@@ -107,7 +107,7 @@ inoai/
     │   ├── transport/                # transport port, inbound policy, approval relay
     │   ├── migrations/               # PostgreSQL migration runner
     │   ├── connectors/
-    │   │   ├── agent-runtime/        # Codex, Claude, and OpenCode adapters; concurrency probe
+    │   │   ├── agent-runtime/        # Codex, Claude, OpenCode, and Anthropic API adapters; concurrency probe
     │   │   ├── discord/              # Discord transport adapter
     │   │   └── persistence/
     │   │       ├── sqlite/           # SQLite schema, queries, and operational store

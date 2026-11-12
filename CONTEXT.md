@@ -1,6 +1,6 @@
 # inoai
 
-inoai connects a personal chat conversation to a locally authenticated coding-agent runtime, with durable local history, memory, and bounded background work.
+inoai connects a personal chat conversation to a coding-agent runtime (a locally signed-in CLI or the Anthropic API), with durable local history, memory, and bounded background work.
 
 ## Language
 
@@ -17,7 +17,7 @@ An authorized person identified by a Chat Transport and workspace. V1 seeds only
 _Avoid_: Account, author
 
 **Agent Runtime**:
-The local CLI-backed system that performs agent turns for inoai.
+The system that performs agent turns for inoai: a local CLI (Codex, Claude CLI, or OpenCode) or the Anthropic Messages API (`anthropic-api`).
 _Avoid_: Model, bot
 
 **Agent Instance**:
@@ -31,6 +31,14 @@ _Avoid_: Agent Instance, User
 **Agent Session**:
 The Agent Runtime's persisted context for one Conversation or Task.
 _Avoid_: Conversation, thread
+
+**Agent History**:
+The exact API content blocks of one `anthropic-api` Agent Session, stored append-only in `agent_history` and replayed on every Turn. The CLI runtimes keep their own session files instead. `/inoai reset` starts a new Agent Session; old Agent History stays and is never resent (ADR 0030).
+_Avoid_: Archive, transcript
+
+**Frozen Prompt**:
+The system prompt (`agent.md` plus the enabled-skill index) and tool list stored in `agent_history_sessions` on an `anthropic-api` Agent Session's first Turn. Every later Turn resends it unchanged. A later instruction change is sent as a mid-conversation system message (ADR 0030).
+_Avoid_: Profile, cached prompt
 
 **Turn**:
 One persisted user instruction and the Agent Runtime response it produces.
