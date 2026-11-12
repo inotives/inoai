@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import { manageLaunchAgent, parseLaunchAgentCommand } from "./heartbeat/launchagent.js";
 import { runHeartbeat } from "./heartbeat/foreground.js";
 
-import type { AgentRuntime } from "./agent-runtime/ports.js";
+import type { AgentHistoryStore, AgentRuntime } from "./agent-runtime/ports.js";
 import { ApprovalRelay, legacyApprovalNotice, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "./transport/approval-relay.js";
 import { ClaudeRuntime } from "./connectors/agent-runtime/claude-runtime.js";
 import { CodexAppServer } from "./connectors/agent-runtime/codex-app-server.js";
@@ -21,6 +21,9 @@ import { MemoryReviewScheduler } from "./memory/memory-review-scheduler.js";
 import type { MemoryReviewRequest, SchedulerClock } from "./memory/memory-review-scheduler.js";
 import { secretLike } from "./conversation/prompt-context.js";
 import { OpenCodeRuntime } from "./connectors/agent-runtime/opencode-runtime.js";
+import { checkAnthropicApiModel, createAnthropicApiClient } from "./connectors/agent-runtime/anthropic-api-client.js";
+import type { AnthropicApiClientOptions } from "./connectors/agent-runtime/anthropic-api-client.js";
+import { AnthropicApiRuntime } from "./connectors/agent-runtime/anthropic-api-runtime.js";
 import { acquireRuntimeHomeLock, bootstrapRuntimeHome, inspectRuntimeHomeLock, resolveRuntimeHome } from "./agent-instance/runtime-home.js";
 import { normalizeDirectoryArgs } from "./agent-instance/direct-directory.js";
 import { runSetup } from "./agent-instance/setup.js";
@@ -62,8 +65,8 @@ export * from "./skills/skill-execution.js";
 export * from "./conversation/runtime-turn.js";
 export * from "./connectors/discord/discord.js";
 
-// Owner decision D2: only Claude homes review in V1. The wired Codex runtime never enables its review method, so the
-// Memory Review engine skips Codex homes like OpenCode ones.
+// Owner decision D2: only Claude and anthropic-api homes review in V1 (ADR 0030). The wired Codex runtime never enables
+// its review method, so the Memory Review engine skips Codex homes like OpenCode ones.
 export function createCodexRuntime(server: CodexAppServer): CodexRuntime {
   return new CodexRuntime(server);
 }
@@ -666,7 +669,19 @@ function isSqliteBusyError(error: unknown): boolean {
 }
 
 // Tests may supply a scheduler clock so a wired run never depends on the time of day.
-export type RunDependencies = { heartbeat?: typeof runHeartbeat; heartbeatSetup?: typeof runHeartbeatSetup; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore };
+// Tests may supply `anthropicApiFetch` so an anthropic-api home never calls the real API.
+export type RunDependencies = { heartbeat?: typeof runHeartbeat; heartbeatSetup?: typeof runHeartbeatSetup; launchagent?: typeof manageLaunchAgent; schedulerClock?: SchedulerClock; storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore; anthropicApiFetch?: AnthropicApiClientOptions["fetch"] };
+
+// Configuration warnings name the setting only, never its value.
+function printConfigurationWarnings(configuration: Awaited<ReturnType<typeof loadConfiguration>>): void {
+  for (const warning of configuration.warnings ?? []) console.warn(`Warning: ${warning}`);
+}
+
+function isAgentHistoryStore(store: object): store is AgentHistoryStore {
+  const candidate = store as Partial<AgentHistoryStore>;
+  return typeof candidate.readOrCreateHistorySession === "function" && typeof candidate.listHistory === "function"
+    && typeof candidate.appendHistory === "function";
+}
 
 export async function run(args: string[], suppliedTransport?: ChatTransport, suppliedRuntime?: AgentRuntime,
   supplied: RunDependencies = {}): Promise<void> {
@@ -701,7 +716,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     return;
   }
   if (args[0] === "validate") {
-    const { runtimeHome } = await validate(process.cwd(), parseConnectDirectory(args.slice(1)));
+    const { runtimeHome, configuration } = await validate(process.cwd(), parseConnectDirectory(args.slice(1)));
+    printConfigurationWarnings(configuration);
     console.log(`inoai configuration is valid: ${runtimeHome.directory}`);
     return;
   }
@@ -767,6 +783,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   try {
     instance = await start(process.cwd(), parseConnectDirectory(args), supplied.storeFactory);
     startingInstance = instance;
+    printConfigurationWarnings(instance.configuration);
   } catch (error) {
     removeStartupSignals();
     if (startupAbort.signal.aborted) return;
@@ -815,9 +832,24 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
           // so the home keeps global FIFO.
           runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
           break;
-        case "anthropic-api":
-          // IP-0007: the API runtime is wired in a later task. Until then the home refuses to start.
-          throw new Error("The anthropic-api provider cannot start yet");
+        case "anthropic-api": {
+          // History lives in the SQLite store; a store without it cannot run this provider.
+          const store = instance.store;
+          if (!isAgentHistoryStore(store)) throw new Error("The anthropic-api provider needs the SQLite agent history store");
+          const { anthropicApiKey, anthropicApiModel, anthropicApiEffort } = instance.configuration;
+          const client = createAnthropicApiClient({ apiKey: anthropicApiKey ?? "",
+            ...(supplied.anthropicApiFetch ? { fetch: supplied.anthropicApiFetch } : {}) });
+          // The model check runs before Discord starts; it fails with fixed text that never quotes the key.
+          const limits = await checkAnthropicApiModel(client, anthropicApiModel!, anthropicApiEffort);
+          runtime = new AnthropicApiRuntime({ client, history: store, model: anthropicApiModel!,
+            ...(anthropicApiEffort ? { effort: anthropicApiEffort } : {}), modelMaxTokens: limits.maxTokens,
+            // Task-run Sessions are ordinary active Sessions; an ADR 0028 provider switch binds a fresh Agent Session ID.
+            resolveSessionId: async (agentSessionId) => (await store.findSessionByAgentSession("anthropic-api", agentSessionId))?.id });
+          // Turns are independent HTTP requests, so the home runs in per-Session mode. A later uncertain or timed-out
+          // Turn still drops the worker to global FIFO.
+          probeConcurrency = async () => true;
+          break;
+        }
       }
     }
   } catch (error) {

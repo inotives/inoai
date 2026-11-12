@@ -7,7 +7,7 @@ import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conver
 import { completeMemoryReview, createEvent, createMemory, createMemoryReview, listMemories, listPendingMemoryProposals, maxReviewProposals, messagesForMemoryReview, softDeleteMemory, storeReviewProposals } from "../connectors/persistence/sqlite/legacy-database.js";
 import type { MemoryProposalRecord, MemoryRecord, MemoryReviewRecord, MessageRecord, ReviewProposalDraft, ReviewProposalSkip } from "../connectors/persistence/sqlite/legacy-database.js";
 import { openCodeAuthenticationNotice } from "../connectors/agent-runtime/opencode-runtime.js";
-import { anthropicApiMaxTokensNotice, anthropicApiRefusalNotice } from "../connectors/agent-runtime/anthropic-api-runtime.js";
+import { anthropicApiAuthenticationNotice, anthropicApiMaxTokensNotice, anthropicApiRefusalNotice } from "../connectors/agent-runtime/anthropic-api-runtime.js";
 import { secretLike } from "../conversation/prompt-context.js";
 import { runtimeFailureNotice } from "../conversation/runtime-turn.js";
 import type { MemoryReviewCommit, MemoryReviewCommitResult, MemoryReviewSnapshot } from "../persistence/operational-store.js";
@@ -167,6 +167,7 @@ const providerNotices: Array<Pick<AgentRuntime, "displayName" | "loginHint" | "a
   { displayName: "Codex", loginHint: "codex login" },
   { displayName: "Claude", loginHint: "claude /login" },
   { displayName: "OpenCode", loginHint: "opencode auth login", authenticationNotice: openCodeAuthenticationNotice },
+  { displayName: "Anthropic API", loginHint: "ANTHROPIC_API_KEY", authenticationNotice: anthropicApiAuthenticationNotice },
 ];
 // The body recoverLegacyApprovals (database.ts) gives an old approval prompt.
 const legacyRedactedBody = "Legacy approval request redacted";
@@ -178,7 +179,7 @@ function fixedNotices(runtime: AgentRuntime): Set<string> {
   return new Set([
     ...fixedTurnNotices,
     ...providers.flatMap((provider) => kinds.map((kind) => runtimeFailureNotice(kind, provider))),
-    ...["codex", "claude", "opencode", "other"].flatMap((stored) => providers.map(({ displayName }) => providerMismatchNotice(stored, displayName))),
+    ...["codex", "claude", "opencode", "anthropic-api", "other"].flatMap((stored) => providers.map(({ displayName }) => providerMismatchNotice(stored, displayName))),
     ...providers.map(({ displayName }) => permissionDeclinedNotice(displayName)),
     ...providers.map(({ displayName }) => permissionSkippedNotice(displayName)),
     anthropicApiRefusalNotice,

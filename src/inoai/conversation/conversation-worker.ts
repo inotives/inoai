@@ -19,7 +19,7 @@ const uncertainNotice = "I can't confirm whether that turn completed. I won't re
 export const fixedTurnNotices: readonly string[] = [failureNotice, uncertainNotice];
 const providerNoticeKinds = new Set<RuntimeFailureKind>(["authentication", "usage", "session_missing", "context_exhausted"]);
 // A fixed map keeps an arbitrary stored provider value out of the notice text.
-const providerNames: Record<string, string> = { codex: "a Codex", claude: "a Claude", opencode: "an OpenCode" };
+const providerNames: Record<string, string> = { codex: "a Codex", claude: "a Claude", opencode: "an OpenCode", "anthropic-api": "an Anthropic API" };
 
 export function providerMismatchNotice(storedProvider: string, currentDisplayName: string): string {
   const owner = Object.hasOwn(providerNames, storedProvider) ? `${providerNames[storedProvider]} session` : "a session from a different agent provider";
@@ -213,11 +213,15 @@ export class ConversationWorker {
       const tasks = await this.chatTaskList(session, message);
       if (tasks) prompt += `\n\n${taskBlockInstruction(tasks, this.chatTasks!.ownerTimeZone, this.now())}`;
       const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
-      const skillInstructions = selected ? await loadSelectedSkill(this.home, { skillId: selected.id }) : undefined;
+      // The anthropic-api runtime has no shell or files, so it gets the SKILL.md text but no scripts or execution policy.
+      const runsScripts = this.agentProvider !== "anthropic-api";
+      const skillInstructions = selected ? await loadSelectedSkill(this.home, { skillId: selected.id, executionPolicy: runsScripts }) : undefined;
       if (selected && skillInstructions) {
         prompt += skillInstructions;
-        const scripts = await prepareSkillScripts(this.home, session.project_path, { skillId: selected.id });
-        if (scripts.length) prompt += scripts.map(skillExecutionInstructions).join("\n");
+        if (runsScripts) {
+          const scripts = await prepareSkillScripts(this.home, session.project_path, { skillId: selected.id });
+          if (scripts.length) prompt += scripts.map(skillExecutionInstructions).join("\n");
+        }
         try {
           await this.database.createEvent({ session_id: session.id, message_id: message.id,
             event_type: "skill_selected", detail: `skill=${selected.id}; version=${selected.version}` }, "conversation-worker");

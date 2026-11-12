@@ -39,6 +39,7 @@ export const anthropicApiMaxSources = 5;
 export const anthropicApiReviewMaxTokens = 16_000;
 
 /** Fixed answer when the whole fallback chain declined. Never carries API text; excluded from Memory Review. */
+export const anthropicApiAuthenticationNotice = "The Anthropic API key was rejected. Check ANTHROPIC_API_KEY in the runtime home's .env, restart inoai, then send a fresh request.";
 export const anthropicApiRefusalNotice = "The model declined this request, so this reply was not saved to the conversation. You can rephrase it and try again.";
 /** Fixed answer when the reply hit the output limit. Never carries API text; excluded from Memory Review. */
 export const anthropicApiMaxTokensNotice = "The reply was too long to finish, so it was not saved to the conversation. Ask for a shorter answer or split the request.";
@@ -62,7 +63,7 @@ export const anthropicApiTools: BetaToolUnion[] = [
 export class AnthropicApiRuntime implements AgentRuntime {
   readonly displayName = "Anthropic API";
   readonly loginHint = "ANTHROPIC_API_KEY";
-  readonly authenticationNotice = "The Anthropic API key was rejected. Check ANTHROPIC_API_KEY in the runtime home's .env, restart inoai, then send a fresh request.";
+  readonly authenticationNotice = anthropicApiAuthenticationNotice;
   private readonly sessions = new Map<string, SessionState>();
   private readonly active = new Map<string, ActiveTurn>();
   private readonly client: Anthropic;

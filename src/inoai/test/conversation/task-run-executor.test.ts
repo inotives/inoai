@@ -649,6 +649,25 @@ test("an ended codex Task Session still fails under claude and is not switched",
   });
 });
 
+test("an anthropic-api Task Run gets the text-only line, no output folder, a resolvable Session, and a result.md", async () => {
+  await withCodexTask("anthropic-api", async ({ store, instance, sessionId, taskId }) => {
+    const prompts: string[] = [];
+    const runtime: AgentRuntime = { ...writingRuntime([], "unused"), createSession: async () => "api-session",
+      async *runTurn(_id: string, prompt: string): AsyncIterable<RuntimeEvent> { prompts.push(prompt); yield { type: "answer", text: "API answer" }; } };
+    const api = new TaskRunExecutor(store, runtime, instance.runtimeHome,
+      { sendMessage: async () => "sent" }, { reserveTaskRun: async () => () => {} }, "anthropic-api");
+    assert.equal(await finishRun(store, api, taskId, 0), "completed");
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0]!, /This is one Task Run\. Reply in text; you cannot create files\. Reply with a concise completion summary\.$/);
+    assert.doesNotMatch(prompts[0]!, /Save only requested files|results\/|Do not create result\.md/);
+    // The ADR 0028 switch binds a fresh Agent Session ID that the runtime's resolver finds.
+    assert.equal((await store.findSessionByAgentSession("anthropic-api", "api-session"))?.id, sessionId);
+    const result = await readFile(join(instance.runtimeHome.directory, "results", String(taskId), "1", "result.md"), "utf8");
+    assert.match(result, /- State: completed\n/);
+    assert.ok(result.includes("## Answer\n\nAPI answer\n"));
+  });
+});
+
 test("carryover skips a previous result.md that is a symlink and still runs", async () => {
   await withCodexTask("unsafe", async ({ store, instance, sessionId, taskId }) => {
     const codex = new TaskRunExecutor(store, writingRuntime([], "Codex answer"), instance.runtimeHome,

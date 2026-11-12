@@ -135,7 +135,10 @@ export class TaskRunExecutor {
         ...(task.output_spec ? [`Expected output: ${task.output_spec}`] : []),
         ...(carryover ? [carryover] : []),
         messages.length ? `New Task thread messages:\n${messages.map((message) => message.body).join("\n\n")}` : "No new Task thread messages.",
-        `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Do not create result.md; inoai writes it with your reply. Reply with a concise completion summary.`,
+        // The anthropic-api runtime cannot write files; inoai still writes its reply to result.md.
+        this.agentProvider === "anthropic-api"
+          ? "This is one Task Run. Reply in text; you cannot create files. Reply with a concise completion summary."
+          : `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Do not create result.md; inoai writes it with your reply. Reply with a concise completion summary.`,
       ].join("\n\n");
       await this.recordMemoryUses(session.id, runId, memory.memoryIds);
       let answer: string | undefined;

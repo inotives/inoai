@@ -3,7 +3,7 @@ import { access, mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
-import { validateConfiguration } from "./config.js";
+import { defaultAnthropicApiModel, validateConfiguration } from "./config.js";
 import { defaultAgentProfile } from "./profile.js";
 
 type Ask = (prompt: string, secret?: boolean) => Promise<string>;
@@ -30,9 +30,14 @@ export async function createAgent(ask: Ask, available = providerAvailable): Prom
   const project = await realpath(resolve(projectInput));
   if (/[\r\n]/.test(project)) throw new Error("Agent working folder must not contain a newline");
   if (!(await stat(project)).isDirectory()) throw new Error("Agent working folder must be a directory");
-  const provider = (await ask("Coding agent (codex, claude, opencode): ")).trim();
-  if (!["codex", "claude", "opencode"].includes(provider)) throw new Error("Choose codex, claude, or opencode");
-  if (!(await available(provider))) throw new Error(`${provider} was not found on PATH. Install and sign in to ${provider}, then run setup again.`);
+  const provider = (await ask("Coding agent (codex, claude, opencode, anthropic-api): ")).trim();
+  if (!["codex", "claude", "opencode", "anthropic-api"].includes(provider)) throw new Error("Choose codex, claude, opencode, or anthropic-api");
+  // anthropic-api has no CLI to find; its key is written only to the new home's .env and never printed.
+  let apiKey: string | undefined;
+  if (provider === "anthropic-api") {
+    apiKey = (await ask("Anthropic API key (hidden): ", true)).trim();
+    if (!apiKey || /\s/.test(apiKey)) throw new Error("Enter a valid Anthropic API key without whitespace");
+  } else if (!(await available(provider))) throw new Error(`${provider} was not found on PATH. Install and sign in to ${provider}, then run setup again.`);
   const token = (await ask("Discord bot token (hidden): ", true)).trim();
   if (!/^[A-Za-z0-9._-]+$/.test(token)) throw new Error("Enter a valid Discord bot token without whitespace");
   const guild = (await ask("Discord server ID: ")).trim();
@@ -44,6 +49,7 @@ export async function createAgent(ask: Ask, available = providerAvailable): Prom
     DISCORD_STATUS_CHANNEL_ID: channel, CHAT_PROVIDER: "discord", AGENT_PROVIDER: provider,
     AGENT_INSTANCE_ID: `agent-${name}`, PROJECT_DIRECTORY: project,
     MEMORY_REVIEW_TIME: "06:00", MEMORY_REVIEW_MAX_CHARS: "20000",
+    ...(apiKey ? { ANTHROPIC_API_KEY: apiKey, ANTHROPIC_API_MODEL: defaultAnthropicApiModel } : {}),
   };
   validateConfiguration(values);
   try { await mkdir(folder, { mode: 0o700 }); }

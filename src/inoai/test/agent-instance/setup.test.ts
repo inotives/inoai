@@ -93,3 +93,50 @@ test("validation and skill commands leave an unrelated direct folder unchanged",
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("setup creates an anthropic-api home with no PATH check and the key only in its .env", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inoai-create-api-"));
+  const key = "sk-ant-api03-SETUP-SENTINEL";
+  try {
+    const folder = join(root, "agent");
+    const prompts: Array<[string, boolean]> = [];
+    const values = ["api", folder, root, "anthropic-api", key, "fake.token", "123", "456", "789"];
+    const ask = async (prompt: string, secret?: boolean) => { prompts.push([prompt, secret === true]); return values.shift()!; };
+    await createAgent(ask, async () => assert.fail("anthropic-api must not check PATH"));
+    assert.deepEqual(prompts.filter(([, secret]) => secret).map(([prompt]) => prompt),
+      ["Anthropic API key (hidden): ", "Discord bot token (hidden): "]);
+    assert.equal(prompts.some(([prompt]) => prompt.includes(key)), false);
+    const config = await loadConfiguration(join(folder, ".env"));
+    assert.equal(config.agentProvider, "anthropic-api");
+    assert.equal(config.anthropicApiKey, key);
+    assert.equal(config.anthropicApiModel, "claude-opus-5-5");
+    assert.match(await readFile(join(folder, ".env"), "utf8"), /^ANTHROPIC_API_MODEL=claude-opus-5-5$/m);
+    const withKey: string[] = [];
+    const scan = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) await scan(path);
+        else if ((await readFile(path, "utf8")).includes(key)) withKey.push(path);
+      }
+    };
+    await scan(folder);
+    assert.deepEqual(withKey, [join(folder, ".env")]);
+    const invalid = ["api", join(root, "other"), root, "anthropic-api", "bad key"];
+    await assert.rejects(createAgent(async () => invalid.shift()!, async () => true), /valid Anthropic API key/);
+    await assert.rejects(stat(join(root, "other")), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("validate prints a value-free warning for an ignored Anthropic API setting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inoai-validate-warning-"));
+  const key = "sk-ant-api03-VALIDATE-SENTINEL";
+  try {
+    const folder = join(root, "agent");
+    await createAgent(answers(["demo", folder, root, "codex", "fake.token", "123", "456", "789"]), async () => true);
+    await writeFile(join(folder, ".env"), `${await readFile(join(folder, ".env"), "utf8")}ANTHROPIC_API_KEY=${key}\n`);
+    const result = await execFile(process.execPath, [join(process.cwd(), "dist", "index.js"), "validate", "--dir", folder]);
+    assert.match(result.stderr, /Warning: ANTHROPIC_API_KEY is ignored because AGENT_PROVIDER is not anthropic-api/);
+    assert.match(result.stdout, /configuration is valid/);
+    assert.equal((result.stdout + result.stderr).includes(key), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

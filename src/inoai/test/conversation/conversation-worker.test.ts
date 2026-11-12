@@ -636,7 +636,7 @@ test("concurrency fallback log names the runtime", async () => {
   }
 });
 
-test("selected Discord skill exposes validated script paths to the runtime prompt", async () => {
+async function runScriptSkillTurn(provider: "codex" | "anthropic-api"): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "inoai-worker-skill-script-"));
   const source = await mkdtemp(join(tmpdir(), "inoai-worker-skill-source-"));
   try {
@@ -651,7 +651,7 @@ test("selected Discord skill exposes validated script paths to the runtime promp
     await enableSkill(home, "local-helper", "owner");
     const database = openDatabase(home);
     const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: "Owner", role: "owner", state: "active" })!;
-    const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "first", agent_provider: "codex", agent_session_id: "pending:first", project_path: directory });
+    const session = createSession(database, { user_id: user.id, transport: "discord", workspace_id: "guild", parent_conversation_id: "channel", conversation_id: "thread", initiating_external_message_id: "first", agent_provider: provider, agent_session_id: "pending:first", project_path: directory });
     archiveMessage(database, { session_id: session.id, transport: "discord", workspace_id: "guild", external_message_id: "first", external_author_id: "owner", user_id: user.id, direction: "user", body: "use local-helper", reply_to_external_message_id: null, in_reply_to_message_id: null });
     let prompt = "";
     const runtime: AgentRuntime = {
@@ -661,16 +661,27 @@ test("selected Discord skill exposes validated script paths to the runtime promp
       async *runTurn(_sessionId, receivedPrompt) { prompt = receivedPrompt; yield { type: "answer" as const, text: "ok" }; },
       async cancel() {}, health() { return { state: "ready" }; }, async close() {},
     };
-    const worker = new ConversationWorker(sqliteStore(database), home, runtime, "codex");
+    const worker = new ConversationWorker(sqliteStore(database), home, runtime, provider);
     try { worker.wake(); await worker.idle(); }
     finally { await worker.stop(); }
-    assert.match(prompt, /[\\/]skills[\\/]local-helper[\\/]scripts[\\/]run\.mjs/);
-    assert.match(prompt, /current working directory:/);
     database.close();
+    return prompt;
   } finally {
     await rm(directory, { recursive: true, force: true });
     await rm(source, { recursive: true, force: true });
   }
+}
+
+test("selected Discord skill exposes validated script paths to the runtime prompt", async () => {
+  const prompt = await runScriptSkillTurn("codex");
+  assert.match(prompt, /[\\/]skills[\\/]local-helper[\\/]scripts[\\/]run\.mjs/);
+  assert.match(prompt, /current working directory:/);
+});
+
+test("an anthropic-api Turn gets the selected skill's SKILL.md text but no scripts or execution instructions", async () => {
+  const prompt = await runScriptSkillTurn("anthropic-api");
+  assert.match(prompt, /Use the local helper script\./);
+  assert.doesNotMatch(prompt, /run\.mjs|\[Skill execution policy\]|current working directory:/);
 });
 
 async function runSkillTurn(body: string, failSkillEvent = false) {
