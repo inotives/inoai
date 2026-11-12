@@ -27,7 +27,8 @@ type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: bool
 export type PermissionDenialListener = (sessionId: string, count: number, completed: boolean) => void;
 // homeDir locates `~/.claude/projects` for review cleanup only; reviewTimeoutMs bounds one whole review.
 // allowedTools is the owner's opt-in list for Turns and Task runs only; Memory Review stays tool-free.
-export type ClaudeRuntimeOptions = { executable?: string; model?: string; allowedTools?: string[]; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
+// promptCacheOneHour sets ENABLE_PROMPT_CACHING_1H=1 for Turn and Task run processes only; Memory Review keeps the CLI default.
+export type ClaudeRuntimeOptions = { executable?: string; model?: string; allowedTools?: string[]; promptCacheOneHour?: boolean; idleTimeoutMs?: number; reviewTimeoutMs?: number; homeDir?: string; onPermissionDenied?: PermissionDenialListener; signal?: AbortSignal };
 type ReviewEvent = {
   type?: string; subtype?: string; apiKeySource?: unknown; tools?: unknown; mcp_servers?: unknown; memory_paths?: unknown; error?: unknown;
   message?: { content?: unknown }; rate_limit_info?: { status?: string };
@@ -49,16 +50,18 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly executable: string;
   private readonly model?: string;
   private readonly allowedTools?: string[];
+  private readonly promptCacheOneHour: boolean;
   private readonly idleTimeoutMs: number;
   private readonly reviewTimeoutMs: number;
   private readonly homeDir: string;
   private readonly onPermissionDenied?: PermissionDenialListener;
   private closed = false;
 
-  constructor({ executable = "claude", model, allowedTools, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
+  constructor({ executable = "claude", model, allowedTools, promptCacheOneHour = false, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
     this.executable = executable;
     this.model = model;
     this.allowedTools = allowedTools?.length ? [...allowedTools] : undefined;
+    this.promptCacheOneHour = promptCacheOneHour;
     this.idleTimeoutMs = idleTimeoutMs;
     this.reviewTimeoutMs = reviewTimeoutMs;
     this.homeDir = homeDir;
@@ -294,7 +297,9 @@ export class ClaudeRuntime implements AgentRuntime {
   private async *attempt(sessionId: string, session: SessionState, prompt: string, active: ActiveTurn): AsyncGenerator<RuntimeEvent, Attempt> {
     const outcome: Attempt = { started: false, credentialRefused: false, authentication: false, usage: false, spawnFailed: false, timedOut: false, mismatched: false, deniedEvents: 0 };
     // No shell; stderr is discarded so raw CLI diagnostics never reach logs.
-    const child = spawn(this.executable, this.args(sessionId, session), { cwd: session.projectPath, stdio: ["pipe", "pipe", "ignore"] });
+    // The 1-hour cache is added only to this child's environment; inherited cache settings are left as they are.
+    const env = this.promptCacheOneHour ? { ...process.env, ENABLE_PROMPT_CACHING_1H: "1" } : undefined;
+    const child = spawn(this.executable, this.args(sessionId, session), { cwd: session.projectPath, stdio: ["pipe", "pipe", "ignore"], ...(env ? { env } : {}) });
     const lines: string[] = [];
     let ended = false;
     let wake: (() => void) | undefined;

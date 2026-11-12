@@ -2,10 +2,10 @@
 id: BL-0030
 title: memory add with a lone --core creates a Memory named "--core"
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-30T23:10:33Z
 source: IP-0006 T-0001 reviewer handoff 1
-promoted_to: null
+promoted_to: RF-0002
 ---
 
 # BL-0030: memory add with a lone --core creates a Memory named "--core"

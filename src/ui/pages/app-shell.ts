@@ -674,7 +674,7 @@ function skillDetail(v) {
   const enabled = Object.entries(skill.capabilities).filter(([, value]) => value !== false && value !== 'false');
   const viewer = !file ? empty('No files in this package')
     : file.text === null ? empty('Binary or large file · ' + fileSize(file.size))
-    : file.path.toLowerCase().endsWith(".md") ? markdown(file.text, true)
+    : file.path.toLowerCase().endsWith(".md") ? markdown(file.text, true, file.path.split('/').pop() + ' has no text to show')
     : h('pre', { class: 'code' }, h('code', {}, file.text));
   return { kicker: 'skill · v' + skill.version, title: skill.id, body: [
     h('button', { class: 'back', type: 'button', onclick: () => { skillView = null; openDrawer('skills', true); } }, icon('angle-small-left'), 'all skills'),

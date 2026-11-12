@@ -2,10 +2,10 @@
 id: BL-0031
 title: Test the maintenance refusal for a missing memories.kind
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-30T23:10:33Z
 source: IP-0006 T-0001 reviewer handoff 1
-promoted_to: null
+promoted_to: RF-0002
 ---
 
 # BL-0031: Test the maintenance refusal for a missing memories.kind

@@ -184,6 +184,32 @@ test("maintenance refuses a live database that needs migration without changing 
   }
 });
 
+test("maintenance refuses a live database whose memories table has no kind column without changing it", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    openDatabase(home).close();
+    const legacy = new DatabaseSync(home.databaseFile);
+    legacy.exec("ALTER TABLE memories DROP COLUMN kind");
+    legacy.close();
+    const release = await acquireRuntimeHomeLock(home);
+    try {
+      await assert.rejects(withMaintenanceDatabase(home, () => assert.fail("must not run")), (error: unknown) => {
+        assert(error instanceof MaintenanceDatabaseUnavailableError);
+        assert.match(error.message, /schema migration is required/);
+        return true;
+      });
+      const check = new DatabaseSync(home.databaseFile);
+      assert.equal((check.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>).some(({ name }) => name === "kind"), false);
+      check.close();
+    } finally {
+      await release();
+    }
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
 test("recovery requeues only pre-runtime work and fails post-start work once", async () => {
   const deployment = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {

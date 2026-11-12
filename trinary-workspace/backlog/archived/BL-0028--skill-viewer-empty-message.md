@@ -2,10 +2,10 @@
 id: BL-0028
 title: Skill-file viewer says "agent.md is empty"
 type: bug
-status: open
+status: promoted
 created_at: 2026-10-30T17:03:00Z
 source: IP-0005 T-0006 worker and reviewer handoffs
-promoted_to: null
+promoted_to: RF-0002
 ---
 
 # BL-0028: Skill-file viewer says "agent.md is empty"

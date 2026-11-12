@@ -2,10 +2,10 @@
 id: BL-0039
 title: Opt-in 1-hour prompt cache for Claude Turns
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-31T02:00:00Z
 source: IP-0006 human acceptance discussion
-promoted_to: null
+promoted_to: RF-0002
 ---
 
 # BL-0039: Opt-in 1-hour prompt cache for Claude Turns

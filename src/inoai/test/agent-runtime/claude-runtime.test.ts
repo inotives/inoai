@@ -19,7 +19,7 @@ import { runRuntimeTurn } from "../../conversation/runtime-turn.js";
 
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[] };
 // `stdin` is undefined until the fake has read all of stdin and installed its SIGINT handler.
-type Call = { argv: string[]; cwd: string; stdin?: string; pid: number };
+type Call = { argv: string[]; cwd: string; stdin?: string; pid: number; cache: string | null };
 
 // A fake `claude` that records its call (argv, cwd, pid) before anything else, so a short timeout cannot
 // kill it unrecorded. It then records stdin and replays recorded stream-json lines.
@@ -32,7 +32,7 @@ const argv = process.argv.slice(2);
 const calls = join(dir, "calls.jsonl");
 let index = 0;
 try { index = readFileSync(calls, "utf8").split("\\n").filter(Boolean).length; } catch {}
-appendFileSync(calls, JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid }) + "\\n");
+appendFileSync(calls, JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid, cache: process.env.ENABLE_PROMPT_CACHING_1H ?? null }) + "\\n");
 const scenarios = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
 const scenario = scenarios[Math.min(index, scenarios.length - 1)];
 const flag = argv.findIndex((arg) => arg === "--session-id" || arg === "--resume");
@@ -211,6 +211,32 @@ test("passes configured allowed tools as one --allowedTools= argv element for ne
     assert.equal(calls[1]!.stdin, "follow-up");
   } finally { await fake.cleanup(); }
 });
+
+// Runs body with ENABLE_PROMPT_CACHING_1H absent from this process, so inherited shell settings cannot mask the result.
+async function withoutInheritedCacheSetting(body: () => Promise<void>): Promise<void> {
+  const had = Object.hasOwn(process.env, "ENABLE_PROMPT_CACHING_1H");
+  const previous = process.env.ENABLE_PROMPT_CACHING_1H;
+  delete process.env.ENABLE_PROMPT_CACHING_1H;
+  try { await body(); } finally { if (had) process.env.ENABLE_PROMPT_CACHING_1H = previous; }
+}
+
+test("sets ENABLE_PROMPT_CACHING_1H=1 only for Turn processes when the 1-hour cache is configured", () => withoutInheritedCacheSetting(async () => {
+  const fake = await fakeCli([{ lines: [init, success("ok")] }, { lines: [init, success("again")] }, { lines: [init, success("plain")] }]);
+  try {
+    const cached = new ClaudeRuntime({ executable: fake.executable, promptCacheOneHour: true });
+    const id = await cached.createSession(fake.dir, "personality");
+    await collect(cached.runTurn(id, "question"));
+    await collect(cached.runTurn(id, "follow-up"));
+    const plain = new ClaudeRuntime({ executable: fake.executable });
+    const other = await plain.createSession(fake.dir, "personality");
+    await collect(plain.runTurn(other, "question"));
+    const calls = await fake.calls();
+    assert.deepEqual(calls.map((call) => [call.argv[5], call.cache]), [["--session-id", "1"], ["--resume", "1"], ["--session-id", null]]);
+    // The option changes only the environment, never the argv.
+    assert.deepEqual(calls[0]!.argv, calls[2]!.argv.map((arg) => arg === other ? id : arg));
+    assert.equal(process.env.ENABLE_PROMPT_CACHING_1H, undefined, "the parent environment is not changed");
+  } finally { await fake.cleanup(); }
+}));
 
 test("an empty allowed tools list leaves the argv unchanged", async () => {
   const fake = await fakeCli([{ lines: [init, success("ok")] }]);
