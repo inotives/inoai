@@ -2,10 +2,10 @@
 id: BL-0035
 title: Claude allowed tool rules and .env.sample entry
 type: idea
-status: open
+status: promoted
 created_at: 2026-10-31T00:33:00Z
 source: IP-0006 T-0007 worker handoff 1 and reviewer handoff 1
-promoted_to: null
+promoted_to: RF-0002
 ---
 
 # BL-0035: Claude allowed tool rules and .env.sample entry
@@ -22,6 +22,7 @@ promoted_to: null
 ## Discussion
 
 None
+- [2026-11-12] Owner dropped the tool-rule part: plain tool names are enough. RF-0002 delivers the `.env.sample` entry.
 
 ## Open questions
 
