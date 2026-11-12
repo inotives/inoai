@@ -34,6 +34,8 @@ Doc drift left outside IP-0004 T-0004 scope:
 - [2026-10-30] RF-0001 (branch `chore/node-security-update`) fixed two items here at the owner's request: `npm test` no longer lists the empty `dist/platform/*.test.js` glob, and the `INSTRUCTIONS.md` Heartbeat "Isolated acceptance checks" command now names `dist/inoai/test/...` paths. The other items stay open.
 - [2026-10-30] IP-0006 T-0006 reviewer handoff 1: `README.md:41` still says "A silent Daily Memory Review …". Since IP-0006 (ADR 0029), a review that changes Memory or stores proposals posts a status-channel summary. Drop "silent" or describe the summary.
 
+- [2026-11-12] Recheck on `main` at `fa15492`. Done: `CONTEXT.md:68` (Manual Memory Entry no longer mentions the UI writing Memory), the README layout tree (README now links `docs/repository-structure.md`), and the `apps/core`/`apps/ui` tree. Still open: Electron mentions in `docs/adr/0014-postgresql-operational-source-of-truth.md:21,25`; the ADR 0026 "Run now" cross-reference; `docs/archived/*` Electron mentions (3 files, optional); `src/platform/README.md` and `src/persistence/README.md`; `backups/` in `docs/repository-structure.md:27`; `docs/adr/0009-opencode-uses-its-configured-provider.md:3` README reference; `README.md:41` "silent" Daily Memory Review. Claude Code installed is now 2.1.322; `INSTRUCTIONS.md:713` still records 2.1.309 verified, so the usage recheck is still due.
+
 ## Open questions
 
 None

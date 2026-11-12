@@ -40,6 +40,8 @@ None
 
 - [2026-10-24] IP-0004 T-0001 reviewer follow-ups: the `/reset` control (`app.ts:365`) and the task-create rollback (`app.ts:285`) still call `resetSession` without a clock, because `start()` has no scheduler clock in scope. `resetSession` still writes Session and message `ended_at`/`updated_at` with `unixepoch()`; only proposal expiry uses `now`.
 
+- [2026-11-12] Recheck on `main` at `fa15492`: sub-item g (`resetSession` clock) is done; `resetSession` in `legacy-database.ts:1398` takes a `now` argument. `cardsAfterDelivery` is still an in-memory map (`conversation-worker.ts:70`). The other sub-items were not changed by IP-0004 to IP-0006 and stay open.
+
 ## Open questions
 
 None
