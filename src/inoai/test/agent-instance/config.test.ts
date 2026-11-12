@@ -146,6 +146,33 @@ test("rejects malformed CLAUDE_ALLOWED_TOOLS and any value for a non-Claude home
   }
 });
 
+test("parses optional CLAUDE_PROMPT_CACHE_TTL for a Claude home", () => {
+  const claude = { ...validValues, AGENT_PROVIDER: "claude" };
+  assert.equal(validateConfiguration(claude).claudePromptCacheOneHour, undefined);
+  assert.equal(validateConfiguration({ ...claude, CLAUDE_PROMPT_CACHE_TTL: "  " }).claudePromptCacheOneHour, undefined);
+  assert.equal(validateConfiguration({ ...claude, CLAUDE_PROMPT_CACHE_TTL: " 1h " }).claudePromptCacheOneHour, true);
+  // Blank is unset, so a shared sample line does not break other providers.
+  assert.equal(validateConfiguration({ ...validValues, CLAUDE_PROMPT_CACHE_TTL: "" }).claudePromptCacheOneHour, undefined);
+});
+
+test("rejects any CLAUDE_PROMPT_CACHE_TTL other than 1h and any value for a non-Claude home", () => {
+  const claude = { ...validValues, AGENT_PROVIDER: "claude" };
+  for (const value of ["5m", "2h", "1H", "60m", "1", "true", "1h,"]) {
+    assert.throws(() => validateConfiguration({ ...claude, CLAUDE_PROMPT_CACHE_TTL: value }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /CLAUDE_PROMPT_CACHE_TTL must be 1h or blank/);
+      return true;
+    }, value);
+  }
+  for (const provider of ["codex", "opencode"]) {
+    assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: provider, CLAUDE_PROMPT_CACHE_TTL: "1h" }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /CLAUDE_PROMPT_CACHE_TTL is only supported when AGENT_PROVIDER is claude/);
+      return true;
+    });
+  }
+});
+
 test("rejects an unsupported provider before acquiring the runtime lock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
   try {

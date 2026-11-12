@@ -14,7 +14,7 @@ import { OpenCodeRuntime } from "../../connectors/agent-runtime/opencode-runtime
 // "folder": what the fake CLI leaves in ~/.claude/projects/<encoded cwd>/ (the real CLI creates none under --system-prompt).
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[]; folder?: "none" | "memory" | "jsonl" };
 // `stdin` is undefined until the fake has read all of stdin and installed its SIGINT handler.
-type Call = { argv: string[]; cwd: string; stdin?: string; pid: number };
+type Call = { argv: string[]; cwd: string; stdin?: string; pid: number; cache: string | null };
 
 // A fake `claude` that records its call (argv, cwd, pid) before anything else, so a short timeout cannot
 // kill it unrecorded. It then optionally writes its project folder, records stdin, and replays stream-json lines.
@@ -23,7 +23,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const dir = dirname(fileURLToPath(import.meta.url));
-appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), pid: process.pid }) + "\\n");
+appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), pid: process.pid, cache: process.env.ENABLE_PROMPT_CACHING_1H ?? null }) + "\\n");
 const { home, scenario } = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
 const folder = join(home, ".claude", "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"));
 if (scenario.folder === "memory" || scenario.folder === "jsonl") mkdirSync(join(folder, "memory"), { recursive: true });
@@ -96,6 +96,21 @@ async function until(check: () => Promise<boolean>): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+test("Claude review never gets the 1-hour prompt cache setting", async () => {
+  const had = Object.hasOwn(process.env, "ENABLE_PROMPT_CACHING_1H");
+  const previous = process.env.ENABLE_PROMPT_CACHING_1H;
+  delete process.env.ENABLE_PROMPT_CACHING_1H;
+  const fake = await fakeClaude({ lines: [init, text(answer), success(answer)], folder: "memory" });
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, homeDir: fake.home, promptCacheOneHour: true });
+    assert.equal(await runtime.review("review prompt"), answer);
+    assert.deepEqual((await fake.calls()).map((call) => call.cache), [null]);
+  } finally {
+    await fake.cleanup();
+    if (had) process.env.ENABLE_PROMPT_CACHING_1H = previous;
+  }
+});
 
 test("Claude review runs one text-only throwaway CLI call in a fresh cwd and returns the final result", async () => {
   const fake = await fakeClaude({ lines: [init, text(answer), success(answer)], folder: "memory" });

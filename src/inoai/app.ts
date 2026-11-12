@@ -544,7 +544,8 @@ function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "dele
   if (operation === "add" && values.length === 2 && values.filter((value) => value === "--core").length === 1) {
     return { operation, argument: values.find((value) => value !== "--core"), connectDirectory, kind: "core" };
   }
-  if ((operation === "add" || operation === "delete") && values.length === 1) return { operation, argument: values[0], connectDirectory, kind: "topic" };
+  // A lone --core has no text; it must not become a Memory whose text is "--core".
+  if ((operation === "add" || operation === "delete") && values.length === 1 && !(operation === "add" && values[0] === "--core")) return { operation, argument: values[0], connectDirectory, kind: "topic" };
   if (operation === "list" && values.length === 0) return { operation, argument: undefined, connectDirectory, kind: "topic" };
   throw new Error("Usage: inoai memory <add [--core] <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
 }
@@ -804,6 +805,7 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
           // The CLI denies prompts itself; the notifier only reports denials. A failed probe keeps global FIFO.
           runtime = await ClaudeRuntime.connect({ model: instance.configuration.claudeModel,
             allowedTools: instance.configuration.claudeAllowedTools,
+            promptCacheOneHour: instance.configuration.claudePromptCacheOneHour === true,
             onPermissionDenied: claudePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
           probeConcurrency = () => probeClaudeConcurrency({ signal: startupAbort.signal });
           break;

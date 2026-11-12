@@ -703,6 +703,13 @@ test("Memory CLI list, add, and delete work under a live runtime lock", async ()
     assert.equal(kinds.code, 0, kinds.stderr);
     assert.deepEqual((JSON.parse(kinds.stdout) as Array<{ id: number; kind: string }>).map(({ id, kind }) => [id, kind]),
       [[added.id, "topic"], [coreMemory.id, "core"]]);
+
+    // A lone --core is a usage error, not a Memory whose text is "--core".
+    const loneCore = await runCli(deployment, ["memory", "add", "--core", "--connect-dir", connectDirectory]);
+    assert.equal(loneCore.code, 1);
+    assert.match(loneCore.stderr, /Usage: inoai memory <add \[--core\] <text>/);
+    const afterLoneCore = await runCli(deployment, ["memory", "list", "--connect-dir", connectDirectory]);
+    assert.deepEqual((JSON.parse(afterLoneCore.stdout) as Array<{ id: number }>).map(({ id }) => id), [added.id, coreMemory.id]);
     const doubleCore = await runCli(deployment, ["memory", "add", "--core", "--core", "--connect-dir", connectDirectory]);
     assert.equal(doubleCore.code, 1);
     const softDeleteCore = await runCli(deployment, ["memory", "delete", String(coreMemory.id), "--connect-dir", connectDirectory]);

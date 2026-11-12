@@ -274,6 +274,11 @@ test("result.md that renders to nothing is not called agent.md, and future times
   assert.deepEqual([frontMatterOnly.className, frontMatterOnly.text], ["empty", "result.md has no text to show"]);
   assert.match(pageScript(html), /markdown\(selected\.result, true, 'result\.md has no text to show'\)/, "the run viewer passes its own empty text");
   assert.equal(markdown("").text, "agent.md is empty", "agent.md keeps its message");
+  // The skill-file viewer names the selected file instead of agent.md.
+  assert.match(pageScript(html), /markdown\(file\.text, true, file\.path\.split\('\/'\)\.pop\(\) \+ ' has no text to show'\)/, "the skill viewer passes its own empty text");
+  assert.doesNotMatch(pageScript(html), /markdown\(file\.text, true\)/, "the skill viewer no longer uses the agent.md default");
+  const skillFile = markdown("---\nname: demo\n---\n", true, "SKILL.md has no text to show");
+  assert.deepEqual([skillFile.className, skillFile.text], ["empty", "SKILL.md has no text to show"]);
   const recent = when(new Date(Date.now() - 60_000).toISOString());
   assert.match(recent, /^\d\d:\d\d$/, "a recent past time shows only the clock");
   const future = new Date(Date.now() + 3 * 86_400_000);

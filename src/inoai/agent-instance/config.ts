@@ -37,6 +37,8 @@ export type Configuration = {
   claudeModel?: string;
   /** Owner opt-in from `CLAUDE_ALLOWED_TOOLS`: plain Claude tool names passed as `--allowedTools` for Turns and Task runs. */
   claudeAllowedTools?: string[];
+  /** Owner opt-in from `CLAUDE_PROMPT_CACHE_TTL=1h`: the Claude CLI caches prompts for 1 hour in Turns and Task runs. */
+  claudePromptCacheOneHour?: true;
   memoryReviewTime: string;
   memoryReviewMaxChars: number;
   /** IANA time zone for Discord-created Tasks: `OWNER_TIMEZONE`, or the host time zone when unset. */
@@ -81,6 +83,12 @@ export function validateConfiguration(values: Record<string, string | undefined>
   } else if (claudeAllowedTools?.some((name) => !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(name))) {
     issues.push("CLAUDE_ALLOWED_TOOLS must be a comma-separated list of tool names; each must start with a letter and contain only letters, digits, _ and -");
   }
+  const promptCacheTtl = values.CLAUDE_PROMPT_CACHE_TTL?.trim() || undefined;
+  if (promptCacheTtl && values.AGENT_PROVIDER !== "claude") {
+    issues.push("CLAUDE_PROMPT_CACHE_TTL is only supported when AGENT_PROVIDER is claude");
+  } else if (promptCacheTtl && promptCacheTtl !== "1h") {
+    issues.push("CLAUDE_PROMPT_CACHE_TTL must be 1h or blank");
+  }
   if (values.MEMORY_REVIEW_TIME && !/^([01]\d|2[0-3]):[0-5]\d$/.test(values.MEMORY_REVIEW_TIME)) {
     issues.push("MEMORY_REVIEW_TIME must be HH:MM");
   }
@@ -105,6 +113,7 @@ export function validateConfiguration(values: Record<string, string | undefined>
     ...(projectDirectory ? { projectDirectory } : {}),
     ...(claudeModel ? { claudeModel } : {}),
     ...(claudeAllowedTools ? { claudeAllowedTools } : {}),
+    ...(promptCacheTtl ? { claudePromptCacheOneHour: true as const } : {}),
     memoryReviewTime: values.MEMORY_REVIEW_TIME!,
     memoryReviewMaxChars: limit,
     ownerTimeZone: ownerTimeZone!,
