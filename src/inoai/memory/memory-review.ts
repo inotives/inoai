@@ -7,6 +7,7 @@ import { fixedTurnNotices, providerMismatchNotice } from "../conversation/conver
 import { completeMemoryReview, createEvent, createMemory, createMemoryReview, listMemories, listPendingMemoryProposals, maxReviewProposals, messagesForMemoryReview, softDeleteMemory, storeReviewProposals } from "../connectors/persistence/sqlite/legacy-database.js";
 import type { MemoryProposalRecord, MemoryRecord, MemoryReviewRecord, MessageRecord, ReviewProposalDraft, ReviewProposalSkip } from "../connectors/persistence/sqlite/legacy-database.js";
 import { openCodeAuthenticationNotice } from "../connectors/agent-runtime/opencode-runtime.js";
+import { anthropicApiMaxTokensNotice, anthropicApiRefusalNotice } from "../connectors/agent-runtime/anthropic-api-runtime.js";
 import { secretLike } from "../conversation/prompt-context.js";
 import { runtimeFailureNotice } from "../conversation/runtime-turn.js";
 import type { MemoryReviewCommit, MemoryReviewCommitResult, MemoryReviewSnapshot } from "../persistence/operational-store.js";
@@ -180,6 +181,8 @@ function fixedNotices(runtime: AgentRuntime): Set<string> {
     ...["codex", "claude", "opencode", "other"].flatMap((stored) => providers.map(({ displayName }) => providerMismatchNotice(stored, displayName))),
     ...providers.map(({ displayName }) => permissionDeclinedNotice(displayName)),
     ...providers.map(({ displayName }) => permissionSkippedNotice(displayName)),
+    anthropicApiRefusalNotice,
+    anthropicApiMaxTokensNotice,
     legacyApprovalNotice,
     legacyRedactedBody,
   ]);

@@ -16,6 +16,7 @@ import { createCodexRuntime } from "../../../index.js";
 import { parseReviewJson, redactSecrets, reviewSession, reviewSessionWithStore } from "../../memory/memory-review.js";
 import type { MemoryReviewSnapshot } from "../../persistence/operational-store.js";
 import { OpenCodeRuntime } from "../../connectors/agent-runtime/opencode-runtime.js";
+import { anthropicApiMaxTokensNotice, anthropicApiRefusalNotice } from "../../connectors/agent-runtime/anthropic-api-runtime.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { runtimeFailureNotice } from "../../conversation/runtime-turn.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -576,6 +577,8 @@ test("every provider's fixed notices and the legacy redaction body are excluded,
       ...providers.map((provider) => permissionDeclinedNotice(provider.displayName)),
       ...providers.map((provider) => permissionSkippedNotice(provider.displayName)),
       "Legacy approval request redacted",
+      anthropicApiRefusalNotice,
+      anthropicApiMaxTokensNotice,
     ];
     assert(notices.includes(new OpenCodeRuntime({ executable: missing }).authenticationNotice!));
     for (const notice of notices) add("agent", notice);

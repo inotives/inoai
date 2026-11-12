@@ -9,7 +9,7 @@ import type { Configuration } from "../../agent-instance/config.js";
 import { RuntimeFailure } from "../../agent-runtime/ports.js";
 import type { RuntimeEvent, RuntimeFailureKind } from "../../agent-runtime/ports.js";
 import { createAnthropicApiClient } from "../../connectors/agent-runtime/anthropic-api-client.js";
-import { AnthropicApiRuntime, anthropicApiTools } from "../../connectors/agent-runtime/anthropic-api-runtime.js";
+import { AnthropicApiRuntime, anthropicApiMaxTokensNotice, anthropicApiRefusalNotice, anthropicApiTools } from "../../connectors/agent-runtime/anthropic-api-runtime.js";
 import type { AnthropicApiRuntimeOptions } from "../../connectors/agent-runtime/anthropic-api-runtime.js";
 import { openDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
@@ -27,13 +27,14 @@ type Call = { body: Record<string, unknown>; headers: Headers };
 
 const sse = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
-function streamed(content: Block[], stopReason: string, usage = { input: 10, created: 2, read: 3, output: 5 }): string[] {
+function streamed(content: Block[], stopReason: string, usage = { input: 10, created: 2, read: 3, output: 5 }, iterations?: Block[]): string[] {
   const events = [sse("message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model, content: [],
     stop_reason: null, stop_sequence: null, usage: { input_tokens: usage.input, cache_creation_input_tokens: usage.created, cache_read_input_tokens: usage.read, output_tokens: 1 } } })];
   content.forEach((block, index) => {
     if (block.type === "text") {
       events.push(sse("content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } }));
       for (const piece of String(block.text).split("|")) events.push(sse("content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: piece } }));
+      for (const citation of (block.citations ?? []) as Block[]) events.push(sse("content_block_delta", { type: "content_block_delta", index, delta: { type: "citations_delta", citation } }));
     } else if (block.type === "thinking") {
       events.push(sse("content_block_start", { type: "content_block_start", index, content_block: { type: "thinking", thinking: "", signature: "" } }));
       events.push(sse("content_block_delta", { type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: block.thinking } }));
@@ -43,7 +44,7 @@ function streamed(content: Block[], stopReason: string, usage = { input: 10, cre
     }
     events.push(sse("content_block_stop", { type: "content_block_stop", index }));
   });
-  events.push(sse("message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: usage.output } }));
+  events.push(sse("message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: usage.output, ...(iterations ? { iterations } : {}) } }));
   events.push(sse("message_stop", { type: "message_stop" }));
   return events;
 }
@@ -346,4 +347,116 @@ test("the API key appears in no event, error, or stored row", async (t) => {
   const text = JSON.stringify(seen);
   assert.equal(text.includes(sentinelKey), false);
   assert.equal(text.includes("raw body"), false);
+});
+
+// ---- Fallbacks, refusals, and sources (T-0004) ----
+
+const fallback = { type: "fallback", from: { model }, to: { model: "claude-opus-5" }, trigger: { type: "refusal", category: "cyber" } };
+
+test("fallbacks are sent only for models that support them", async (t) => {
+  const ctx = await fixture(t);
+  for (const [name, supported] of [["claude-fable-5-2", true], ["claude-fable-5-1", true], ["claude-opus-5-5", true], ["claude-opus-5", true],
+    ["claude-sonnet-5-5", true], ["claude-haiku-5-5", false], ["claude-sonnet-5", false], ["claude-opus-4-8", false]] as const) {
+    const { runtime, api } = ctx.runtime([{ sse: streamed([{ type: "text", text: "ok" }], "end_turn") }], { model: name });
+    const { agentSessionId } = await ctx.start(runtime);
+    await collect(runtime, agentSessionId, "hi");
+    const { body, headers } = api.calls[0]!;
+    assert.equal(body.fallbacks, supported ? "default" : undefined, name);
+    assert.equal("betas" in body, false, "betas travel as a header");
+    assert.equal(headers.get("anthropic-beta"), supported ? "server-side-fallback-2026-07-01" : null, name);
+  }
+});
+
+test("replay leaves out the required blocks before the final fallback block, across pause_turn rows, and keeps the rest", async (t) => {
+  const ctx = await fixture(t);
+  const redacted = { type: "redacted_thinking", data: "opaque" };
+  const unmatched = { type: "server_tool_use", id: "srvtoolu_a", name: "web_search", input: { query: "a" } };
+  const matched = { type: "server_tool_use", id: "srvtoolu_b", name: "web_search", input: { query: "b" } };
+  const result = { type: "web_search_tool_result", tool_use_id: "srvtoolu_b", content: [] };
+  const localTool = { type: "tool_use", id: "toolu_1", name: "local", input: {} };
+  const after = { type: "thinking", thinking: "after", signature: "sig-2" };
+  const lateTool = { type: "server_tool_use", id: "srvtoolu_c", name: "web_search", input: { query: "c" } };
+  const first = [thinking, redacted, unmatched, { type: "text", text: "a" }];
+  const second = [matched, result, localTool, { type: "text", text: "b" }, { ...thinking, signature: "sig-3" }, fallback, after, lateTool, { type: "text", text: "c" }];
+  const { runtime, api } = ctx.runtime([
+    { sse: streamed(first, "pause_turn") },
+    { sse: streamed(second, "end_turn") },
+    { sse: streamed([{ type: "text", text: "next" }], "end_turn") },
+  ]);
+  const { agentSessionId, sessionId } = await ctx.start(runtime);
+  assert.deepEqual((await collect(runtime, agentSessionId, "go")).at(-1), { type: "answer", text: "abc" });
+  // Before the fallback arrives, the continuation replays the first row unchanged.
+  assert.deepEqual(api.calls[1]!.body.messages, [user("go"), { role: "assistant", content: first }]);
+  // Rows stay raw.
+  const rows = await ctx.store.listHistory(sessionId, agentSessionId);
+  assert.deepEqual(rows.slice(1).map((row) => JSON.parse(row.contentJson)), [first, second]);
+
+  await runtime.resumeSession(agentSessionId, ctx.deployment, "You are inoai.");
+  await collect(runtime, agentSessionId, "again");
+  assert.deepEqual(api.calls[2]!.body.messages, [
+    user("go"),
+    { role: "assistant", content: [{ type: "text", text: "a" }] },
+    { role: "assistant", content: [matched, result, { type: "text", text: "b" }, fallback, after, lateTool, { type: "text", text: "c" }] },
+    user("again"),
+  ]);
+});
+
+test("refusal and max_tokens Turns write no history and answer with their fixed notices", async (t) => {
+  const ctx = await fixture(t);
+  const cases: Array<[string, Reply[], string]> = [
+    ["refusal", [{ sse: streamed([{ type: "text", text: "partial" }], "refusal") }], anthropicApiRefusalNotice],
+    ["refusal before output", [{ sse: streamed([], "refusal") }], anthropicApiRefusalNotice],
+    ["refusal in a continuation", [{ sse: streamed([{ type: "text", text: "a" }], "pause_turn") }, { sse: streamed([fallback, { type: "text", text: "b" }], "refusal") }], anthropicApiRefusalNotice],
+    ["max_tokens", [{ sse: streamed([{ type: "text", text: "long" }], "max_tokens") }], anthropicApiMaxTokensNotice],
+  ];
+  for (const [name, replies, notice] of cases) {
+    const { runtime, api } = ctx.runtime([...replies, { sse: streamed([{ type: "text", text: "fresh" }], "end_turn") }]);
+    const { agentSessionId, sessionId } = await ctx.start(runtime);
+    await t.test(name, async () => {
+      const events = await collect(runtime, agentSessionId, "prompt");
+      assert.deepEqual(events.filter((event) => event.type === "answer"), [{ type: "answer", text: notice }]);
+      assert(events.some((event) => event.type === "usage"), "usage is still reported");
+      assert.deepEqual(await ctx.store.listHistory(sessionId, agentSessionId), []);
+      // The next Turn replays nothing from the refused or cut-off Turn.
+      await runtime.resumeSession(agentSessionId, ctx.deployment, "You are inoai.");
+      await collect(runtime, agentSessionId, "next");
+      assert.deepEqual(api.calls.at(-1)!.body.messages, [user("next")]);
+    });
+  }
+  assert.notEqual(anthropicApiRefusalNotice, anthropicApiMaxTokensNotice);
+});
+
+test("usage sums the fallback chain's per-attempt iterations", async (t) => {
+  const ctx = await fixture(t);
+  const iterations = [
+    { type: "message", model, input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 4, output_tokens: 3, cache_creation: null },
+    { type: "fallback_message", model: "claude-opus-5", input_tokens: 20, cache_creation_input_tokens: 2, cache_read_input_tokens: 5, output_tokens: 7, cache_creation: null },
+  ];
+  const { runtime } = ctx.runtime([{ sse: streamed([fallback, { type: "text", text: "ok" }], "end_turn", { input: 20, created: 2, read: 5, output: 7 }, iterations) }]);
+  const { agentSessionId } = await ctx.start(runtime);
+  const events = await collect(runtime, agentSessionId, "hi");
+  assert.deepEqual(events.filter((event) => event.type === "usage"), [{ type: "usage", inputTokens: 32, cachedInputTokens: 9, outputTokens: 10 }]);
+});
+
+test("cited web search results add a de-duplicated, capped Sources list; no citations add none", async (t) => {
+  const ctx = await fixture(t);
+  const cite = (n: number, title: string | null = `Title ${n}`) => ({ type: "web_search_result_location", url: `https://example.com/${n}`, title, cited_text: "x", encrypted_index: "e" });
+  const document = { type: "char_location", cited_text: "x", document_index: 0, document_title: "Doc", start_char_index: 0, end_char_index: 1, file_id: null };
+  const { runtime } = ctx.runtime([
+    { sse: streamed([
+      { type: "text", text: "One.", citations: [cite(1), cite(2, null)] },
+      { type: "text", text: " Two.", citations: [cite(1), document, cite(3, "Multi\nline  title")] },
+      { type: "text", text: " Three.", citations: [cite(4), cite(5), cite(6), cite(7)] },
+    ], "end_turn") },
+    { sse: streamed([{ type: "text", text: "Plain." }], "end_turn") },
+  ]);
+  const { agentSessionId } = await ctx.start(runtime);
+  const cited = await collect(runtime, agentSessionId, "search");
+  assert.deepEqual(cited.at(-1), { type: "answer", text: [
+    "One. Two. Three.", "", "Sources:",
+    "- Title 1: https://example.com/1", "- https://example.com/2", "- Multi line title: https://example.com/3",
+    "- Title 4: https://example.com/4", "- Title 5: https://example.com/5",
+  ].join("\n") });
+  await runtime.resumeSession(agentSessionId, ctx.deployment, "You are inoai.");
+  assert.deepEqual((await collect(runtime, agentSessionId, "plain")).at(-1), { type: "answer", text: "Plain." });
 });

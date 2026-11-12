@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIConnectionError, APIError, APIUserAbortError } from "@anthropic-ai/sdk";
 import type {
-  BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTextBlockParam, BetaToolUnion, BetaUsage, BetaWebFetchTool20260209,
-  BetaWebSearchTool20260209, MessageCreateParamsBase,
+  BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTextBlockParam, BetaToolUnion, BetaUsage,
+  BetaWebFetchTool20260209, BetaWebSearchTool20260209, MessageCreateParamsBase,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
 import type { AnthropicApiEffort } from "../../agent-instance/config.js";
@@ -33,6 +33,16 @@ type ActiveTurn = { controller: AbortController; produced: boolean; cancelled: b
 const actor = "anthropic-api";
 export const anthropicApiMaxOutputTokens = 64_000;
 export const anthropicApiMaxContinuations = 5;
+export const anthropicApiMaxSources = 5;
+
+/** Fixed answer when the whole fallback chain declined. Never carries API text; excluded from Memory Review. */
+export const anthropicApiRefusalNotice = "The model declined this request, so this reply was not saved to the conversation. You can rephrase it and try again.";
+/** Fixed answer when the reply hit the output limit. Never carries API text; excluded from Memory Review. */
+export const anthropicApiMaxTokensNotice = "The reply was too long to finish, so it was not saved to the conversation. Ask for a shorter answer or split the request.";
+
+// Models that accept server-side refusal fallbacks (`fallbacks: "default"`). Other models get neither the beta nor the param.
+const fallbackModels = new Set(["claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
+const fallbackBeta = "server-side-fallback-2026-07-01";
 
 /** The pinned server tools, in a fixed order so the frozen prefix is deterministic. No local tools exist. */
 export const anthropicApiTools: BetaToolUnion[] = [
@@ -104,8 +114,9 @@ export class AnthropicApiRuntime implements AgentRuntime {
     try {
       const { inoaiSessionId, system, tools, messages, entries } = await this.prepare(sessionId, session.instructions, prompt);
       for (let continuations = 0; ; continuations++) {
-        const message = yield* this.request(turn, { model: this.model, max_tokens: this.maxTokens, system, tools, messages,
-          thinking: { type: "adaptive" }, ...(this.effort ? { output_config: { effort: this.effort } } : {}), cache_control: { type: "ephemeral" } });
+        const message = yield* this.request(turn, { model: this.model, max_tokens: this.maxTokens, system, tools, messages: replayable(messages),
+          thinking: { type: "adaptive" }, ...(this.effort ? { output_config: { effort: this.effort } } : {}), cache_control: { type: "ephemeral" },
+          ...(fallbackModels.has(this.model) ? { betas: [fallbackBeta], fallbacks: "default" as const } : {}) });
         const usage = usageEvent(message.usage);
         if (usage) yield usage;
         // Thinking and server-tool blocks are kept unchanged so the next request can replay them.
@@ -113,11 +124,19 @@ export class AnthropicApiRuntime implements AgentRuntime {
         entries.push({ role: "assistant", model: message.model, contentJson: JSON.stringify(message.content) });
         if (message.stop_reason === "end_turn") break;
         if (message.stop_reason === "model_context_window_exceeded") throw new RuntimeFailure("context_exhausted");
+        // A refused or output-limited Turn writes no history and answers with fixed text only.
+        const notice = message.stop_reason === "refusal" ? anthropicApiRefusalNotice : message.stop_reason === "max_tokens" ? anthropicApiMaxTokensNotice : undefined;
+        if (notice) {
+          if (turn.cancelled) throw new RuntimeFailure("cancelled");
+          yield { type: "answer", text: notice };
+          return;
+        }
         // The API resumes a paused server-tool loop from the trailing assistant content; no extra user message is sent.
         if (message.stop_reason === "pause_turn" && continuations < anthropicApiMaxContinuations) continue;
         throw new RuntimeFailure("uncertain");
       }
-      const answer = entries.filter((entry) => entry.role === "assistant").map((entry) => textOf(entry.contentJson)).join("");
+      const blocks = entries.filter((entry) => entry.role === "assistant").flatMap((entry) => JSON.parse(entry.contentJson) as BetaContentBlock[]);
+      const answer = blocks.map((block) => block.type === "text" ? block.text : "").join("") + sourcesList(blocks);
       if (turn.cancelled) throw new RuntimeFailure("cancelled");
       try {
         await this.history.appendHistory(inoaiSessionId, sessionId, entries, actor);
@@ -210,20 +229,76 @@ function textContent(text: string): BetaTextBlockParam[] {
   return [{ type: "text", text }];
 }
 
-function textOf(contentJson: string): string {
-  const blocks = JSON.parse(contentJson) as Array<{ type?: unknown; text?: unknown }>;
-  return blocks.map((block) => block.type === "text" && typeof block.text === "string" ? block.text : "").join("");
+// A `Sources:` list of the unique web search results the answer's text cites, or "" when it cites none. Fetched pages
+// carry no citations: the pinned web_fetch tool leaves citations disabled.
+function sourcesList(blocks: BetaContentBlock[]): string {
+  const sources = new Map<string, string>();
+  for (const block of blocks) {
+    if (block.type !== "text") continue;
+    for (const citation of block.citations ?? []) {
+      if (citation.type !== "web_search_result_location" || !citation.url || sources.has(citation.url)) continue;
+      sources.set(citation.url, citation.title?.replace(/\s+/g, " ").trim() || citation.url);
+    }
+  }
+  const lines = [...sources].slice(0, anthropicApiMaxSources).map(([url, title]) => title === url ? `- ${url}` : `- ${title}: ${url}`);
+  return lines.length ? `\n\nSources:\n${lines.join("\n")}` : "";
 }
 
-// Input includes cache writes; cache reads are reported apart. No cost is recorded.
+// Rows are stored raw; this filter runs on replay. In each run of consecutive assistant messages (one Turn, possibly
+// split by pause_turn) that holds a `fallback` block, the API requires leaving out the thinking, redacted_thinking,
+// tool_use, and unmatched server_tool_use blocks before the final `fallback` block. The `fallback` block stays in place.
+function replayable(messages: BetaMessageParam[]): BetaMessageParam[] {
+  const result: BetaMessageParam[] = [];
+  for (let start = 0; start < messages.length;) {
+    let end = start + 1;
+    if (messages[start]!.role === "assistant") while (end < messages.length && messages[end]!.role === "assistant") end++;
+    const run = messages.slice(start, end);
+    start = end;
+    const contents = run.map((message) => typeof message.content === "string" ? undefined : message.content);
+    const lastMessage = lastIndex(contents, (content) => content?.some((block) => block.type === "fallback") ?? false);
+    if (run[0]!.role !== "assistant" || lastMessage < 0) {
+      result.push(...run);
+      continue;
+    }
+    const lastBlock = lastIndex(contents[lastMessage]!, (block) => block.type === "fallback");
+    const resultIds = new Set(contents.flatMap((content) => content ?? []).flatMap((block) => "tool_use_id" in block && block.type !== "tool_result" ? [block.tool_use_id] : []));
+    run.forEach((message, index) => {
+      const content = contents[index];
+      if (!content || index > lastMessage) {
+        result.push(message);
+        return;
+      }
+      const kept = content.filter((block, position) => (index === lastMessage && position >= lastBlock) || !(
+        block.type === "thinking" || block.type === "redacted_thinking" || block.type === "tool_use"
+        || (block.type === "server_tool_use" && !resultIds.has(block.id))));
+      if (kept.length) result.push({ ...message, content: kept } as BetaMessageParam);
+    });
+  }
+  return result;
+}
+
+function lastIndex<T>(items: T[], match: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index--) if (match(items[index]!)) return index;
+  return -1;
+}
+
+// Input includes cache writes; cache reads are reported apart. No cost is recorded. With fallbacks, top-level usage
+// covers only the serving attempt, so the per-attempt `iterations` are summed when present.
 function usageEvent(usage: BetaUsage | undefined): RuntimeEvent | undefined {
   if (!usage) return undefined;
   const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
-  const input = count(usage.input_tokens);
+  const attempts = usage.iterations?.filter((entry) => entry.type === "message" || entry.type === "fallback_message");
+  const parts: Array<Pick<BetaUsage, "input_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens" | "output_tokens">> = attempts?.length ? attempts : [usage];
+  const sum = (field: "input_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens" | "output_tokens") =>
+    parts.reduce<number | undefined>((total, part) => {
+      const value = count(part[field]);
+      return value === undefined ? total : (total ?? 0) + value;
+    }, undefined);
+  const input = sum("input_tokens");
   const values = {
-    inputTokens: input === undefined ? undefined : input + (count(usage.cache_creation_input_tokens) ?? 0),
-    cachedInputTokens: count(usage.cache_read_input_tokens),
-    outputTokens: count(usage.output_tokens),
+    inputTokens: input === undefined ? undefined : input + (sum("cache_creation_input_tokens") ?? 0),
+    cachedInputTokens: sum("cache_read_input_tokens"),
+    outputTokens: sum("output_tokens"),
   };
   const reported = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
   return Object.keys(reported).length ? { type: "usage", ...reported } : undefined;
