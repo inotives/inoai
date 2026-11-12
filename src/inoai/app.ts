@@ -42,6 +42,7 @@ export * from "./agent-instance/config.js";
 export * from "./agent-runtime/ports.js";
 export * from "./conversation/agent-session.js";
 export * from "./transport/approval-relay.js";
+export * from "./connectors/agent-runtime/anthropic-api-client.js";
 export * from "./connectors/agent-runtime/claude-runtime.js";
 export * from "./connectors/agent-runtime/codex-app-server.js";
 export * from "./connectors/agent-runtime/codex-runtime.js";
@@ -814,6 +815,9 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
           // so the home keeps global FIFO.
           runtime = await OpenCodeRuntime.connect({ onPermissionDenied: openCodePermissionDenialNotifier(instance.store!, transport), signal: startupAbort.signal });
           break;
+        case "anthropic-api":
+          // IP-0007: the API runtime is wired in a later task. Until then the home refuses to start.
+          throw new Error("The anthropic-api provider cannot start yet");
       }
     }
   } catch (error) {

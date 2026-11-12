@@ -15,6 +15,12 @@ const requiredKeys = [
   "MEMORY_REVIEW_MAX_CHARS",
 ] as const;
 
+const anthropicApiEfforts = ["low", "medium", "high", "xhigh", "max"] as const;
+export type AnthropicApiEffort = (typeof anthropicApiEfforts)[number];
+// Settings that only an anthropic-api home reads. Other homes ignore them with a warning (IP-0007 decision R1).
+const anthropicApiSettings = ["ANTHROPIC_API_KEY", "ANTHROPIC_API_MODEL", "ANTHROPIC_API_EFFORT"] as const;
+export const defaultAnthropicApiModel = "claude-opus-5-5";
+
 export type Configuration = {
   discordBotToken: string;
   discordGuildId: string;
@@ -22,7 +28,7 @@ export type Configuration = {
   discordStatusChannelId: string;
   discordTaskChannelId?: string;
   chatProvider: "discord";
-  agentProvider: "codex" | "claude" | "opencode";
+  agentProvider: "codex" | "claude" | "opencode" | "anthropic-api";
   // Compatibility types for retained PostgreSQL tooling. Normal loading omits these fields.
   postgresUrl?: string;
   postgresIsolationMode?: "application";
@@ -39,6 +45,14 @@ export type Configuration = {
   claudeAllowedTools?: string[];
   /** Owner opt-in from `CLAUDE_PROMPT_CACHE_TTL=1h`: the Claude CLI caches prompts for 1 hour in Turns and Task runs. */
   claudePromptCacheOneHour?: true;
+  /** `ANTHROPIC_API_KEY` for an anthropic-api home. Never log or display it. */
+  anthropicApiKey?: string;
+  /** `ANTHROPIC_API_MODEL` for an anthropic-api home, or `claude-opus-5-5` when unset. */
+  anthropicApiModel?: string;
+  /** `ANTHROPIC_API_EFFORT` for an anthropic-api home. Unset means the model's own default. */
+  anthropicApiEffort?: AnthropicApiEffort;
+  /** Non-fatal configuration warnings for `validate` and startup to print. They name settings only, never values. */
+  warnings?: string[];
   memoryReviewTime: string;
   memoryReviewMaxChars: number;
   /** IANA time zone for Discord-created Tasks: `OWNER_TIMEZONE`, or the host time zone when unset. */
@@ -57,8 +71,8 @@ export function validateConfiguration(values: Record<string, string | undefined>
   if (values.CHAT_PROVIDER && values.CHAT_PROVIDER !== "discord") {
     issues.push("CHAT_PROVIDER must be discord");
   }
-  if (values.AGENT_PROVIDER && !["codex", "claude", "opencode"].includes(values.AGENT_PROVIDER)) {
-    issues.push("AGENT_PROVIDER must be codex, claude, or opencode");
+  if (values.AGENT_PROVIDER && !["codex", "claude", "opencode", "anthropic-api"].includes(values.AGENT_PROVIDER)) {
+    issues.push("AGENT_PROVIDER must be codex, claude, opencode, or anthropic-api");
   }
   const agentInstanceId = values.AGENT_INSTANCE_ID?.trim();
   const projectDirectory = values.PROJECT_DIRECTORY?.trim() || undefined;
@@ -89,6 +103,17 @@ export function validateConfiguration(values: Record<string, string | undefined>
   } else if (promptCacheTtl && promptCacheTtl !== "1h") {
     issues.push("CLAUDE_PROMPT_CACHE_TTL must be 1h or blank");
   }
+  // Messages name the setting only. They never include the key or another value.
+  const anthropicApi = values.AGENT_PROVIDER === "anthropic-api";
+  const warnings = anthropicApi ? [] : anthropicApiSettings.filter((key) => values[key]?.trim())
+    .map((key) => `${key} is ignored because AGENT_PROVIDER is not anthropic-api`);
+  const anthropicApiKey = anthropicApi ? values.ANTHROPIC_API_KEY?.trim() || undefined : undefined;
+  if (anthropicApi && !anthropicApiKey) issues.push("ANTHROPIC_API_KEY is required when AGENT_PROVIDER is anthropic-api");
+  const anthropicApiModel = anthropicApi ? values.ANTHROPIC_API_MODEL?.trim() || defaultAnthropicApiModel : undefined;
+  const anthropicApiEffort = anthropicApi ? values.ANTHROPIC_API_EFFORT?.trim() || undefined : undefined;
+  if (anthropicApiEffort && !(anthropicApiEfforts as readonly string[]).includes(anthropicApiEffort)) {
+    issues.push("ANTHROPIC_API_EFFORT must be low, medium, high, xhigh, max, or blank");
+  }
   if (values.MEMORY_REVIEW_TIME && !/^([01]\d|2[0-3]):[0-5]\d$/.test(values.MEMORY_REVIEW_TIME)) {
     issues.push("MEMORY_REVIEW_TIME must be HH:MM");
   }
@@ -114,6 +139,10 @@ export function validateConfiguration(values: Record<string, string | undefined>
     ...(claudeModel ? { claudeModel } : {}),
     ...(claudeAllowedTools ? { claudeAllowedTools } : {}),
     ...(promptCacheTtl ? { claudePromptCacheOneHour: true as const } : {}),
+    ...(anthropicApiKey ? { anthropicApiKey } : {}),
+    ...(anthropicApiModel ? { anthropicApiModel } : {}),
+    ...(anthropicApiEffort ? { anthropicApiEffort: anthropicApiEffort as AnthropicApiEffort } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
     memoryReviewTime: values.MEMORY_REVIEW_TIME!,
     memoryReviewMaxChars: limit,
     ownerTimeZone: ownerTimeZone!,
