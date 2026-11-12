@@ -4,6 +4,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import type { Configuration } from "../../../agent-instance/config.js";
+import type { AgentHistoryEntry, AgentHistoryRow, AgentHistorySession } from "../../../agent-runtime/ports.js";
 import { inspectRuntimeHomeLock, resolveRuntimeHome, type RuntimeHome } from "../../../agent-instance/runtime-home.js";
 import { nextRunAt, taskSpecFromRow, toTaskColumns, type TaskColumns, type TaskSpec } from "../../../tasks/schedule.js";
 
@@ -204,6 +205,41 @@ CREATE TRIGGER IF NOT EXISTS memory_uses_no_update BEFORE UPDATE ON memory_uses
   BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS memory_uses_no_delete BEFORE DELETE ON memory_uses
   BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
+
+-- Append-only: the frozen system prompt and tool list of one API-runtime Agent Session.
+CREATE TABLE IF NOT EXISTS agent_history_sessions (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  agent_session_id TEXT NOT NULL,
+  system_json TEXT NOT NULL,
+  tools_json TEXT NOT NULL,
+  model TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  UNIQUE (session_id, agent_session_id)
+);
+CREATE TRIGGER IF NOT EXISTS agent_history_sessions_no_update BEFORE UPDATE ON agent_history_sessions
+  BEGIN SELECT RAISE(ABORT, 'agent_history_sessions is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS agent_history_sessions_no_delete BEFORE DELETE ON agent_history_sessions
+  BEGIN SELECT RAISE(ABORT, 'agent_history_sessions is append-only'); END;
+
+-- Append-only: one row per message an API-runtime Agent Session resends, in ordinal order. Content is stored raw.
+CREATE TABLE IF NOT EXISTS agent_history (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  agent_session_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+  model TEXT,
+  content_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  UNIQUE (session_id, agent_session_id, ordinal)
+);
+CREATE TRIGGER IF NOT EXISTS agent_history_no_update BEFORE UPDATE ON agent_history
+  BEGIN SELECT RAISE(ABORT, 'agent_history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS agent_history_no_delete BEFORE DELETE ON agent_history
+  BEGIN SELECT RAISE(ABORT, 'agent_history is append-only'); END;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY,
@@ -1601,6 +1637,35 @@ export function recordMemoryUses(database: DatabaseSync, uses: NewMemoryUse[], n
     const insert = database.prepare("INSERT INTO memory_uses (memory_id,session_id,message_id,task_run_id,created_at,created_by) VALUES (?,?,?,?,?,?)");
     for (const use of uses) insert.run(use.memory_id, use.session_id, use.message_id, use.task_run_id, now, actor);
     return uses.length;
+  });
+}
+
+/** Returns the stored Agent Session record, or stores `initial` when none exists. The first stored record always wins. */
+export function readOrCreateHistorySession(database: DatabaseSync, sessionId: number, agentSessionId: string, initial: AgentHistorySession, actor = "system"): AgentHistorySession {
+  const read = () => database.prepare("SELECT system_json, tools_json, model FROM agent_history_sessions WHERE session_id=? AND agent_session_id=?")
+    .get(sessionId, agentSessionId) as { system_json: string; tools_json: string; model: string } | undefined;
+  const row = read() ?? inTransaction(database, () => {
+    database.prepare("INSERT INTO agent_history_sessions (session_id,agent_session_id,system_json,tools_json,model,created_by) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+      .run(sessionId, agentSessionId, initial.systemJson, initial.toolsJson, initial.model, actor);
+    return read()!;
+  });
+  return { systemJson: row.system_json, toolsJson: row.tools_json, model: row.model };
+}
+
+export function listHistory(database: DatabaseSync, sessionId: number, agentSessionId: string): AgentHistoryRow[] {
+  const rows = database.prepare("SELECT ordinal, role, model, content_json FROM agent_history WHERE session_id=? AND agent_session_id=? ORDER BY ordinal")
+    .all(sessionId, agentSessionId) as Array<{ ordinal: number; role: AgentHistoryRow["role"]; model: string | null; content_json: string }>;
+  return rows.map((row) => ({ ordinal: row.ordinal, role: row.role, model: row.model, contentJson: row.content_json }));
+}
+
+/** Appends one Turn's rows after the Agent Session's last ordinal in one transaction. Rows are never updated or deleted. */
+export function appendHistory(database: DatabaseSync, sessionId: number, agentSessionId: string, entries: AgentHistoryEntry[], actor = "system"): void {
+  if (entries.length === 0) return;
+  inTransaction(database, () => {
+    const last = (database.prepare("SELECT MAX(ordinal) AS last FROM agent_history WHERE session_id=? AND agent_session_id=?")
+      .get(sessionId, agentSessionId) as { last: number | null }).last ?? -1;
+    const insert = database.prepare("INSERT INTO agent_history (session_id,agent_session_id,ordinal,role,model,content_json,created_by) VALUES (?,?,?,?,?,?,?)");
+    entries.forEach((entry, index) => insert.run(sessionId, agentSessionId, last + 1 + index, entry.role, entry.model, entry.contentJson, actor));
   });
 }
 

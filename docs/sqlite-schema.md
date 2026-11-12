@@ -233,6 +233,43 @@ CREATE TRIGGER memory_uses_no_update BEFORE UPDATE ON memory_uses
 CREATE TRIGGER memory_uses_no_delete BEFORE DELETE ON memory_uses
   BEGIN SELECT RAISE(ABORT, 'memory_uses is append-only'); END;
 
+-- Append-only: triggers replace the soft-deletion columns.
+CREATE TABLE agent_history_sessions (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  agent_session_id TEXT NOT NULL,
+  system_json TEXT NOT NULL,
+  tools_json TEXT NOT NULL,
+  model TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  UNIQUE (session_id, agent_session_id)
+);
+
+CREATE TRIGGER agent_history_sessions_no_update BEFORE UPDATE ON agent_history_sessions
+  BEGIN SELECT RAISE(ABORT, 'agent_history_sessions is append-only'); END;
+CREATE TRIGGER agent_history_sessions_no_delete BEFORE DELETE ON agent_history_sessions
+  BEGIN SELECT RAISE(ABORT, 'agent_history_sessions is append-only'); END;
+
+-- Append-only: triggers replace the soft-deletion columns.
+CREATE TABLE agent_history (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  agent_session_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+  model TEXT,
+  content_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  UNIQUE (session_id, agent_session_id, ordinal)
+);
+
+CREATE TRIGGER agent_history_no_update BEFORE UPDATE ON agent_history
+  BEGIN SELECT RAISE(ABORT, 'agent_history is append-only'); END;
+CREATE TRIGGER agent_history_no_delete BEFORE DELETE ON agent_history
+  BEGIN SELECT RAISE(ABORT, 'agent_history is append-only'); END;
+
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY,
   goal TEXT NOT NULL CHECK (length(trim(goal)) > 0),
@@ -334,7 +371,7 @@ CREATE UNIQUE INDEX one_pending_task_proposal_per_conversation
 
 Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`, `deleted_at`, and `deleted_by`. Actor fields are normalized text such as `system`, `user:42`, `transport:discord`, or `agent:codex`; this supports automated and human actions without a second actor table. `deleted_at` and `deleted_by` form a soft-delete pair: records are not physically removed in V1, and ordinary queries exclude soft-deleted rows. Soft-deleted records are hidden with no restore action in V1.
 
-`memory_uses` is the one exception. It has only `created_at` and `created_by`. Its rows are never updated or deleted: the `memory_uses_no_update` and `memory_uses_no_delete` triggers abort any `UPDATE` or `DELETE`.
+The append-only tables `memory_uses`, `agent_history_sessions`, and `agent_history` are the exceptions. They have only `created_at` and `created_by`. Their rows are never updated or deleted: each table's `<table>_no_update` and `<table>_no_delete` triggers abort any `UPDATE` or `DELETE`.
 
 ## How the tables work
 
@@ -349,6 +386,7 @@ Every persisted table has `created_at`, `created_by`, `updated_at`, `updated_by`
 - `memories` contains durable Manual Memory Entries and reviewed entries in one agent-wide shared namespace. A Manual Memory Entry identifies its owner User when available; a reviewed entry identifies its source Message and Recap. `origin` is provenance for retrieval: all active Memory is retrieved the same way, but Memory Reviews may change only `origin = review` entries. Soft-delete changes state without removing history. `kind` is `core` or `topic`; see [Memory proposals and uses](#memory-proposals-and-uses).
 - `memory_proposals` holds a Memory that a review proposed from an implicit signal, until the owner confirms or rejects it on its status-channel card (ADR 0029). It never changes `memories` by itself.
 - `memory_uses` records each Memory added to a chat Turn or Task Run prompt. It is append-only.
+- `agent_history_sessions` and `agent_history` hold the conversation that the `anthropic-api` runtime resends on each Turn. They are append-only. See [Agent history](#agent-history).
 - `tasks` binds one bounded goal to its Conversation and Agent Session. `goal` holds the instruction. A legacy Task (`schedule_kind` NULL, created by `/inoai task create`) keeps its earlier behaviour: a one-time Task has no interval or automatic due time, and a recurring interval uses whole hours stored as seconds, with the first due time one interval after creation. A scheduled Task (`schedule_kind` set) follows the rules in [Task schedules](#task-schedules). The cursor is the newest archived message consumed by the Task.
 - `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. `start()` runs this recovery (`recoverTaskRuns`) after it takes the Runtime Home Lock and bootstraps the owner; `openDatabase` no longer does. Recovery returns the runs it failed, and `start()` writes their `result.md` (see [Result file](#result-file)). It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
 - `task_proposals` holds a Task create, edit, or management action that the agent proposed in chat, until the owner confirms or cancels it on its Discord card (ADR 0027). It never changes `tasks` by itself. See [Chat-proposed Tasks](#chat-proposed-tasks).
@@ -535,6 +573,16 @@ A `memory_uses` row records one Memory added to one prompt:
 - The CHECK requires `message_id` or `task_run_id`.
 - One batch is one transaction. The write is best effort: a failed write is dropped and never fails the Turn or the run.
 - Triggers reject every `UPDATE` and `DELETE`. Soft-deleting a Memory leaves its use rows unchanged.
+
+## Agent history
+
+The `anthropic-api` runtime keeps its conversation in SQLite, because the Messages API has no server-side session. Both tables are keyed by (`session_id`, `agent_session_id`). They are not part of `/api/ui-data`.
+
+- An `agent_history_sessions` row holds the system prompt (`system_json`) and the tool list (`tools_json`) frozen on the Agent Session's first Turn, and the `model` that froze them. The first stored row wins; a later read returns it unchanged.
+- An `agent_history` row holds one message. `ordinal` starts at 0 and orders the Agent Session's rows. `role` is `user`, `assistant`, or `system`. `model` is the model that produced an `assistant` row and may be NULL. `content_json` holds the content blocks exactly as sent or returned; filtering happens on replay, not on write.
+- One Turn's rows are appended in one transaction, after the Agent Session's last `ordinal`. A failed row writes nothing.
+- Triggers reject every `UPDATE` and `DELETE`. `/inoai reset` starts a new `agent_session_id`; the old rows stay and are never resent.
+- The PostgreSQL store has no agent history.
 
 ## Worker rules
 
