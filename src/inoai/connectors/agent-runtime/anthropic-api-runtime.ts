@@ -8,8 +8,8 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
 import type { AnthropicApiEffort } from "../../agent-instance/config.js";
-import { RuntimeFailure } from "../../agent-runtime/ports.js";
-import type { AgentHistoryEntry, AgentHistoryStore, AgentRuntime, RuntimeEvent } from "../../agent-runtime/ports.js";
+import { RuntimeFailure, reviewInstructions } from "../../agent-runtime/ports.js";
+import type { AgentHistoryEntry, AgentHistoryStore, AgentRuntime, ReviewOptions, RuntimeEvent } from "../../agent-runtime/ports.js";
 
 /** Resolves an Agent Session ID to its inoai `sessions.id`, or `undefined` when no active Session owns it. */
 export type AgentSessionResolver = (agentSessionId: string) => Promise<number | undefined>;
@@ -25,6 +25,8 @@ export type AnthropicApiRuntimeOptions = {
   modelMaxTokens: number;
   /** A Turn fails as `timed_out` after this long with no stream event. */
   idleTimeoutMs?: number;
+  /** A Memory Review fails as `timed_out` after this long with no stream event. */
+  reviewIdleTimeoutMs?: number;
 };
 
 type SessionState = { projectPath: string; instructions: string };
@@ -34,6 +36,7 @@ const actor = "anthropic-api";
 export const anthropicApiMaxOutputTokens = 64_000;
 export const anthropicApiMaxContinuations = 5;
 export const anthropicApiMaxSources = 5;
+export const anthropicApiReviewMaxTokens = 16_000;
 
 /** Fixed answer when the whole fallback chain declined. Never carries API text; excluded from Memory Review. */
 export const anthropicApiRefusalNotice = "The model declined this request, so this reply was not saved to the conversation. You can rephrase it and try again.";
@@ -69,9 +72,10 @@ export class AnthropicApiRuntime implements AgentRuntime {
   private readonly effort?: AnthropicApiEffort;
   private readonly maxTokens: number;
   private readonly idleTimeoutMs: number;
+  private readonly reviewIdleTimeoutMs: number;
   private closed = false;
 
-  constructor({ client, history, resolveSessionId, model, effort, modelMaxTokens, idleTimeoutMs = 300_000 }: AnthropicApiRuntimeOptions) {
+  constructor({ client, history, resolveSessionId, model, effort, modelMaxTokens, idleTimeoutMs = 300_000, reviewIdleTimeoutMs = 600_000 }: AnthropicApiRuntimeOptions) {
     this.client = client;
     this.history = history;
     this.resolveSessionId = resolveSessionId;
@@ -79,6 +83,7 @@ export class AnthropicApiRuntime implements AgentRuntime {
     this.effort = effort;
     this.maxTokens = Math.min(modelMaxTokens, anthropicApiMaxOutputTokens);
     this.idleTimeoutMs = idleTimeoutMs;
+    this.reviewIdleTimeoutMs = reviewIdleTimeoutMs;
   }
 
   health(): { state: "ready" | "stopped" | "error" } { return { state: this.closed ? "stopped" : "ready" }; }
@@ -156,6 +161,39 @@ export class AnthropicApiRuntime implements AgentRuntime {
     turn.controller.abort();
   }
 
+  // A Memory Review is one throwaway, text-only request (ADR 0010): no tools, no history, no fallbacks, thinking, or
+  // betas, and `reviewInstructions` as the system prompt. Nothing is stored, so every failure is replay-safe.
+  async review(prompt: string, { signal }: ReviewOptions = {}): Promise<string> {
+    if (this.closed) throw new RuntimeFailure("pre_start", true);
+    if (signal?.aborted) throw new RuntimeFailure("cancelled", true);
+    const key = `review:${randomUUID()}`;
+    const turn: ActiveTurn = { controller: new AbortController(), produced: false, cancelled: false, timedOut: false };
+    const onAbort = () => {
+      turn.cancelled = true;
+      turn.controller.abort();
+    };
+    this.active.set(key, turn);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const events = this.request(turn, { model: this.model, max_tokens: Math.min(this.maxTokens, anthropicApiReviewMaxTokens),
+        system: reviewInstructions, messages: [{ role: "user", content: textContent(prompt) }] }, this.reviewIdleTimeoutMs);
+      let next = await events.next();
+      while (!next.done) next = await events.next();
+      const message = next.value;
+      if (turn.cancelled) throw new RuntimeFailure("cancelled");
+      if (message.stop_reason === "model_context_window_exceeded") throw new RuntimeFailure("context_exhausted");
+      // Fail closed on anything but a finished reply of text (and any thinking, which is dropped).
+      const textOnly = message.content.every((block) => block.type === "text" || block.type === "thinking" || block.type === "redacted_thinking");
+      if (message.stop_reason !== "end_turn" || !textOnly) throw new RuntimeFailure("uncertain");
+      return message.content.map((block) => block.type === "text" ? block.text : "").join("");
+    } catch (error) {
+      throw new RuntimeFailure(error instanceof RuntimeFailure ? error.kind : "uncertain", true);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      this.active.delete(key);
+    }
+  }
+
   // Reads the frozen prefix and stored history, and builds this Turn's new rows. Nothing has been sent yet, so a
   // store failure is a replay-safe pre-start failure.
   private async prepare(agentSessionId: string, instructions: string, prompt: string) {
@@ -186,12 +224,12 @@ export class AnthropicApiRuntime implements AgentRuntime {
     }
   }
 
-  private async *request(turn: ActiveTurn, params: MessageCreateParamsBase): AsyncGenerator<RuntimeEvent, BetaMessage> {
+  private async *request(turn: ActiveTurn, params: MessageCreateParamsBase, idleTimeoutMs = this.idleTimeoutMs): AsyncGenerator<RuntimeEvent, BetaMessage> {
     if (turn.cancelled) throw new RuntimeFailure("cancelled");
     const idle = setTimeout(() => {
       turn.timedOut = true;
       turn.controller.abort();
-    }, this.idleTimeoutMs);
+    }, idleTimeoutMs);
     try {
       const stream = this.client.beta.messages.stream(params, { signal: turn.controller.signal });
       for await (const event of stream) {

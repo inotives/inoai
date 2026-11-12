@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import type { Configuration } from "../../agent-instance/config.js";
-import { RuntimeFailure } from "../../agent-runtime/ports.js";
+import { RuntimeFailure, reviewInstructions } from "../../agent-runtime/ports.js";
 import type { RuntimeEvent, RuntimeFailureKind } from "../../agent-runtime/ports.js";
 import { createAnthropicApiClient } from "../../connectors/agent-runtime/anthropic-api-client.js";
 import { AnthropicApiRuntime, anthropicApiMaxTokensNotice, anthropicApiRefusalNotice, anthropicApiTools } from "../../connectors/agent-runtime/anthropic-api-runtime.js";
@@ -15,6 +15,8 @@ import { openDatabase } from "../../connectors/persistence/sqlite/legacy-databas
 import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
 import { addUsage, runtimeFailureNotice } from "../../conversation/runtime-turn.js";
 import type { Usage } from "../../conversation/runtime-turn.js";
+import { reviewSessionWithStore } from "../../memory/memory-review.js";
+import type { MemoryReviewCommit, MemoryReviewSnapshot } from "../../persistence/operational-store.js";
 
 const sentinelKey = "sk-ant-api03-SENTINEL-runtime-do-not-print";
 const model = "claude-opus-5-5";
@@ -459,4 +461,106 @@ test("cited web search results add a de-duplicated, capped Sources list; no cita
   ].join("\n") });
   await runtime.resumeSession(agentSessionId, ctx.deployment, "You are inoai.");
   assert.deepEqual((await collect(runtime, agentSessionId, "plain")).at(-1), { type: "answer", text: "Plain." });
+});
+
+// ---- Memory Review ----
+
+const fencedJson = (value: unknown) => `\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
+
+function reviewSnapshot(): MemoryReviewSnapshot {
+  return {
+    cursor: 0,
+    messages: [{ id: 11, session_id: 1, transport: "discord", workspace_id: "guild", external_message_id: "m11",
+      external_author_id: "owner", user_id: 9, direction: "user", body: "Please remember that I prefer tabs.", reply_to_external_message_id: null,
+      in_reply_to_message_id: null, state: "completed", failure_detail: null, started_at: null, runtime_started_at: null,
+      completed_at: 11, provisional_id: null, delivery_state: null, created_at: 11, updated_at: 11, deleted_at: null,
+      created_by: "test", updated_by: "test", deleted_by: null }],
+    ownerUserIds: [9], memories: [], recaps: [],
+  };
+}
+
+test("review sends one streamed, tool-free request with no history and the review instructions, and passes through reviewSessionWithStore", async (t) => {
+  const ctx = await fixture(t);
+  const final = { recap: "prefers tabs", actions: [{ op: "add", body: "The owner prefers tabs.", source_message_ids: [11], source_recap_ids: [] }] };
+  const { runtime, api } = ctx.runtime([
+    { sse: streamed([{ type: "text", text: fencedJson({ notes: "window notes" }) }], "end_turn") },
+    { sse: streamed([thinking, { type: "text", text: fencedJson(final) }], "end_turn") },
+  ], { modelMaxTokens: 128_000 });
+  const commits: MemoryReviewCommit[] = [];
+  const store = {
+    async readMemoryReview() { return reviewSnapshot(); },
+    async commitMemoryReview(input: MemoryReviewCommit) { commits.push(input); return { state: "completed" as const, reviewId: 12 }; },
+  };
+  const result = await reviewSessionWithStore(store, runtime, 1, { maxChars: 20_000 });
+  assert.deepEqual(result, { state: "completed", reviewId: 12, throughMessageId: 11, added: 1, updated: 0, deleted: 0, ignored: [], proposalIds: [], changes: [{ op: "add", body: "The owner prefers tabs." }] });
+  assert.equal(commits.length, 1);
+  assert.equal(api.calls.length, 2);
+  for (const { body, headers } of api.calls) {
+    assert.deepEqual(Object.keys(body).sort(), ["max_tokens", "messages", "model", "stream", "system"]);
+    assert.equal(body.stream, true);
+    assert.equal(body.model, model);
+    assert.equal(body.max_tokens, 16_000);
+    assert.equal(body.system, reviewInstructions);
+    const messages = body.messages as Array<{ role: string; content: Array<{ type: string; text: string }> }>;
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]!.role, "user");
+    assert.equal(messages[0]!.content.length, 1);
+    assert.match(messages[0]!.content[0]!.text, /prefer tabs/);
+    assert.equal(headers.get("anthropic-beta"), null);
+  }
+  assert.equal(ctx.count("agent_history_sessions"), 0);
+  assert.equal(ctx.count("agent_history"), 0);
+});
+
+test("review max_tokens stays at the model maximum when below 16,000", async (t) => {
+  const ctx = await fixture(t);
+  const { runtime, api } = ctx.runtime([{ sse: streamed([{ type: "text", text: "a|b" }], "end_turn") }], { modelMaxTokens: 8_192 });
+  assert.equal(await runtime.review("p"), "ab");
+  assert.equal(api.calls[0]!.body.max_tokens, 8_192);
+});
+
+test("review failures are fixed, replay-safe failure kinds and write no history", async (t) => {
+  const ctx = await fixture(t);
+  const started = streamed([{ type: "text", text: "partial" }], "end_turn").slice(0, 3);
+  const toolUse = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "q" } };
+  const cases: Array<[string, Reply[], RuntimeFailureKind, Partial<AnthropicApiRuntimeOptions>?]> = [
+    ["authentication", [{ status: 401, body: errorBody("authentication_error") }], "authentication"],
+    ["rate limit", [{ status: 429, body: errorBody("rate_limit_error") }], "usage"],
+    ["server error", [{ status: 500, body: errorBody("api_error") }], "pre_start"],
+    ["network", [{ error: true }], "pre_start"],
+    ["refusal", [{ sse: streamed([{ type: "text", text: "no" }], "refusal") }], "uncertain"],
+    ["max_tokens", [{ sse: streamed([{ type: "text", text: "long" }], "max_tokens") }], "uncertain"],
+    ["context window", [{ sse: streamed([{ type: "text", text: "x" }], "model_context_window_exceeded") }], "context_exhausted"],
+    ["tool block", [{ sse: streamed([toolUse, { type: "text", text: "x" }], "end_turn") }], "uncertain"],
+    ["idle timeout", [{ hang: started }], "timed_out", { reviewIdleTimeoutMs: 50 }],
+    ["idle before any event", [{ hang: [] }], "timed_out", { reviewIdleTimeoutMs: 50 }],
+  ];
+  for (const [name, replies, kind, options] of cases) {
+    await t.test(name, async () => {
+      const { runtime } = ctx.runtime(replies, options);
+      await failsWith(runtime.review("review"), kind, true);
+    });
+  }
+  assert.equal(ctx.count("agent_history"), 0);
+});
+
+test("review honours its abort signal, close, and a pre-aborted signal", async (t) => {
+  const ctx = await fixture(t);
+  const started = streamed([{ type: "text", text: "partial" }], "end_turn").slice(0, 3);
+  const aborting = ctx.runtime([{ hang: started }]);
+  const controller = new AbortController();
+  const pending = aborting.runtime.review("p", { signal: controller.signal });
+  setTimeout(() => controller.abort(), 20);
+  await failsWith(pending, "cancelled", true);
+
+  const closing = ctx.runtime([{ hang: started }]);
+  const closed = closing.runtime.review("p");
+  setTimeout(() => void closing.runtime.close(), 20);
+  await failsWith(closed, "cancelled", true);
+  await failsWith(closing.runtime.review("p"), "pre_start", true);
+
+  const preAborted = ctx.runtime([]);
+  await failsWith(preAborted.runtime.review("p", { signal: AbortSignal.abort() }), "cancelled", true);
+  assert.equal(preAborted.api.calls.length, 0);
+  assert.equal(ctx.count("agent_history"), 0);
 });
