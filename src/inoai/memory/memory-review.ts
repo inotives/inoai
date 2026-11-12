@@ -172,7 +172,7 @@ const legacyRedactedBody = "Legacy approval request redacted";
 
 // inoai's own fixed notices are archived as agent Messages but are not conversation content.
 function fixedNotices(runtime: AgentRuntime): Set<string> {
-  const kinds: RuntimeFailureKind[] = ["authentication", "usage", "pre_start", "timed_out", "cancelled", "uncertain", "session_missing"];
+  const kinds: RuntimeFailureKind[] = ["authentication", "usage", "pre_start", "timed_out", "cancelled", "uncertain", "session_missing", "context_exhausted"];
   const providers = [...providerNotices, runtime];
   return new Set([
     ...fixedTurnNotices,

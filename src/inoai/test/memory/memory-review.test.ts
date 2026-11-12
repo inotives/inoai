@@ -567,7 +567,7 @@ test("redaction covers values on the next line, spanning matches, JSON keys, and
 
 test("every provider's fixed notices and the legacy redaction body are excluded, whatever the current runtime", async () => {
   await withArchive(async ({ database, session, add }) => {
-    const kinds: RuntimeFailureKind[] = ["authentication", "usage", "pre_start", "timed_out", "cancelled", "uncertain", "session_missing"];
+    const kinds: RuntimeFailureKind[] = ["authentication", "usage", "pre_start", "timed_out", "cancelled", "uncertain", "session_missing", "context_exhausted"];
     const missing = join(tmpdir(), "inoai-missing-cli");
     const providers = [createCodexRuntime({} as never), new ClaudeRuntime({ executable: missing }), new OpenCodeRuntime({ executable: missing })];
     const notices = [

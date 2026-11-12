@@ -17,7 +17,7 @@ const failureNotice = "I couldn't complete that turn safely. Please check the lo
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
 // Fixed texts archived as agent Messages; Memory Reviews exclude them from the reviewed transcript.
 export const fixedTurnNotices: readonly string[] = [failureNotice, uncertainNotice];
-const providerNoticeKinds = new Set<RuntimeFailureKind>(["authentication", "usage", "session_missing"]);
+const providerNoticeKinds = new Set<RuntimeFailureKind>(["authentication", "usage", "session_missing", "context_exhausted"]);
 // A fixed map keeps an arbitrary stored provider value out of the notice text.
 const providerNames: Record<string, string> = { codex: "a Codex", claude: "a Claude", opencode: "an OpenCode" };
 

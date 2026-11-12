@@ -27,7 +27,7 @@ export type RuntimeEvent =
   | { type: "answer"; text: string }
   | { type: "usage"; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number; costUsd?: number };
 
-export type RuntimeFailureKind = "authentication" | "usage" | "pre_start" | "timed_out" | "cancelled" | "uncertain" | "session_missing";
+export type RuntimeFailureKind = "authentication" | "usage" | "pre_start" | "timed_out" | "cancelled" | "uncertain" | "session_missing" | "context_exhausted";
 
 export class RuntimeFailure extends Error {
   constructor(readonly kind: RuntimeFailureKind, readonly replaySafe = false) {
