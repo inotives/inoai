@@ -446,6 +446,32 @@ function migrateMemories(database: DatabaseSync): void {
   }
 }
 
+// Kept out of `initialSchema` so that live maintenance still accepts a database that has not run this migration yet.
+const roleEquipsSchema = `
+CREATE TABLE IF NOT EXISTS role_equips (
+  id INTEGER PRIMARY KEY,
+  role_id TEXT NOT NULL CHECK (length(role_id) > 0),
+  equipped_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  equipped_by TEXT NOT NULL,
+  unequipped_at INTEGER,
+  unequipped_by TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((unequipped_at IS NULL AND unequipped_by IS NULL) OR (unequipped_at IS NOT NULL AND unequipped_by IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_equipped_role ON role_equips((unequipped_at IS NULL)) WHERE unequipped_at IS NULL;
+`;
+
+/** Adds `role_equips` and its one-open-row index to a fresh or older database. */
+function migrateRoleEquips(database: DatabaseSync): void {
+  database.exec(roleEquipsSchema);
+}
+
 export function openDatabase(home: RuntimeHome): DatabaseSync {
   const directory = resolve(home.directory);
   const databaseFile = resolve(home.databaseFile);
@@ -462,6 +488,7 @@ export function openDatabase(home: RuntimeHome): DatabaseSync {
     migrateTasks(database);
     migrateMemories(database);
     migrateTaskProposals(database);
+    migrateRoleEquips(database);
     recoverStaleWork(database);
     recoverLegacyApprovals(database);
     recoverTaskProposals(database, Math.floor(Date.now() / 1000));
@@ -593,6 +620,22 @@ export type EventRecord = AuditColumns & {
   event_type: string;
   detail: string | null;
 };
+
+/** One equip of a role. The open row (`unequipped_at` null) is the equipped role. */
+export type RoleEquipRecord = AuditColumns & {
+  id: number;
+  role_id: string;
+  equipped_at: number;
+  equipped_by: string;
+  unequipped_at: number | null;
+  unequipped_by: string | null;
+};
+
+/** `changed` is false when the write was a no-op. `previous` is the open row before the call, or null. */
+export type RoleEquipResult = { changed: boolean; previous: RoleEquipRecord | null; current: RoleEquipRecord };
+export type RoleUnequipResult = { changed: boolean; previous: RoleEquipRecord | null };
+/** The role a Session last applied. `roleId` null means it applied no role. */
+export type AppliedRole = { roleId: string | null };
 
 export type ApprovalRecord = AuditColumns & {
   id: number;
@@ -1490,6 +1533,50 @@ export function listEvents(database: DatabaseSync, sessionId?: number): EventRec
   return (sessionId === undefined
     ? database.prepare("SELECT * FROM events WHERE deleted_at IS NULL ORDER BY id").all()
     : database.prepare("SELECT * FROM events WHERE session_id = ? AND deleted_at IS NULL ORDER BY id").all(sessionId)) as EventRecord[];
+}
+
+// Role equips. The store does not validate role ids or role files; callers do.
+export function getEquippedRole(database: DatabaseSync): RoleEquipRecord | null {
+  return activeRow<RoleEquipRecord>(database, "SELECT * FROM role_equips WHERE unequipped_at IS NULL AND deleted_at IS NULL") ?? null;
+}
+
+function closeRoleEquip(database: DatabaseSync, id: number, actor: string): void {
+  database.prepare(`UPDATE role_equips SET unequipped_at=unixepoch(),unequipped_by=?,updated_at=unixepoch(),updated_by=?
+    WHERE id=? AND unequipped_at IS NULL`).run(actor, actor, id);
+}
+
+/** Equips `roleId`. A no-op when it is already equipped. A switch closes the open row and inserts the new one in one transaction. */
+export function equipRole(database: DatabaseSync, roleId: string, actor: string): RoleEquipResult {
+  return inTransaction(database, () => {
+    const previous = getEquippedRole(database);
+    if (previous?.role_id === roleId) return { changed: false, previous, current: previous };
+    if (previous) closeRoleEquip(database, previous.id, actor);
+    const result = database.prepare("INSERT INTO role_equips (role_id,equipped_by,created_by,updated_by) VALUES (?,?,?,?)").run(roleId, actor, actor, actor);
+    return { changed: true, previous, current: activeRow<RoleEquipRecord>(database, "SELECT * FROM role_equips WHERE id=?", Number(result.lastInsertRowid))! };
+  });
+}
+
+/** Closes the open row. A no-op when no role is equipped. Never deletes. */
+export function unequipRole(database: DatabaseSync, actor: string): RoleUnequipResult {
+  return inTransaction(database, () => {
+    const previous = getEquippedRole(database);
+    if (previous) closeRoleEquip(database, previous.id, actor);
+    return { changed: previous !== null, previous };
+  });
+}
+
+/** The role the Session last applied, from its latest `role_applied` event. Undefined when the Session has no record. */
+export function lastAppliedRole(database: DatabaseSync, sessionId: number): AppliedRole | undefined {
+  const row = activeRow<{ detail: string | null }>(database,
+    "SELECT detail FROM events WHERE session_id=? AND event_type='role_applied' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1", sessionId);
+  const role = row?.detail?.match(/^role=(\S+)$/)?.[1];
+  if (role === undefined) return undefined;
+  return { roleId: role === "none" ? null : role };
+}
+
+/** Records that the Session applied `roleId` (null for no role) as a `role_applied` event. */
+export function recordRoleApplied(database: DatabaseSync, sessionId: number, roleId: string | null, actor = "system"): EventRecord {
+  return createEvent(database, { session_id: sessionId, message_id: null, event_type: "role_applied", detail: `role=${roleId ?? "none"}` }, actor);
 }
 
 export function failApproval(database: DatabaseSync, id: number): void {

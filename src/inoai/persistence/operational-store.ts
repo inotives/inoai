@@ -19,6 +19,10 @@ import type {
   NewUser,
   ReviewProposalDraft,
   ReviewProposalSkip,
+  AppliedRole,
+  RoleEquipRecord,
+  RoleEquipResult,
+  RoleUnequipResult,
   SessionRecord,
   UserRecord,
 } from "../connectors/persistence/sqlite/legacy-database.js";
@@ -183,6 +187,16 @@ export interface OperationalStore {
   expireDueMemoryProposals?(now: number, actor?: string): Promise<MemoryProposalRecord[]>;
   wasMemoryProposalRejected?(body: string): Promise<boolean>;
   recordMemoryUses?(uses: NewMemoryUse[], now: number, actor?: string): Promise<number>;
+  // Role equips are SQLite only; the PostgreSQL store has none. The store does not validate role ids or files.
+  /** The equipped role's open row, or null when no role is equipped. */
+  getEquippedRole?(): Promise<RoleEquipRecord | null>;
+  /** Equips a role. `changed` is false when it was already equipped. */
+  equipRole?(roleId: string, actor: string): Promise<RoleEquipResult>;
+  /** Unequips the role. `changed` is false when no role was equipped. */
+  unequipRole?(actor: string): Promise<RoleUnequipResult>;
+  /** Undefined when the Session has no `role_applied` record; `{ roleId: null }` when it last applied no role. */
+  lastAppliedRole?(sessionId: number): Promise<AppliedRole | undefined>;
+  recordRoleApplied?(sessionId: number, roleId: string | null, actor?: string): Promise<EventRecord>;
   createMemoryReview(review: NewMemoryReview, actor?: string): Promise<MemoryReviewRecord>;
   completeMemoryReview(id: number, recap: string, actor?: string): Promise<MemoryReviewRecord | undefined>;
   messagesForMemoryReview(sessionId: number): Promise<MessageRecord[]>;
