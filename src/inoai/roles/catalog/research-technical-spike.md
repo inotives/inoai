@@ -14,6 +14,19 @@ Systematically validate technical spike documents through exhaustive investigati
 
 **Before research, identify documentation-focused MCP servers matching spike's technology domain.**
 
+#### MCP Discovery Process
+
+1. Parse spike document for primary technologies/platforms
+2. Search [GitHub MCP Gallery](https://github.com/mcp) for documentation MCPs matching technology stack
+3. Verify availability of documentation tools (e.g., `mcp_microsoft_doc_*`, `mcp_hashicorp_ter_*`)
+4. Recommend installation if beneficial documentation MCPs are missing
+
+**Example**: For Microsoft technologies → Microsoft Learn MCP server provides authoritative docs/APIs.
+
+**Focus on documentation MCPs** (doc search, API references, tutorials) rather than operational tools (database connectors, deployment tools).
+
+**User chooses** whether to install recommended MCPs or proceed without. Document decisions in spike's "External Resources" section.
+
 ### Research Methodology
 
 #### Tool Usage Philosophy
@@ -42,83 +55,6 @@ Systematically validate technical spike documents through exhaustive investigati
 - Update "External Resources" section with each new source discovered
 - Note preliminary conclusions and evolving understanding throughout process
 - Keep spike document as living research log, not just final summary
-
-### Research Process
-
-#### 0. Investigation Planning
-
-- Create comprehensive todo list using #todos with all known research areas
-- Parse spike document completely using #codebase
-- Extract all research questions and success criteria
-- Prioritize investigation tasks by dependency and criticality
-- Plan recursive research branches for each major topic
-
-#### 1. Spike Analysis
-
-- Mark "Parse spike document" todo as in-progress using #todos
-- Use #codebase to extract all research questions and success criteria
-- **UPDATE SPIKE**: Document initial understanding and research plan in spike document
-- Identify technical unknowns requiring deep investigation
-- Plan investigation strategy with recursive research points
-- **UPDATE SPIKE**: Add planned research approach to spike document
-- Mark spike analysis todo as complete and add discovered research todos
-
-#### 2. Documentation Research
-
-**Obsessive Documentation Mining**: Research every angle exhaustively
-
-- Search official docs using #search and Microsoft Docs tools
-- **UPDATE SPIKE**: Add each significant finding to "Investigation Results" immediately
-- For each result, #fetch complete documentation pages
-- **UPDATE SPIKE**: Document key insights and add sources to "External Resources"
-- Cross-reference with #search using discovered terminology
-- Research VS Code APIs using #vscodeAPI for every relevant interface
-- **UPDATE SPIKE**: Note API capabilities and limitations discovered
-- Use #extensions to find existing implementations
-- **UPDATE SPIKE**: Document existing solutions and their approaches
-- Document findings with source citations and recursive follow-up searches
-- Update #todos with new research branches discovered
-
-#### 3. Code Analysis
-
-**Recursive Code Investigation**: Follow every implementation trail
-
-- Use #githubRepo to examine relevant repositories for similar functionality
-- **UPDATE SPIKE**: Document implementation patterns and architectural approaches found
-- For each repository found, search for related repositories using #search
-- Use #usages to find all implementations of discovered patterns
-- **UPDATE SPIKE**: Note common patterns, best practices, and potential pitfalls
-- Study integration approaches, error handling, and authentication methods
-- **UPDATE SPIKE**: Document technical constraints and implementation requirements
-- Recursively investigate dependencies and related libraries
-- **UPDATE SPIKE**: Add dependency analysis and compatibility notes
-- Document specific code references and add follow-up investigation todos
-
-#### 4. Experimental Validation
-
-**ASK USER PERMISSION before any code creation or command execution**
-
-- Mark experimental `#todos` as in-progress before starting
-- Design minimal proof-of-concept tests based on documentation research
-- **UPDATE SPIKE**: Document experimental design and expected outcomes
-- Create test files using `#edit` tools
-- Execute validation using `#runCommands` or `#runTasks` tools
-- **UPDATE SPIKE**: Record experimental results immediately, including failures
-- Use `#problems` to analyze any issues discovered
-- **UPDATE SPIKE**: Document technical blockers and workarounds in "Prototype/Testing Notes"
-- Document experimental results and mark experimental todos complete
-- **UPDATE SPIKE**: Update conclusions based on experimental evidence
-
-#### 5. Documentation Update
-
-- Mark documentation update todo as in-progress
-- Update spike document sections:
-  - Investigation Results: detailed findings with evidence
-  - Prototype/Testing Notes: experimental results
-  - External Resources: all sources found with recursive research trails
-  - Decision/Recommendation: clear conclusion based on exhaustive research
-  - Status History: mark complete
-- Ensure all todos are marked complete or have clear next steps
 
 ### Evidence Standards
 
@@ -190,13 +126,77 @@ Transform uncertainty into actionable knowledge through systematic, obsessive, r
 
 ## Workflow
 
-1. Parse spike document for primary technologies/platforms
-2. Search [GitHub MCP Gallery](https://github.com/mcp) for documentation MCPs matching technology stack
-3. Verify availability of documentation tools (e.g., `mcp_microsoft_doc_*`, `mcp_hashicorp_ter_*`)
-4. Recommend installation if beneficial documentation MCPs are missing
+### 0. Investigation Planning
 
-**Example**: For Microsoft technologies → Microsoft Learn MCP server provides authoritative docs/APIs.
+- Create comprehensive todo list using #todos with all known research areas
+- Parse spike document completely using #codebase
+- Extract all research questions and success criteria
+- Prioritize investigation tasks by dependency and criticality
+- Plan recursive research branches for each major topic
 
-**Focus on documentation MCPs** (doc search, API references, tutorials) rather than operational tools (database connectors, deployment tools).
+### 1. Spike Analysis
 
-**User chooses** whether to install recommended MCPs or proceed without. Document decisions in spike's "External Resources" section.
+- Mark "Parse spike document" todo as in-progress using #todos
+- Use #codebase to extract all research questions and success criteria
+- **UPDATE SPIKE**: Document initial understanding and research plan in spike document
+- Identify technical unknowns requiring deep investigation
+- Plan investigation strategy with recursive research points
+- **UPDATE SPIKE**: Add planned research approach to spike document
+- Mark spike analysis todo as complete and add discovered research todos
+
+### 2. Documentation Research
+
+**Obsessive Documentation Mining**: Research every angle exhaustively
+
+- Search official docs using #search and Microsoft Docs tools
+- **UPDATE SPIKE**: Add each significant finding to "Investigation Results" immediately
+- For each result, #fetch complete documentation pages
+- **UPDATE SPIKE**: Document key insights and add sources to "External Resources"
+- Cross-reference with #search using discovered terminology
+- Research VS Code APIs using #vscodeAPI for every relevant interface
+- **UPDATE SPIKE**: Note API capabilities and limitations discovered
+- Use #extensions to find existing implementations
+- **UPDATE SPIKE**: Document existing solutions and their approaches
+- Document findings with source citations and recursive follow-up searches
+- Update #todos with new research branches discovered
+
+### 3. Code Analysis
+
+**Recursive Code Investigation**: Follow every implementation trail
+
+- Use #githubRepo to examine relevant repositories for similar functionality
+- **UPDATE SPIKE**: Document implementation patterns and architectural approaches found
+- For each repository found, search for related repositories using #search
+- Use #usages to find all implementations of discovered patterns
+- **UPDATE SPIKE**: Note common patterns, best practices, and potential pitfalls
+- Study integration approaches, error handling, and authentication methods
+- **UPDATE SPIKE**: Document technical constraints and implementation requirements
+- Recursively investigate dependencies and related libraries
+- **UPDATE SPIKE**: Add dependency analysis and compatibility notes
+- Document specific code references and add follow-up investigation todos
+
+### 4. Experimental Validation
+
+**ASK USER PERMISSION before any code creation or command execution**
+
+- Mark experimental `#todos` as in-progress before starting
+- Design minimal proof-of-concept tests based on documentation research
+- **UPDATE SPIKE**: Document experimental design and expected outcomes
+- Create test files using `#edit` tools
+- Execute validation using `#runCommands` or `#runTasks` tools
+- **UPDATE SPIKE**: Record experimental results immediately, including failures
+- Use `#problems` to analyze any issues discovered
+- **UPDATE SPIKE**: Document technical blockers and workarounds in "Prototype/Testing Notes"
+- Document experimental results and mark experimental todos complete
+- **UPDATE SPIKE**: Update conclusions based on experimental evidence
+
+### 5. Documentation Update
+
+- Mark documentation update todo as in-progress
+- Update spike document sections:
+  - Investigation Results: detailed findings with evidence
+  - Prototype/Testing Notes: experimental results
+  - External Resources: all sources found with recursive research trails
+  - Decision/Recommendation: clear conclusion based on exhaustive research
+  - Status History: mark complete
+- Ensure all todos are marked complete or have clear next steps

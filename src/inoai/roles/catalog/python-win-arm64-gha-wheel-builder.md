@@ -40,6 +40,21 @@ Python version range used for Windows AMD64 is valid for ARM64.
 
 ### Instructions
 
+#### 1. Locate the build workflow
+
+Find the GitHub Actions workflow file that builds wheels (commonly
+`.github/workflows/build.yml` or similar). Look for jobs that invoke
+`cibuildwheel` or otherwise produce `.whl` artifacts.
+
+Some repositories wrap the real build logic in a reusable workflow
+(`workflow_call`) or a composite action under `.github/actions/`. Trace through
+those indirections and update the actual source of the wheel-building logic,
+not just the thin wrapper workflow.
+
+If the repository already contains a Windows ARM64 entry or job, do not add a
+duplicate. Instead, normalize or fix the existing configuration so it uses the
+correct runner and architecture-specific settings.
+
 #### 2. Add a Windows ARM64 entry to the build matrix
 
 If the workflow uses separate jobs per platform rather than a strategy matrix,
@@ -299,15 +314,4 @@ platform entry.
 
 ## Workflow
 
-Find the GitHub Actions workflow file that builds wheels (commonly
-`.github/workflows/build.yml` or similar). Look for jobs that invoke
-`cibuildwheel` or otherwise produce `.whl` artifacts.
-
-Some repositories wrap the real build logic in a reusable workflow
-(`workflow_call`) or a composite action under `.github/actions/`. Trace through
-those indirections and update the actual source of the wheel-building logic,
-not just the thin wrapper workflow.
-
-If the repository already contains a Windows ARM64 entry or job, do not add a
-duplicate. Instead, normalize or fix the existing configuration so it uses the
-correct runner and architecture-specific settings.
+Follow the instructions above step by step and report results.

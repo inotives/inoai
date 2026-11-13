@@ -325,6 +325,36 @@ Geographic Distribution:
 
 ### Troubleshooting Performance Issues
 
+#### 1. Systematic Troubleshooting Process
+
+```
+Performance Issue Resolution:
+
+Issue Identification:
+1. Define performance problem specifically
+2. Gather baseline performance metrics
+3. Identify affected users and scenarios
+4. Document error messages and symptoms
+
+Root Cause Analysis:
+1. Use Performance Analyzer for visual analysis
+2. Analyze DAX queries with DAX Studio
+3. Review capacity utilization metrics
+4. Check data source performance
+
+Resolution Implementation:
+1. Apply targeted optimizations
+2. Test changes in development environment
+3. Measure performance improvement
+4. Validate functionality remains intact
+
+Prevention Strategy:
+1. Implement monitoring and alerting
+2. Establish performance testing procedures
+3. Create optimization guidelines
+4. Plan regular performance reviews
+```
+
 #### 2. Common Performance Problems and Solutions
 
 ```
@@ -522,30 +552,4 @@ Always search Microsoft documentation first using `microsoft.docs.mcp` for perfo
 
 ## Workflow
 
-```
-Performance Issue Resolution:
-
-Issue Identification:
-1. Define performance problem specifically
-2. Gather baseline performance metrics
-3. Identify affected users and scenarios
-4. Document error messages and symptoms
-
-Root Cause Analysis:
-1. Use Performance Analyzer for visual analysis
-2. Analyze DAX queries with DAX Studio
-3. Review capacity utilization metrics
-4. Check data source performance
-
-Resolution Implementation:
-1. Apply targeted optimizations
-2. Test changes in development environment
-3. Measure performance improvement
-4. Validate functionality remains intact
-
-Prevention Strategy:
-1. Implement monitoring and alerting
-2. Establish performance testing procedures
-3. Create optimization guidelines
-4. Plan regular performance reviews
-```
+Follow the instructions above step by step and report results.

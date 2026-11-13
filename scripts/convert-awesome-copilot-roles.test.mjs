@@ -60,25 +60,43 @@ test("ids are lowercased, CamelCase is split, and underscores become hyphens", (
   assert.equal(normalizeId("notes.md"), null);
 });
 
-test("the first Workflow, Process, or Steps section is lifted; otherwise the default is used", () => {
+test("only a top-level ## section whose title ends with Workflow, Process, or Steps is lifted", () => {
   const lifted = convertBody("# Title\n\nIntro.\n\n## Rules\n\nBe brief.\n\n## Review process\n\n1. Read.\n\n### Details\n\nMore.\n\n## After\n\nDone.\n");
   assert.equal(lifted.workflow, "1. Read.\n\n### Details\n\nMore.");
   assert.equal(lifted.instructions, "Intro.\n\n### Rules\n\nBe brief.\n\n### After\n\nDone.");
-  assert.equal(convertBody("### Steps\n\nGo.\n").workflow, "Go.");
+  assert.equal(convertBody("## Core Workflow\n\nGo.\n").workflow, "Go.");
+  assert.equal(convertBody("## Development Process:\n\nGo.\n").workflow, "Go.");
+  assert.equal(convertBody("## **Implementation Steps**\n\nGo.\n").workflow, "Go.");
+  for (const body of [
+    "## Workflow Definition Structure\n\nKeep.\n",
+    "## Job for Background Processing\n\nKeep.\n",
+    "## Build\n\n### 1. Locate the build workflow\n\nKeep.\n",
+    "### Steps\n\nKeep.\n",
+    "# Steps\n\nTitle only.\n\n# Steps\n\nKeep.\n",
+    "```md\n## Workflow\n```\n",
+  ]) {
+    const converted = convertBody(body);
+    assert.equal(converted.workflow, defaultWorkflow, body);
+    assert.ok(converted.instructions.includes("Keep.") || converted.instructions.includes("## Workflow"), body);
+  }
   assert.equal(convertBody("## Workflow\n\n## Real\n\nText.\n").workflow, defaultWorkflow);
   assert.equal(convertBody("# Title\n\nJust do it.\n").workflow, defaultWorkflow);
 });
 
-test("headings are demoted one level outside fenced code blocks only", () => {
-  const { instructions } = convertBody("# Title\n\n## Section\n\n```md\n### In a fence\n```\n\n~~~\n# Also fenced\n~~~\n\n#### Deep\n");
-  assert.equal(instructions, "### Section\n\n```md\n### In a fence\n```\n\n~~~\n# Also fenced\n~~~\n\n##### Deep");
+test("headings are demoted outside fenced code blocks only, and never become ## boundaries", () => {
+  const { instructions } = convertBody("# Title\n\n## Section\n\n```md\n### In a fence\n```\n\n~~~\n# Also fenced\n~~~\n\n#### Deep\n\n# Second title\n");
+  assert.equal(instructions, "### Section\n\n```md\n### In a fence\n```\n\n~~~\n# Also fenced\n~~~\n\n##### Deep\n\n### Second title");
+});
+
+test("extra H1s and fenced ## lines no longer cause a round-trip skip", () => {
+  const twoTitles = convertAgentFile(agent("name: Two Titles\ndescription: Has two H1s.", "# One\n\nText.\n\n# Two\n\nMore.\n"));
+  assert.deepEqual(validateRole(twoTitles.text).instructions, "Text.\n\n### Two\n\nMore.");
+  const template = convertAgentFile(agent("name: Templater\ndescription: Writes templates.", "# Templater\n\nUse this:\n\n```md\n## Summary\n## Workflow\n```\n"));
+  assert.equal(validateRole(template.text).instructions, "Use this:\n\n```md\n## Summary\n## Workflow\n```");
 });
 
 test("a file whose output does not round-trip is skipped", () => {
-  const source = agent("name: Templater\ndescription: Writes templates.", "# Templater\n\nUse this:\n\n```md\n## Summary\n```\n");
-  assert.deepEqual(convertAgentFile(source), { reason: "round-trip: instructions changed" });
-  const second = agent("name: Two Titles\ndescription: Has two H1s.", "# One\n\nText.\n\n# Two\n\nMore.\n");
-  assert.deepEqual(convertAgentFile(second), { reason: "round-trip: instructions changed" });
+  assert.deepEqual(convertAgentFile(agent("name: Open\ndescription: Has an open fence.", "Text.\n\n```md\n## Never closed\n")), { reason: "round-trip: unclosed code fence" });
   assert.deepEqual(convertAgentFile(agent("name: Big\ndescription: Too big.", `Text.\n\n${"x".repeat(49_152)}\n`)), { reason: "round-trip: larger than 49152 bytes" });
 });
 

@@ -97,20 +97,27 @@ handoffs:  # Optional: workflow transitions
 - Focus: Generate clear, comprehensive documentation
 - Output: Markdown docs, inline comments, API documentation
 
-### Your Process
+#### 5. Workflow Integration Patterns
 
-When creating a custom agent:
+**Sequential Handoff Chain:**
+```
+Plan → Implement → Review → Deploy
+```
 
-1. **Discover**: Ask clarifying questions about role, purpose, tasks, and constraints
-2. **Design**: Propose agent structure including:
-   - Name and description
-   - Tool selection with rationale
-   - Key instructions/guidelines
-   - Optional handoffs for workflow integration
-3. **Draft**: Create the `.agent.md` file with complete structure
-4. **Review**: Explain design decisions and invite feedback
-5. **Refine**: Iterate based on user input
-6. **Document**: Provide usage examples and tips
+**Iterative Refinement:**
+```
+Draft → Review → Revise → Finalize
+```
+
+**Test-Driven Development:**
+```
+Write Failing Tests → Implement → Verify Tests Pass
+```
+
+**Research-to-Action:**
+```
+Research → Recommend → Implement
+```
 
 ### Quality Checklist
 
@@ -156,22 +163,15 @@ Provide the complete file content, not just snippets. After creation, explain th
 
 ## Workflow
 
-**Sequential Handoff Chain:**
-```
-Plan → Implement → Review → Deploy
-```
+When creating a custom agent:
 
-**Iterative Refinement:**
-```
-Draft → Review → Revise → Finalize
-```
-
-**Test-Driven Development:**
-```
-Write Failing Tests → Implement → Verify Tests Pass
-```
-
-**Research-to-Action:**
-```
-Research → Recommend → Implement
-```
+1. **Discover**: Ask clarifying questions about role, purpose, tasks, and constraints
+2. **Design**: Propose agent structure including:
+   - Name and description
+   - Tool selection with rationale
+   - Key instructions/guidelines
+   - Optional handoffs for workflow integration
+3. **Draft**: Create the `.agent.md` file with complete structure
+4. **Review**: Explain design decisions and invite feedback
+5. **Refine**: Iterate based on user input
+6. **Document**: Provide usage examples and tips

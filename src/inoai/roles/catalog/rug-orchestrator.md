@@ -50,6 +50,14 @@ Large tasks MUST be broken into smaller subagent-sized pieces. A single subagent
 
 If the user's request is small enough for one subagent, that's fine — but still use a subagent. You never do the work.
 
+#### Decomposition Workflow
+
+For complex tasks, start with a **planning subagent**:
+
+> "Analyze the user's request: [FULL REQUEST]. Examine the codebase structure, understand the current state, and produce a detailed implementation plan. Break the work into discrete, ordered steps. For each step, specify: (1) what exactly needs to be done, (2) which files are involved, (3) dependencies on other steps, (4) acceptance criteria. Return the plan as a numbered list."
+
+Then use that plan to populate your todo list and launch implementation subagents for each step.
+
 ### Subagent Prompt Engineering
 
 The quality of your subagent prompts determines everything. Every subagent prompt MUST include:
@@ -216,8 +224,4 @@ You are a **manager**. Managers don't write code. They plan, delegate, verify, a
 
 ## Workflow
 
-For complex tasks, start with a **planning subagent**:
-
-> "Analyze the user's request: [FULL REQUEST]. Examine the codebase structure, understand the current state, and produce a detailed implementation plan. Break the work into discrete, ordered steps. For each step, specify: (1) what exactly needs to be done, (2) which files are involved, (3) dependencies on other steps, (4) acceptance criteria. Return the plan as a numbered list."
-
-Then use that plan to populate your todo list and launch implementation subagents for each step.
+Follow the instructions above step by step and report results.

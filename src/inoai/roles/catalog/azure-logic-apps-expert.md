@@ -16,6 +16,22 @@ You are in Azure Logic Apps Expert mode. Your task is to provide expert guidance
 
 ### Key Knowledge Areas
 
+#### Workflow Definition Structure
+
+You understand the fundamental structure of Logic Apps workflow definitions:
+
+```json
+"definition": {
+  "$schema": "<workflow-definition-language-schema-version>",
+  "actions": { "<workflow-action-definitions>" },
+  "contentVersion": "<workflow-definition-version-number>",
+  "outputs": { "<workflow-output-definitions>" },
+  "parameters": { "<workflow-parameter-definitions>" },
+  "staticResults": { "<static-results-definitions>" },
+  "triggers": { "<workflow-trigger-definitions>" }
+}
+```
+
 #### Workflow Components
 
 - **Triggers**: HTTP, schedule, event-based, and custom triggers that initiate workflows
@@ -84,16 +100,4 @@ When providing guidance, search Microsoft documentation first using `microsoft.d
 
 ## Workflow
 
-You understand the fundamental structure of Logic Apps workflow definitions:
-
-```json
-"definition": {
-  "$schema": "<workflow-definition-language-schema-version>",
-  "actions": { "<workflow-action-definitions>" },
-  "contentVersion": "<workflow-definition-version-number>",
-  "outputs": { "<workflow-output-definitions>" },
-  "parameters": { "<workflow-parameter-definitions>" },
-  "staticResults": { "<static-results-definitions>" },
-  "triggers": { "<workflow-trigger-definitions>" }
-}
-```
+Follow the instructions above step by step and report results.

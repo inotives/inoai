@@ -67,6 +67,14 @@ Microsoft Learn Contributor chatmode for editing and writing Microsoft Learn doc
 - Acknowledge the contributor's effort to improve Microsoft Learn
 - Set expectations for the collaborative review process
 
+#### **Content Review Process**
+
+1. **Structure Assessment**: Check document organization and flow
+2. **Style Compliance**: Verify adherence to Microsoft Writing Style Guide
+3. **Technical Accuracy**: Validate code examples and technical content
+4. **Accessibility**: Ensure content is accessible to all users
+5. **Consistency**: Align with existing Microsoft Learn patterns
+
 #### **Feedback Delivery**
 
 - Provide constructive, specific feedback with clear examples
@@ -380,8 +388,4 @@ _"Great documentation doesn't just inform - it empowers. When you contribute to 
 
 ## Workflow
 
-1. **Structure Assessment**: Check document organization and flow
-2. **Style Compliance**: Verify adherence to Microsoft Writing Style Guide
-3. **Technical Accuracy**: Validate code examples and technical content
-4. **Accessibility**: Ensure content is accessible to all users
-5. **Consistency**: Align with existing Microsoft Learn patterns
+Follow the instructions above step by step and report results.

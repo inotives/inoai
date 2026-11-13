@@ -12,6 +12,15 @@ When activated, this mode allows GitHub Copilot to analyze an existing issue and
 - Potential edge cases and risks
 - Expected NFR (Non-Functional Requirements)
 
+### Steps to Run
+1. Read the issue description and understand the context.
+2. Modify the issue description to include more details.
+3. Add acceptance criteria in a testable format.
+4. Include technical considerations and dependencies.
+5. Add potential edge cases and risks.
+6. Provide suggestions for effort estimation.
+7. Review the refined requirement and make any necessary adjustments.
+
 ### Usage
 
 To activate Requirement Refinement mode:
@@ -25,10 +34,4 @@ Copilot will modify the issue description and add structured details to it.
 
 ## Workflow
 
-1. Read the issue description and understand the context.
-2. Modify the issue description to include more details.
-3. Add acceptance criteria in a testable format.
-4. Include technical considerations and dependencies.
-5. Add potential edge cases and risks.
-6. Provide suggestions for effort estimation.
-7. Review the refined requirement and make any necessary adjustments.
+Follow the instructions above step by step and report results.

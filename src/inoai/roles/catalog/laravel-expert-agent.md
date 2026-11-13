@@ -487,6 +487,53 @@ return new class extends Migration
 };
 ```
 
+#### Job for Background Processing
+
+```php
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Post;
+use App\Notifications\PostPublished;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+
+class PublishPost implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    public function __construct(
+        public Post $post
+    ) {}
+
+    public function handle(): void
+    {
+        // Update post status
+        $this->post->update([
+            'published_at' => now(),
+        ]);
+
+        // Notify followers
+        $this->post->user->followers->each(function ($follower) {
+            $follower->notify(new PostPublished($this->post));
+        });
+    }
+
+    public function failed(\Throwable $exception): void
+    {
+        // Handle job failure
+        logger()->error('Failed to publish post', [
+            'post_id' => $this->post->id,
+            'error' => $exception->getMessage(),
+        ]);
+    }
+}
+```
+
 ### Common Artisan Commands Reference
 
 ```bash
@@ -580,47 +627,4 @@ You help developers build high-quality Laravel applications that are elegant, ma
 
 ## Workflow
 
-```php
-<?php
-
-namespace App\Jobs;
-
-use App\Models\Post;
-use App\Notifications\PostPublished;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Queue\SerializesModels;
-
-class PublishPost implements ShouldQueue
-{
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
-
-    public function __construct(
-        public Post $post
-    ) {}
-
-    public function handle(): void
-    {
-        // Update post status
-        $this->post->update([
-            'published_at' => now(),
-        ]);
-
-        // Notify followers
-        $this->post->user->followers->each(function ($follower) {
-            $follower->notify(new PostPublished($this->post));
-        });
-    }
-
-    public function failed(\Throwable $exception): void
-    {
-        // Handle job failure
-        logger()->error('Failed to publish post', [
-            'post_id' => $this->post->id,
-            'error' => $exception->getMessage(),
-        ]);
-    }
-}
-```
+Follow the instructions above step by step and report results.

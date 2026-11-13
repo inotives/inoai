@@ -83,6 +83,35 @@ test("role validation fails closed for each format error", () => {
   rejectsWith(validRole.replace("1. Read.\n2. Plan.\n", ""), "missing or empty '## Workflow' section");
 });
 
+test("section parsing ignores heading-like lines inside fenced code blocks", () => {
+  const withInstructions = (body: string) => validRole.replace("Write a numbered plan.", body);
+  const cases: Array<[string, string]> = [
+    ["fenced ## line", "Use this:\n\n```md\n## Summary\n```"],
+    ["fenced ## Workflow line", "Template:\n\n```\n## Workflow\nnot the real one\n```"],
+    ["tilde fence", "~~~\n## Summary\n~~~"],
+    ["indented fence", "Code:\n\n   ```md\n## Summary\n   ```"],
+    ["longer closing marker", "````md\n## Summary\n```\n## Still fenced\n`````"],
+    ["tilde fence with backticks inside", "~~~\n```\n## Summary\n~~~"],
+  ];
+  for (const [label, body] of cases) {
+    const role = validateRole(withInstructions(body));
+    assert.equal(role.instructions, body, label);
+    assert.equal(role.workflow, "1. Read.\n2. Plan.", label);
+  }
+  const fencedSummary = validRole.replace("Plans work before it starts.", "Plans work.\n\n```\n## Instructions\n```");
+  assert.equal(validateRole(fencedSummary).summary, "Plans work.\n\n```\n## Instructions\n```");
+  rejectsWith(validRole.replace("## Workflow\n\n1. Read.", "```\n## Workflow\n```\n\n1. Read."), "missing or empty '## Workflow' section");
+  // A four-space-indented marker is not a fence, so the ## line still ends Instructions.
+  assert.equal(validateRole(withInstructions("Code:\n\n    ```\n## Summary\n    ```")).instructions, "Code:\n\n    ```");
+});
+
+test("an unclosed fence makes the role invalid", () => {
+  rejectsWith(validRole.replace("Write a numbered plan.", "```md\n## Summary"), "unclosed code fence");
+  rejectsWith(validRole.replace("Write a numbered plan.", "````\n```"), "unclosed code fence");
+  rejectsWith(validRole.replace("Write a numbered plan.", "~~~\n```"), "unclosed code fence");
+  rejectsWith(`${validRole}\n\`\`\`\n`, "unclosed code fence");
+});
+
 test("a horizontal rule near the top is not frontmatter (BL-0051)", () => {
   const ruled = validRole.replace("Plans work before it starts.", "Plans work before it starts.\n\n---").replace("Write a numbered plan.", "---\n\nWrite a numbered plan.");
   assert.equal(validateRole(ruled).summary, "Plans work before it starts.\n\n---");

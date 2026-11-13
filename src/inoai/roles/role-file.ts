@@ -41,9 +41,37 @@ export function isValidRoleId(roleId: string): boolean {
   return typeof roleId === "string" && roleIdPattern.test(roleId) && roleId !== reservedRoleId;
 }
 
-function sectionBody(text: string, title: string): string {
-  const match = text.match(new RegExp(`^## ${title}[ \\t]*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "m"));
-  return match?.[1]?.trim() ?? "";
+const fenceOpen = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * Splits text into lines, each tagged as a `##` section boundary or not. Lines inside fenced code
+ * blocks (``` or ~~~, indented 0-3 spaces, closed by the same marker at the same or greater length)
+ * are never boundaries. An unclosed fence makes the role invalid.
+ */
+function scanLines(text: string): { line: string; boundary: boolean }[] {
+  let fence: string | null = null;
+  const lines = text.split("\n").map((line) => {
+    const marker = line.match(fenceOpen)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
+      return { line, boundary: false };
+    }
+    if (marker) {
+      fence = marker;
+      return { line, boundary: false };
+    }
+    return { line, boundary: /^##(?:\s|$)/.test(line) };
+  });
+  if (fence) throw new InvalidRoleError("unclosed code fence");
+  return lines;
+}
+
+function sectionBody(lines: { line: string; boundary: boolean }[], title: string): string {
+  const start = lines.findIndex(({ line, boundary }) => boundary && new RegExp(`^## ${title}[ \\t]*\r?$`).test(line));
+  if (start < 0) return "";
+  let end = start + 1;
+  while (end < lines.length && !lines[end]!.boundary) end += 1;
+  return lines.slice(start + 1, end).map(({ line }) => line).join("\n").trim();
 }
 
 export function validateRole(text: string): RoleContent {
@@ -53,14 +81,15 @@ export function validateRole(text: string): RoleContent {
   if (text.startsWith("---")) throw new InvalidRoleError("frontmatter is not allowed");
   const heading = text.match(/^# Role:[ \t]*(\S[^\r\n]*?)[ \t]*(?:\r?\n|$)/);
   if (!heading) throw new InvalidRoleError("first line must be '# Role: <Name>'");
-  const rest = text.slice(heading[0].length);
-  const summary = (rest.match(/^##\s/m) ? rest.slice(0, rest.search(/^##\s/m)) : rest).trim();
+  const lines = scanLines(text.slice(heading[0].length));
+  const firstBoundary = lines.findIndex(({ boundary }) => boundary);
+  const summary = lines.slice(0, firstBoundary < 0 ? lines.length : firstBoundary).map(({ line }) => line).join("\n").trim();
   if (!summary) throw new InvalidRoleError("empty summary paragraph");
-  const instructions = sectionBody(rest, "Instructions");
+  const instructions = sectionBody(lines, "Instructions");
   if (!instructions) throw new InvalidRoleError("missing or empty '## Instructions' section");
-  const workflow = sectionBody(rest, "Workflow");
+  const workflow = sectionBody(lines, "Workflow");
   if (!workflow) throw new InvalidRoleError("missing or empty '## Workflow' section");
-  return { name: heading[1], summary, instructions, workflow };
+  return { name: heading[1]!, summary, instructions, workflow };
 }
 
 export async function loadRole(rolesDirectory: string, roleId: string): Promise<Role> {

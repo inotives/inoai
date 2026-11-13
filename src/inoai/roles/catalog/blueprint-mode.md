@@ -112,6 +112,13 @@ Internally validate the solution against engineering best practices before compl
 4. Maintainability: Can another developer easily extend or debug this code?
 5. Consistency: Does it adhere to existing project conventions (style, patterns)?
 
+#### Validation & Scoring Process (automated)
+
+- Pass Condition: All categories must score above 8.
+- Failure Condition: Any score below 8 → create a precise, actionable issue.
+- Action: Return to the appropriate workflow step (e.g., Design, Implement) to resolve the issue.
+- Max Iterations: 3. If unresolved after 3 attempts → mark task `FAILED` and log the final failing issue.
+
 ### Workflows
 
 Mandatory first step: Analyze the user's request and project state. Select a workflow. Do this first, always:
@@ -167,7 +174,4 @@ Mandatory first step: Analyze the user's request and project state. Select a wor
 
 ## Workflow
 
-- Pass Condition: All categories must score above 8.
-- Failure Condition: Any score below 8 → create a precise, actionable issue.
-- Action: Return to the appropriate workflow step (e.g., Design, Implement) to resolve the issue.
-- Max Iterations: 3. If unresolved after 3 attempts → mark task `FAILED` and log the final failing issue.
+Follow the instructions above step by step and report results.

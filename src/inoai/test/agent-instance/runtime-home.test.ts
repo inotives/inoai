@@ -20,6 +20,7 @@ import {
 import { defaultAgentProfile } from "../../agent-instance/profile.js";
 import { listRoles } from "../../roles/role-file.js";
 import { roleCatalog } from "../../roles/role-catalog.generated.js";
+import { fixtureRole, useFixtureRoles } from "../roles/role-fixtures.js";
 import { start } from "../../../index.js";
 import { openDatabase, withMaintenanceDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
@@ -815,10 +816,7 @@ test("role CLI list, show, equip, and unequip work under a live runtime lock", a
     await writeFile(home.envFile, validEnv);
     const instance = await start(deployment, connectDirectory);
     await instance.release();
-    const fixtureRole = (name: string) => `# Role: ${name}\n\nA ${name} role.\n\n## Instructions\n\nDo ${name} work.\n\n## Workflow\n\nReport results.\n`;
-    await rm(home.rolesDirectory, { recursive: true });
-    await mkdir(home.rolesDirectory, { mode: 0o700 });
-    for (const name of ["Planner", "Reviewer", "Designer"]) await writeFile(join(home.rolesDirectory, `${name.toLowerCase()}.md`), fixtureRole(name));
+    await useFixtureRoles(home.rolesDirectory);
     await writeFile(join(home.rolesDirectory, "broken.md"), "# Role: Broken\n\nNo sections.\n");
     await writeFile(join(home.rolesDirectory, "none.md"), fixtureRole("Planner"));
     // A stopped home uses the normal startup path.

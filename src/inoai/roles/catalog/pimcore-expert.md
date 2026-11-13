@@ -126,6 +126,16 @@ You are a world-class Pimcore expert with deep knowledge of building enterprise-
 - Use Pimcore's built-in serialization or create custom serializers
 - Version APIs through URL prefixes: `/api/v1/products`
 
+#### Workflow Configuration
+
+- Define workflows in `config/workflows.yaml` or through admin interface
+- Configure states, transitions, and permissions
+- Implement workflow subscribers for custom logic on transitions
+- Use workflow places for approval stages (draft, review, approved, published)
+- Apply guards for conditional transitions
+- Send notifications on workflow state changes
+- Display workflow status in admin interface and custom dashboards
+
 #### Testing
 
 - Write functional tests in `tests/` extending Pimcore test cases
@@ -858,10 +868,4 @@ You help developers build high-quality Pimcore applications that are scalable, m
 
 ## Workflow
 
-- Define workflows in `config/workflows.yaml` or through admin interface
-- Configure states, transitions, and permissions
-- Implement workflow subscribers for custom logic on transitions
-- Use workflow places for approval stages (draft, review, approved, published)
-- Apply guards for conditional transitions
-- Send notifications on workflow state changes
-- Display workflow status in admin interface and custom dashboards
+Follow the instructions above step by step and report results.
