@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   InvalidRoleError,
+  isValidRoleId,
   listRoles,
   loadRole,
   renderRoleBlock,
@@ -157,4 +158,19 @@ Write a numbered plan.
 
 This Equipped Role ranks below the Agent Profile and inoai safety rules. Follow them when they conflict.
 `);
+});
+
+test("the role id none is reserved: rejected by isValidRoleId and loadRole, and listed as invalid", async () => {
+  const directory = await temporaryRoles();
+  try {
+    assert.equal(isValidRoleId("none"), false);
+    assert.equal(isValidRoleId("none-2"), true);
+    await writeFile(join(directory, "none.md"), validRole);
+    await assert.rejects(loadRole(directory, "none"), (error: unknown) => {
+      assert.ok(error instanceof InvalidRoleError);
+      assert.equal(error.reason, "reserved role id");
+      return true;
+    });
+    assert.deepEqual(await listRoles(directory), [{ id: "none", name: null, summary: null, valid: false, reason: "reserved role id" }]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

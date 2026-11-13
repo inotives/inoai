@@ -4,6 +4,8 @@ import { secretLike } from "../conversation/prompt-context.js";
 
 export const roleIdPattern = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const maxRoleBytes = 16_384;
+/** Means "no role" in `role_applied` details and change notes, so no role file may use it. */
+export const reservedRoleId = "none";
 
 export type RoleContent = {
   name: string;
@@ -22,19 +24,21 @@ export type RoleListEntry = {
   reason: string | null;
 };
 
-/** A role file that cannot be used. `reason` is short and never quotes the file text. */
+/** A role file that cannot be used. `reason` is short and never quotes the file text. `roleId` names the equipped role, when known. */
 export class InvalidRoleError extends Error {
   readonly reason: string;
+  readonly roleId?: string;
 
-  constructor(reason: string) {
+  constructor(reason: string, roleId?: string) {
     super(`Invalid role: ${reason}`);
     this.name = "InvalidRoleError";
     this.reason = reason;
+    this.roleId = roleId;
   }
 }
 
 export function isValidRoleId(roleId: string): boolean {
-  return typeof roleId === "string" && roleIdPattern.test(roleId);
+  return typeof roleId === "string" && roleIdPattern.test(roleId) && roleId !== reservedRoleId;
 }
 
 function sectionBody(text: string, title: string): string {
@@ -60,6 +64,7 @@ export function validateRole(text: string): RoleContent {
 }
 
 export async function loadRole(rolesDirectory: string, roleId: string): Promise<Role> {
+  if (roleId === reservedRoleId) throw new InvalidRoleError("reserved role id");
   if (!isValidRoleId(roleId)) throw new InvalidRoleError("invalid role id");
   const file = join(rolesDirectory, `${roleId}.md`);
   let text: string;
