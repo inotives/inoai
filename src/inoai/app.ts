@@ -37,6 +37,7 @@ import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operat
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } from "./roles/role-operations.js";
 import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
+import { inspectConnections } from "./connections/connections-file.js";
 import { enabledSkillsSectionWarning, hasEnabledSkillsSection, loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
@@ -612,6 +613,14 @@ function parseRoleCommand(args: string[]): { operation: RoleOperation; roleId: s
   throw new Error("Usage: inoai role <list|show|equip <id>|unequip> [--connect-dir .inoai-connect*]");
 }
 
+function parseConnectionsCommand(args: string[]): { operation: "validate" | "list"; connectDirectory: string | undefined } {
+  const connectDirectory = args.length >= 2 && args.at(-2) === "--connect-dir" ? args.at(-1) : undefined;
+  const command = connectDirectory === undefined ? args : args.slice(0, -2);
+  const [operation, ...values] = command;
+  if ((operation === "validate" || operation === "list") && values.length === 0) return { operation, connectDirectory };
+  throw new Error("Usage: inoai connections <validate|list> [--connect-dir .inoai-connect*]");
+}
+
 function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation; userId: string; displayName?: string; connectDirectory?: string } {
   const operation = args[0] === "allowlist:add" ? "add" : args[0] === "allowlist:disable" ? "disable" : undefined;
   const usage = "Usage: inoai allowlist:<add|disable> --user-id <id> [--display-name <name>] [--connect-dir .inoai-connect*]";
@@ -776,6 +785,21 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   if (args[0] === "role") {
     const { operation, roleId, connectDirectory } = parseRoleCommand(args.slice(1));
     console.log(JSON.stringify(await manageRole(operation, roleId, process.cwd(), connectDirectory)));
+    return;
+  }
+  if (args[0] === "connections") {
+    // Reads only connections.json and .env; never opens SQLite, so it is safe while the agent runs.
+    const { operation, connectDirectory } = parseConnectionsCommand(args.slice(1));
+    const runtimeHome = resolveRuntimeHome(process.cwd(), connectDirectory);
+    const result = await inspectConnections(runtimeHome);
+    if (operation === "list") {
+      console.log(JSON.stringify(result.connections));
+      return;
+    }
+    for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
+    console.log(result.present
+      ? `inoai connections file is valid: ${runtimeHome.connectionsFile} (${result.connections.length} connection${result.connections.length === 1 ? "" : "s"})`
+      : `inoai connections: none (no connections.json in ${runtimeHome.directory})`);
     return;
   }
   if (args[0] === "validate") {

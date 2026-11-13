@@ -23,6 +23,8 @@ export type RuntimeHome = {
   skillsDirectory: string;
   skillsEnabledFile: string;
   rolesDirectory: string;
+  /** Optional, owner-edited; bootstrap never creates it. */
+  connectionsFile: string;
   databaseFile: string;
   lockFile: string;
 };
@@ -103,6 +105,7 @@ export function resolveRuntimeHome(launchDirectory: string, connectDirectory = "
     skillsDirectory: join(directory, "skills"),
     skillsEnabledFile: join(directory, "skills-enabled.json"),
     rolesDirectory: join(directory, "roles"),
+    connectionsFile: join(directory, "connections.json"),
     databaseFile: join(directory, "inoai.sqlite"),
     lockFile: join(directory, "inoai.lock"),
   };

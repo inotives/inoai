@@ -149,11 +149,17 @@ export function validateConfiguration(values: Record<string, string | undefined>
   };
 }
 
-export async function loadConfiguration(envFile: string): Promise<Configuration> {
-  const values: Record<string, string> = {};
-  for (const line of (await readFile(envFile, "utf8")).split(/\r?\n/)) {
+/** Parses `.env` text into trimmed `KEY=value` pairs. Lines that start with `#` or have no key are skipped. */
+export function parseEnvText(text: string): Record<string, string> {
+  const values: Record<string, string> = Object.create(null);
+  for (const line of text.split(/\r?\n/)) {
     const separator = line.indexOf("=");
-    if (separator > 0 && !line.startsWith("#") && !line.slice(0, separator).trim().startsWith("POSTGRES_")) values[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+    if (separator > 0 && !line.startsWith("#")) values[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
   }
+  return values;
+}
+
+export async function loadConfiguration(envFile: string): Promise<Configuration> {
+  const values = Object.fromEntries(Object.entries(parseEnvText(await readFile(envFile, "utf8"))).filter(([key]) => !key.startsWith("POSTGRES_")));
   return validateConfiguration(values);
 }
