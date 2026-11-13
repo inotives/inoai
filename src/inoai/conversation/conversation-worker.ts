@@ -12,6 +12,8 @@ import { prepareSkillScripts, skillExecutionInstructions } from "../skills/skill
 import type { TaskOperationsStore } from "../connectors/persistence/sqlite/operational-store.js";
 import type { SessionRecord, TaskProposalRecord, TaskRecord } from "../connectors/persistence/sqlite/legacy-database.js";
 import { extractTaskBlock, taskBlockInstruction, validateTaskBlock } from "../tasks/task-block.js";
+import { InvalidRoleError } from "../roles/role-file.js";
+import { invalidRoleNotice, prepareTurnRole, recordTurnRole, withRoleNote } from "../roles/equipped-role.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
@@ -205,11 +207,13 @@ export class ConversationWorker {
         await this.database.archiveFailureNotice(message.id, providerMismatchNotice(session.agent_provider, this.runtime.displayName));
         return;
       }
+      // The role is read once here, so a switch during this Turn applies only from the next Turn.
+      const role = await prepareTurnRole(this.database, this.home.rolesDirectory, session.id);
       const agentSessionId = session.agent_session_id.startsWith("pending:")
-        ? await startAgentSession(this.database, this.runtime, session.id, this.home)
-        : await resumeAgentSession(this.database, this.runtime, session.id, this.home);
+        ? await startAgentSession(this.database, this.runtime, session.id, this.home, role.block)
+        : await resumeAgentSession(this.database, this.runtime, session.id, this.home, role.block);
       const composed = await composeTurnContext(this.database, message);
-      let prompt = composed.prompt;
+      let prompt = withRoleNote(composed.prompt, role);
       const tasks = await this.chatTaskList(session, message);
       if (tasks) prompt += `\n\n${taskBlockInstruction(tasks, this.chatTasks!.ownerTimeZone, this.now())}`;
       const selected = selectEnabledSkill(await buildEnabledSkillIndex(this.home), { prompt: message.body });
@@ -235,6 +239,7 @@ export class ConversationWorker {
       }
       this.activeAgentSessionIds.set(message.id, agentSessionId);
       await this.recordMemoryUses(session.id, message.id, composed.memoryIds);
+      await recordTurnRole(this.database, session.id, role, "conversation-worker");
       const outcome = await runRuntimeTurn(this.database, this.runtime, session.id, agentSessionId, prompt, undefined, message.id, cancellation.signal);
       if (cancellation.signal.aborted) {
         await this.database.failProcessingMessage(message.id, "Cancelled by owner", "user:owner");
@@ -260,7 +265,16 @@ export class ConversationWorker {
         await this.database.archiveFailureNotice(message.id, providerNoticeKinds.has(outcome.reason) ? outcome.notice
           : outcome.reason === "uncertain" || outcome.reason === "timed_out" ? uncertainNotice : failureNotice);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof InvalidRoleError && error.roleId) {
+        // The role failed before any runtime call. The role stays equipped; the owner fixes the file and resends.
+        if (await this.database.failProcessingMessage(message.id, "Equipped role missing or invalid; replay_safe=false", "conversation-worker")) {
+          await this.database.createEvent({ session_id: message.session_id, message_id: message.id,
+            event_type: "turn_failed", detail: "reason=role_invalid" }, "conversation-worker");
+          await this.database.archiveFailureNotice(message.id, invalidRoleNotice(error.roleId));
+        }
+        return;
+      }
       this.fallbackToGlobal();
       const detail = message.runtime_started_at === null && !this.activeAgentSessionIds.has(message.id)
         ? "Agent Session setup failed before runtime start" : "Runtime outcome uncertain";

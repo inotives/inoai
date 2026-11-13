@@ -22,12 +22,44 @@ export class TaskWriteError extends Error {
   }
 }
 
-function isSqliteBusyError(error: unknown): boolean {
+export function isSqliteBusyError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const sqliteError = error as Error & { code?: string; errcode?: number; errno?: number };
   return sqliteError.code === "SQLITE_BUSY" || sqliteError.code === "SQLITE_LOCKED"
     || [5, 6].includes(sqliteError.errcode ?? sqliteError.errno ?? -1)
     || /database is (?:locked|busy)/i.test(error.message);
+}
+
+/** Maps SQLite busy errors to the retryable 503. Other errors pass through. */
+export function asUiWriteError(error: unknown): unknown {
+  if (error instanceof TaskWriteError) return error;
+  if (isSqliteBusyError(error)) return new TaskWriteError(503, "The database is busy. Try again.", undefined, true);
+  return error;
+}
+
+/**
+ * Opens the selected home's existing database with the 5-second busy timeout.
+ * A missing file returns 409 with `missingMessage` and is never created. An unsafe path returns 500.
+ */
+export function openUiWriteDatabase(home: RuntimeHome, missingMessage: string): DatabaseSync {
+  const directory = resolve(home.directory);
+  const databaseFile = resolve(home.databaseFile);
+  let safe = false;
+  try {
+    safe = databaseFile === join(directory, "inoai.sqlite") && !lstatSync(directory).isSymbolicLink()
+      && lstatSync(databaseFile).isFile();
+  } catch {
+    throw new TaskWriteError(409, missingMessage);
+  }
+  if (!safe) throw new TaskWriteError(500, "Runtime data unavailable.");
+  const database = new DatabaseSync(databaseFile);
+  try {
+    database.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${databaseBusyTimeoutMs}`);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+  return database;
 }
 
 function validSpec(input: unknown, now: number): TaskSpec {
@@ -38,27 +70,14 @@ function validSpec(input: unknown, now: number): TaskSpec {
 
 // Opens the selected home's existing database. A missing file is never created.
 function withTaskDatabase<T>(home: RuntimeHome, operation: (database: DatabaseSync) => T): T {
-  const directory = resolve(home.directory);
-  const databaseFile = resolve(home.databaseFile);
-  let safe = false;
-  try {
-    safe = databaseFile === join(directory, "inoai.sqlite") && !lstatSync(directory).isSymbolicLink()
-      && lstatSync(databaseFile).isFile();
-  } catch {
-    throw new TaskWriteError(409, "Start the agent once before managing tasks from the UI.");
-  }
-  if (!safe) throw new TaskWriteError(500, "Runtime data unavailable.");
   let database: DatabaseSync | undefined;
   try {
-    database = new DatabaseSync(databaseFile);
-    database.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${databaseBusyTimeoutMs}`);
+    database = openUiWriteDatabase(home, "Start the agent once before managing tasks from the UI.");
     const columns = new Set((database.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(({ name }) => name));
     if (!columns.has("schedule_kind")) throw new TaskWriteError(409, "Start the agent once to update the database before managing tasks from the UI.");
     return operation(database);
   } catch (error) {
-    if (error instanceof TaskWriteError) throw error;
-    if (isSqliteBusyError(error)) throw new TaskWriteError(503, "The database is busy. Try again.", undefined, true);
-    throw error;
+    throw asUiWriteError(error);
   } finally {
     database?.close();
   }

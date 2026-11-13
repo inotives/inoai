@@ -11,6 +11,8 @@ import { resumeAgentSession, startAgentSession } from "./agent-session.js";
 import { addUsage, recordUsage, type Usage } from "./runtime-turn.js";
 import { composeTaskMemorySection } from "./prompt-context.js";
 import type { ConversationWorker } from "./conversation-worker.js";
+import { InvalidRoleError } from "../roles/role-file.js";
+import { invalidRoleNotice, prepareTurnRole, recordTurnRole, withRoleNote } from "../roles/equipped-role.js";
 
 type Store = OperationalStore & TaskOperationsStore;
 type RunFolder = { task: TaskRecord; output: string; relativeOutput: string };
@@ -123,12 +125,14 @@ export class TaskRunExecutor {
       }
       const carryover = await this.carryover(task, session.id);
       conversationId ??= await this.openTaskThread(task, runId);
+      // The run uses the role equipped when it starts; a later switch applies from the next run.
+      const role = await prepareTurnRole(this.store, this.home.rolesDirectory, session.id);
       active.sessionId = session.agent_session_id.startsWith("pending:")
-        ? await startAgentSession(this.store, this.runtime, session.id, this.home)
-        : await resumeAgentSession(this.store, this.runtime, session.id, this.home);
+        ? await startAgentSession(this.store, this.runtime, session.id, this.home, role.block)
+        : await resumeAgentSession(this.store, this.runtime, session.id, this.home, role.block);
       if (active.cancelled) { await this.runtime.cancel(active.sessionId); return; }
       const memory = composeTaskMemorySection(await this.store.listMemories(), task);
-      const prompt = [
+      const prompt = withRoleNote([
         ...(memory.section ? [memory.section] : []),
         ...(task.title ? [`Task title: ${task.title}`] : []),
         `Task goal: ${task.goal}`,
@@ -139,8 +143,9 @@ export class TaskRunExecutor {
         this.agentProvider === "anthropic-api"
           ? "This is one Task Run. Reply in text; you cannot create files. Reply with a concise completion summary."
           : `This is one Task Run. Save only requested files inside ${output}. Do not overwrite files from prior runs. Do not create result.md; inoai writes it with your reply. Reply with a concise completion summary.`,
-      ].join("\n\n");
+      ].join("\n\n"), role);
       await this.recordMemoryUses(session.id, runId, memory.memoryIds);
+      await recordTurnRole(this.store, session.id, role, "task-runtime");
       let answer: string | undefined;
       const usage: Usage = {};
       try {
@@ -177,6 +182,20 @@ export class TaskRunExecutor {
       }
     } catch (error) {
       const endedAt = this.now();
+      if (error instanceof InvalidRoleError && error.roleId) {
+        // The role failed before any runtime call. The schedule stays; the next run tries again.
+        if (!active.cancelled && await this.store.failTaskRun(runId, "Equipped role missing or invalid; replay_safe=false", endedAt, "task-runtime")) {
+          ended = true;
+          const notice = invalidRoleNotice(error.roleId);
+          const sessionId = active.folder?.task.session_id;
+          if (sessionId !== undefined) await this.store.createEvent({ session_id: sessionId, message_id: null, event_type: "turn_failed",
+            detail: "reason=role_invalid" }, "task-runtime").catch(() => undefined);
+          if (active.folder) await writeTaskRunResult(this.home.directory, active.folder.task, { id: runId, startedAt: active.startedAt },
+            { state: "failed", endedAt, failure: notice }).catch(() => undefined);
+          if (conversationId) await this.transport.sendMessage(conversationId, notice).catch(() => undefined);
+        }
+        return;
+      }
       if (!active.cancelled && await this.store.failTaskRun(runId, genericFailure, endedAt, "task-runtime")) {
         ended = true;
         const failure = error instanceof TaskRunError ? error.message : genericFailure;

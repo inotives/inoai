@@ -18,6 +18,13 @@ see [README.md](README.md). For the architecture and folder layout, see
   - [OpenCode](#opencode)
   - [Anthropic API](#anthropic-api)
 - [Common Commands](#common-commands)
+- [Roles](#roles)
+  - [Role files](#role-files)
+  - [Role catalog](#role-catalog)
+  - [Role commands](#role-commands)
+  - [Roles in the UI](#roles-in-the-ui)
+  - [How a role applies](#how-a-role-applies)
+  - [Role live check](#role-live-check)
 - [Tasks](#tasks)
   - [Tasks from chat](#tasks-from-chat)
   - [Tasks in the UI](#tasks-in-the-ui)
@@ -100,8 +107,8 @@ limited to the Mac. To allow the UI on a private network, specify an address:
 inoai start --dir /path/to/agent --port 1133 --host 192.168.1.10
 ```
 
-LAN mode has no password: devices that can reach the UI can read its data and
-change Tasks. Use a private LAN address assigned to this Mac.
+LAN mode has no password: devices that can reach the UI can read its data,
+change Tasks, and switch the role. Use a private LAN address assigned to this Mac.
 
 New agents have no installed skills. Add and enable skills separately:
 
@@ -110,6 +117,7 @@ inoai skills add https://github.com/owner/repository --skill skill-name --dir /p
 inoai skills list --dir /path/to/agent
 inoai skills enable skill-name --dir /path/to/agent
 inoai memory list --dir /path/to/agent
+inoai role list --dir /path/to/agent
 ```
 
 Remote Git repository skills require Git on `PATH`. If it is missing, install
@@ -361,7 +369,7 @@ The refusal and `max_tokens` replies write no history, so the thread continues a
 | `npm run validate` | Create the runtime home if needed and validate its `.env` offline. |
 | `npm start -- profile validate --connect-dir <home>` | Validate a runtime-home `agent.md` without starting Discord. |
 | `npm start` | Start the core for the default runtime home. |
-| `npm start -- --connect-dir <home>` | Start a named runtime home. `npm run validate`, `ui`, and `memory` accept the same option. |
+| `npm start -- --connect-dir <home>` | Start a named runtime home. `npm run validate`, `ui`, `memory`, and `role` accept the same option. |
 | `npm start -- heartbeat --connect-dir .robin-xai-test` | Run the optional supervisor in the foreground with one inoai child. |
 | `npm start -- heartbeat launchagent render --connect-dir .robin-xai-test` | Print the optional macOS LaunchAgent plist without installing it. |
 | `npm start -- memory add "<text>"` | Add a Manual Memory Entry to local SQLite without starting an Agent Runtime. It is a topic Memory. |
@@ -386,8 +394,10 @@ The refusal and `max_tokens` replies write no history, so the thread continues a
 | `/inoai memory list` | Show active Memory IDs, kinds, and short bodies. |
 | `/inoai memory forget id:<n>` | Soft-delete an active Memory. |
 | `/inoai memory review` | Run a Memory Review cycle now ([Memory commands](#memory-commands)). |
+| `npm start -- role list`, `show`, `equip <id>`, `unequip` | List, show, equip, or unequip the role, also while the agent runs ([Role commands](#role-commands)). |
+| `/inoai role list`, `show`, `equip id:<id>`, `unequip` | The same from Discord. |
 
-The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel. Memory controls work in any channel of the configured guild.
+The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel. Memory and role controls work in any channel of the configured guild.
 
 Allowlist commands use the selected runtime home's SQLite database and
 never print credentials. They can run while the core is running (ADR 0025). A
@@ -401,6 +411,114 @@ FROM users
 WHERE transport = 'discord'
 ORDER BY id;
 ```
+
+## Roles
+
+A Role is a switchable working mode, such as a planner or a reviewer ([ADR 0031](docs/adr/0031-equippable-roles.md)). Each Agent Instance has at most one Equipped Role. inoai appends it after `agent.md` for every chat Turn and Task Run. The role ranks below the Agent Profile and inoai safety rules, and it never changes the CLI's tools, sandbox, or approval policy. With no role equipped, only the base profile applies. That is the default.
+
+Only the owner equips or unequips a role, from Discord, the CLI, or the UI. The agent cannot change its own role. Roles need the SQLite store; with the PostgreSQL store, role commands report that roles are not supported.
+
+### Role files
+
+Roles live in the runtime home's `roles/` folder, one file per role: `roles/<role-id>.md`. The file name without `.md` is the role id. An id uses lowercase letters, digits, and hyphens, starts with a letter or digit, and has at most 64 characters. The id `none` is reserved.
+
+A role file looks like this:
+
+```markdown
+# Role: Release Reviewer
+
+Reviews release branches for risk before a merge.
+
+## Instructions
+
+Check the diff, the tests, and the changelog. Report risks first.
+
+## Workflow
+
+1. Read the diff.
+2. Run the tests.
+3. Report findings by severity.
+```
+
+- Line 1 is `# Role: <Name>`. No frontmatter: the file must not start with `---`.
+- A non-empty summary paragraph follows.
+- `## Instructions` and `## Workflow` are required and must not be empty.
+- A `##` line inside a fenced code block (```` ``` ```` or `~~~`) does not start a section. A fence that is never closed makes the file invalid (`unclosed code fence`). A role file that was valid before this rule can become invalid after an upgrade; close the fence to fix it.
+- The file is at most 48 KB (49,152 bytes).
+- Text that looks like a secret (for example `password:`, `token=`, or `Bearer ...`) makes the file invalid. Every surface reports only `secret-like text` and never shows the match.
+- A symlink or a non-regular file is invalid. A `.md` file whose name is not a valid id is listed as invalid. Other files are ignored.
+
+Edit a role file at any time. An edit to the equipped role applies from the next Turn, without a restart and without a change note.
+
+### Role catalog
+
+When inoai creates a runtime home's `roles/` folder, it fills it with a catalog of 202 roles. Examples are `planner`, `gem-reviewer`, `task-planner`, and `csharp-expert`. The catalog is converted from the agents in [github/awesome-copilot](https://github.com/github/awesome-copilot) at commit `222eba62d518c27317e917c92e3ec1a7e6729455`. awesome-copilot is licensed under the MIT License, Copyright GitHub, Inc. The license is in [licenses/awesome-copilot-LICENSE.md](licenses/awesome-copilot-LICENSE.md). The vendoring report [src/inoai/roles/catalog-vendoring.md](src/inoai/roles/catalog-vendoring.md) lists the counts and the 28 skipped upstream files: 25 secret-like, 1 without a description, and 2 with an unclosed code fence. The standalone build includes the catalog, and `inoai --licenses` shows its notice.
+
+The catalog is copied only when `roles/` is created. inoai never changes an existing `roles/` folder, so your edits and deletions stay. A newer catalog does not reach an existing folder. To get the current catalog in an existing runtime home, stop the agent, move `roles/` aside, and start the agent again. Then copy back any roles of your own.
+
+Maintainers regenerate the catalog from a local awesome-copilot checkout:
+
+```bash
+npm run build
+node scripts/convert-awesome-copilot-roles.mjs <path-to-awesome-copilot>
+```
+
+The converter rewrites `src/inoai/roles/catalog/`, the vendoring report, and `src/inoai/roles/role-catalog.generated.ts`. A second run on the same checkout gives no diff. It drops frontmatter keys such as `tools`, `model`, and `mcp-servers`. It uses a top-level `##` section whose title ends with "Workflow", "Process", or "Steps" as `## Workflow`, or a fixed default line. It skips and reports secret-like files, files without a description, id clashes, and files that fail the round-trip check. Update the commit in `licenses/README.md` when the upstream commit changes.
+
+### Role commands
+
+| Command | Purpose |
+| --- | --- |
+| `/inoai role list` | List roles as `<id>: <name> — <summary>`, or `<id>: invalid: <reason>`. The equipped role is marked `[equipped]`. A long list ends with `…and <n> more.` |
+| `/inoai role show` | Show the equipped role's name and summary, or `No role is equipped. The base Agent Profile applies.` |
+| `/inoai role equip id:<role-id>` | Equip a valid role. It applies from the next Turn. |
+| `/inoai role unequip` | Unequip the role. The base profile applies from the next Turn. |
+| `npm start -- role list [--connect-dir <home>]` | Print the roles as one JSON array: `id`, `name`, `valid`, `reason`, `equipped`. |
+| `npm start -- role show` | Print `{ role_id, name, valid, reason }`. `role_id` is `none` when no role is equipped. |
+| `npm start -- role equip <role-id>` | Equip a role. Prints `{ action, role_id, previous, changed }`. |
+| `npm start -- role unequip` | Unequip the role. Prints `{ action, role_id: "none", previous, changed }`. |
+
+The standalone CLI uses `inoai role ...` with the same arguments, and `--dir /path/to/agent` instead of `--connect-dir`.
+
+The `/inoai role` commands are owner-only, reply privately, and work in any channel of the configured guild. `/inoai status` shows a `Role:` line: `Role: <name> (<id>)`, `Role: none`, or `Role: <id> (invalid: <reason>)`.
+
+The CLI role commands print one JSON value each, like `memory`. They can run while the agent runs (ADR 0025, ADR 0031). A write waits up to 5 seconds for SQLite. If it reports `SQLite database is busy. Retry the role command shortly.`, run it again. Discord replies with the same message. If the agent has not yet run this version, a role write fails with `Start the Agent Instance once to upgrade its database.` On a running agent, this check runs before the role file is validated.
+
+Every surface refuses an unknown or invalid role and names the reason. Equipping the role that is already equipped changes nothing. Unequipping with no role equipped changes nothing.
+
+### Roles in the UI
+
+Open the agent profile view: select the agent chip at the top of the page, or the agent core in the scene. Its Role block shows:
+
+- the equipped role with its name, summary, and **Unequip**, or a warning when the equipped file is missing or invalid;
+- a search box that filters roles by id, name, and summary, and an all, valid, or invalid filter;
+- one row per role. Valid roles have **Equip**. Invalid roles show their reason and cannot be equipped.
+
+The list shows at most 200 rows. When more roles match, it shows "Showing the newest 200 · refine the search"; refine the search to find others. The search covers all roles. The UI reads `roles/` but never creates or changes role files, and it shows no full role text. Equip and unequip pass the same security checks as Task writes and are recorded with actor `ui:owner`.
+
+### How a role applies
+
+- A role change applies from the next Turn. A Turn in progress keeps the instructions it started with. The agent session and the thread are kept; no restart or reset is needed.
+- A Task Run uses the role that is equipped when the run starts.
+- When a Session's role changed since its last Turn, the next prompt starts with `Role changed from <old-id|none> to <new-id|none>.`, before your message or the Task instruction. A new Session gets no note.
+- SQLite records a `role_applied` Event (`role=<id|none>`) for a Session when the runtime accepts a Turn with a role that differs from the last recorded one. A Session's first Turn records one, also `role=none` when no role is equipped.
+- Earlier role text may stay in the agent's context. Claude CLI replaces the role text each Turn, but Codex, OpenCode, and Anthropic API sessions keep earlier text in their history. The change note tells the model which role is current. For a clean context, run `/inoai reset`. A switch also invalidates the provider's prompt cache once.
+- If the equipped role file becomes missing or invalid, the Turn or Task Run fails before the runtime starts. inoai posts `Equipped role <id> is missing or invalid; fix roles/<id>.md or unequip it.` and records a `turn_failed` Event with `reason=role_invalid`. The role stays equipped. The failed message is not replayed; send it again after you fix the file or unequip the role. A recurring Task keeps its schedule and tries again at its next run.
+
+### Role live check
+
+Run this check by hand with a real Discord bot, once on a Codex home and once on a Claude home. Use your normal development runtime homes, not the test suite.
+
+1. If the home's `roles/` folder was created before the catalog existed, stop the agent, move `roles/` aside, and continue. Start the agent: `npm start -- --connect-dir <home>`. Check that `roles/` now holds about 202 files, including `planner.md` and `gem-reviewer.md`.
+2. In Discord, run `/inoai role equip id:planner`. Expect "Role equipped: Planning mode instructions (planner). Previous: none. It applies from the next Turn." Run `/inoai status` and expect `Role: Planning mode instructions (planner)`.
+3. Mention the bot with a short request, for example "@inoai add a dark mode toggle to a settings page". Expect a reply in the planner's style: an implementation plan, with no code edits. Note the thread.
+4. Without restarting the agent, switch from the CLI: `npm start -- role equip gem-reviewer --connect-dir <home>`. Expect JSON with `"role_id":"gem-reviewer"`, `"previous":"planner"`, and `"changed":true`.
+5. In the same thread, send another message, for example "Review the plan above for risks." Expect a reply in the reviewer's style: findings and risks, not a new plan.
+6. Check SQLite (read-only). A development home may already have older rows, so check the last rows, not the only rows. Run `SELECT session_id, detail, created_by FROM events WHERE event_type='role_applied' ORDER BY id DESC LIMIT 5;`. For the thread's Session, the newest row is `role=gem-reviewer`; the row before it is `role=planner`. Both have actor `conversation-worker`. Run `SELECT role_id, equipped_by, unequipped_by FROM role_equips ORDER BY id DESC LIMIT 2;`. The newest row is `gem-reviewer`, equipped by `cli:owner`, with no `unequipped_by`. The row before it is `planner`, equipped by `discord:owner` and unequipped by `cli:owner`.
+7. Start the UI: `npm start -- ui --connect-dir <home>`. Open the agent profile view. Expect the Role block to show `gem-reviewer` as equipped, the count of about 202 roles, and the note "Showing the newest 200 · refine the search" before you search. Search for `planner`. Expect `planner`, `task-planner`, and other planner roles. Select **Equip** on `planner`. Send a third message in the same thread and expect a planner-style reply again. Select **Unequip** and expect "No role equipped. The agent uses agent.md only." in the block; `/inoai status` shows `Role: none`.
+8. Optional failure check: equip a role, then rename its file in `roles/`. Send a message and expect the notice `Equipped role <id> is missing or invalid; fix roles/<id>.md or unequip it.` Rename the file back and send the message again.
+
+Record, for each provider: the agent version, the replies from steps 3 and 5 (and step 7), whether each reply followed its role, and any deviation.
 
 ## Tasks
 
@@ -475,11 +593,11 @@ Schedule kinds, all in the Task's time zone:
 
 Repeating kinds accept an optional stop date ("Until") and an optional run limit. When either is reached, the Task becomes completed. Failed runs count toward the run limit, and the Task moves to its next scheduled time; a failed one-time Task ends completed. On a daylight saving change, a skipped local time runs at the first valid time after the gap, and a repeated local time runs once.
 
-The UI server listens on `127.0.0.1` by default. Every request needs a `Host` header of `127.0.0.1:<port>` or `localhost:<port>`, with the port included; any other Host gets 403 on every path. To serve one private LAN interface, run `npm start -- ui --connect-dir .inoai-connect-robin --port 1133 --host 192.168.50.120` and open `http://192.168.50.120:1133` from a device on that LAN. Replace the address if this machine's LAN address changes. `--host` rejects wildcard, public, and hostname values. On a LAN bind, only `<selected-address>:<port>` is accepted as `Host`. The page `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. Task writes pass further checks (ADR 0026).
+The UI server listens on `127.0.0.1` by default. Every request needs a `Host` header of `127.0.0.1:<port>` or `localhost:<port>`, with the port included; any other Host gets 403 on every path. To serve one private LAN interface, run `npm start -- ui --connect-dir .inoai-connect-robin --port 1133 --host 192.168.50.120` and open `http://192.168.50.120:1133` from a device on that LAN. Replace the address if this machine's LAN address changes. `--host` rejects wildcard, public, and hostname values. On a LAN bind, only `<selected-address>:<port>` is accepted as `Host`. The page `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. Task and role writes pass further checks (ADR 0026, ADR 0031).
 
-LAN mode has no password or TLS. Any device that can reach the selected address and port can read UI data and use the page's Task write token to change Tasks. Use it only on a trusted LAN. The token and same-origin checks block cross-site writes, not another LAN visitor.
+LAN mode has no password or TLS. Any device that can reach the selected address and port can read UI data and use the page's write token to change Tasks and the equipped role. Use it only on a trusted LAN. The token and same-origin checks block cross-site writes, not another LAN visitor.
 
-The UI writes only Tasks. It never reads `.env`, and it hides credential-shaped text. If a field shows hidden values, re-enter that text before you save an edit; the form refuses to save the hidden placeholder. Changes made while the agent is stopped take effect when it next starts. The UI does not create or upgrade the database; start the agent once first.
+The UI writes only Tasks and the equipped role ([Roles in the UI](#roles-in-the-ui)). It never reads `.env`, and it hides credential-shaped text. If a field shows hidden values, re-enter that text before you save an edit; the form refuses to save the hidden placeholder. Changes made while the agent is stopped take effect when it next starts. The UI does not create or upgrade the database; start the agent once first.
 
 A UI-created Task has no Discord thread unless you set the optional `DISCORD_TASK_CHANNEL_ID` in the runtime home's `.env` to a channel ID (digits only). When it is set, the first run creates a thread named after the Task title in that channel and later run reports go there. The bot needs permission to post and create threads in it. Do not use the `DISCORD_STATUS_CHANNEL_ID` channel: inoai ignores messages in threads of the status channel, so Task thread guidance would be dropped.
 
@@ -507,7 +625,7 @@ Stop any existing core or supervisor for this runtime home before starting
 another. Unload an existing LaunchAgent before foreground testing. The local
 runtime-home lock rejects a second core writer. Do not share a runtime home
 between machines. UI and read-only tools may inspect SQLite. The UI writes only
-Tasks (ADR 0026), and the live maintenance commands may write while the core
+Tasks and the equipped role (ADR 0026, ADR 0031), and the live maintenance commands may write while the core
 runs (ADR 0025); stop the core before running other local write commands. A
 second supervisor can still start and retry rejected children, so use only one
 supervisor.

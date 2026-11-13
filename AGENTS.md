@@ -28,6 +28,7 @@ task. Follow the skill's task cycle and human acceptance gate.
 - For the Agent Tasks phase, read the approved feature and task READMEs in `trinary-workspace/` before changing code.
 - For SPA UI decisions, also read `docs/archived/spa-agent-ui-phase-plan.md`, `docs/adr/0021-health-timeline-history.md`, and `docs/adr/0026-ui-writes-tasks-directly.md`.
 - For chat-proposed Tasks, read `docs/adr/0027-chat-proposed-tasks.md`.
+- For Roles and the Equipped Role, read `docs/adr/0031-equippable-roles.md`.
 - Do not start live SPA data-bound tasks until the fixture-driven prototype has
   explicit human approval in its task handoff.
 
@@ -42,18 +43,19 @@ status, dependencies, or canonical handoff files.
 
 - The portable core and the local SPA UI are separate applications.
 - A deployment folder contains the core executable, sibling SPA UI bundle, and one or more ignored `.inoai-connect*` runtime homes.
-- Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, SQLite archive, Memory, approvals, and lock file.
+- Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, `roles/` folder, SQLite archive, Memory, approvals, and lock file.
+- An Agent Instance has at most one Equipped Role (ADR 0031). The role file `roles/<role-id>.md` is appended after `agent.md` and ranks below it and inoai safety rules. Only the owner equips a role, from Discord, the CLI, or the UI; the agent cannot change its own role. Bootstrap copies the vendored awesome-copilot role catalog (MIT) only when it creates `roles/`.
 - Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the Anthropic API (`anthropic-api`, IP-0007) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
-- The SPA UI reads the selected runtime home's SQLite file and Task `result.md` files. Its only writes are Task create, edit, run now, pause, resume, and cancel, through short-lived SQLite connections (ADR 0026). Everything else is read-only. It must never read `.env` or expose credentials.
-- The UI server listens on `127.0.0.1` by default. An explicit `--host` may bind it to one private LAN IPv4 address. Every request must use the bound address and port in `Host`; the loopback default also accepts `localhost:<port>`. Other hosts get 403 on every path. `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. LAN mode has no password, so any device that can reach it can read UI data and change Tasks.
+- The SPA UI reads the selected runtime home's SQLite file, Task `result.md` files, and role files in `roles/`. Its only writes are Task create, edit, run now, pause, resume, and cancel (ADR 0026), and role equip and unequip (ADR 0031), through short-lived SQLite connections. Everything else is read-only. It never creates `roles/` or role files. It must never read `.env` or expose credentials, and UI data carries no role text.
+- The UI server listens on `127.0.0.1` by default. An explicit `--host` may bind it to one private LAN IPv4 address. Every request must use the bound address and port in `Host`; the loopback default also accepts `localhost:<port>`. Other hosts get 403 on every path. `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. The write routes are the `/api/tasks` routes (ADR 0026), `POST /api/role/equip`, and `POST /api/role/unequip` (ADR 0031). Each write passes the Host, Origin, Content-Type, token, and 32 KB body checks in that order. LAN mode has no password, so any device that can reach it can read UI data, change Tasks, and switch the role.
 
 ### Live SQLite maintenance
 
-- While the Agent Instance is running, the local CLI supports `allowlist:add`, `allowlist:disable`, `memory add`, `memory delete`, and read-only `memory list` through short-lived maintenance connections. Use `--connect-dir` to select the runtime home.
+- While the Agent Instance is running, the local CLI supports `allowlist:add`, `allowlist:disable`, `memory add`, `memory delete`, read-only `memory list`, `role equip`, `role unequip`, and read-only `role list` and `role show` (ADR 0031) through short-lived maintenance connections. Use `--connect-dir` to select the runtime home.
 - The Runtime Home Lock remains held by the runtime. Do not stop or restart it, remove or alter its lock, or edit its SQLite files directly to run these commands.
 - SQLite allows one writer at a time. A maintenance write can wait up to the 5-second busy timeout; if it returns the retryable busy error, retry the command. The CLI does not queue the operation indefinitely.
-- Allowlist changes affect later authorization checks. Memory changes affect later prompt composition only; they do not change an already-composed or in-flight Turn. `memory list` is read-only.
-- This support does not extend to other database-writing commands or IPC. The SPA UI writes only Tasks (ADR 0026); all other UI data remains read-only. Stopped and fresh homes retain their normal startup behavior.
+- Allowlist changes affect later authorization checks. Memory and role changes affect later prompt composition only; they do not change an already-composed or in-flight Turn. `memory list`, `role list`, and `role show` are read-only. A role write on a database without `role_equips` fails with `Start the Agent Instance once to upgrade its database.`
+- This support does not extend to other database-writing commands or IPC. The SPA UI writes only Tasks (ADR 0026) and the Equipped Role (ADR 0031); all other UI data remains read-only. Stopped and fresh homes retain their normal startup behavior.
 
 ## Technical English
 
@@ -122,8 +124,8 @@ Add or update the smallest focused test for non-trivial behavior. Use isolated t
 
 ## Runtime personality
 
-This file is repository guidance, not an agent persona. The core copies a default template into each runtime home's `.inoai-connect*/agent.md` and supplies that file to the selected Agent Runtime. Edit the runtime `agent.md` for role-specific behavior such as planner or designer.
+This file is repository guidance, not an agent persona. The core copies a default template into each runtime home's `.inoai-connect*/agent.md` and supplies that file to the selected Agent Runtime. Edit the runtime `agent.md` for the instance's base identity and rules. For a switchable working mode such as planner or reviewer, equip a Role from the runtime home's `roles/` folder (ADR 0031).
 
 ## V1 boundaries
 
-V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), the Anthropic API runtime (IP-0007, ADR 0030), and the accepted implementation phases. Only `anthropic-api` uses an API key; the `codex` and `claude` providers stay on subscription sign-in. The SPA UI writes only Tasks (ADR 0026) and stays on loopback unless explicitly bound to a private LAN address. The Agent Tasks phase is active. IP-0003 delivered chat-proposed Tasks (ADR 0027) and was accepted on 2026-10-24. Defer Internet UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
+V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), the Anthropic API runtime (IP-0007, ADR 0030), and the accepted implementation phases. Only `anthropic-api` uses an API key; the `codex` and `claude` providers stay on subscription sign-in. The SPA UI writes only Tasks (ADR 0026) and the Equipped Role (ADR 0031), and stays on loopback unless explicitly bound to a private LAN address. The Agent Tasks phase is active. IP-0003 delivered chat-proposed Tasks (ADR 0027) and was accepted on 2026-10-24. IP-0008 delivered Equippable Roles (ADR 0031): one owner-chosen role per Agent Instance, on the SQLite store only. It was accepted on 2026-11-13. Defer Internet UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.

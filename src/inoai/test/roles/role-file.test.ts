@@ -1,0 +1,227 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+  InvalidRoleError,
+  isValidRoleId,
+  listRoles,
+  loadRole,
+  renderRoleBlock,
+  validateRole,
+} from "../../roles/role-file.js";
+import { roleCatalog } from "../../roles/role-catalog.generated.js";
+import { secretLike } from "../../conversation/prompt-context.js";
+
+const validRole = `# Role: Test Planner
+
+Plans work before it starts.
+
+## Instructions
+
+Write a numbered plan.
+
+## Workflow
+
+1. Read.
+2. Plan.
+`;
+
+async function temporaryRoles(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "inoai-roles-"));
+}
+
+function rejectsWith(text: string, reason: string | RegExp): void {
+  assert.throws(() => validateRole(text), (error: unknown) => {
+    assert.ok(error instanceof InvalidRoleError);
+    if (typeof reason === "string") assert.equal(error.reason, reason);
+    else assert.match(error.reason, reason);
+    return true;
+  });
+}
+
+test("a valid role parses into its parts", () => {
+  assert.deepEqual(validateRole(validRole), {
+    name: "Test Planner",
+    summary: "Plans work before it starts.",
+    instructions: "Write a numbered plan.",
+    workflow: "1. Read.\n2. Plan.",
+  });
+});
+
+test("every role in the vendored catalog is valid and has no secret-like text", () => {
+  const entries = Object.entries(roleCatalog);
+  assert.ok(entries.length > 100);
+  for (const [name, contents] of entries) {
+    assert.match(name, /^[a-z0-9][a-z0-9-]{0,63}\.md$/);
+    assert.notEqual(name, "none.md");
+    assert.doesNotThrow(() => validateRole(contents), name);
+    assert.equal(secretLike.test(contents), false, name);
+  }
+});
+
+test("the embedded catalog matches the committed catalog files", async () => {
+  // npm test runs from the repository root.
+  const directory = join(process.cwd(), "src", "inoai", "roles", "catalog");
+  const names = (await readdir(directory)).sort();
+  assert.deepEqual(Object.keys(roleCatalog).sort(), names);
+  for (const name of names) assert.equal(roleCatalog[name], await readFile(join(directory, name), "utf8"), name);
+});
+
+test("role validation fails closed for each format error", () => {
+  rejectsWith(`---\nname: x\n---\n${validRole}`, "frontmatter is not allowed");
+  rejectsWith(`---\n${validRole}`, "frontmatter is not allowed");
+  rejectsWith(validRole.replace("# Role: Test Planner", "# Test Planner"), "first line must be '# Role: <Name>'");
+  rejectsWith(validRole.replace("# Role: Test Planner", "# Role:"), "first line must be '# Role: <Name>'");
+  rejectsWith(`\n${validRole}`, "first line must be '# Role: <Name>'");
+  rejectsWith(validRole.replace("Plans work before it starts.", ""), "empty summary paragraph");
+  rejectsWith(validRole.replace("## Instructions\n\nWrite a numbered plan.\n\n", ""), "missing or empty '## Instructions' section");
+  rejectsWith(validRole.replace("Write a numbered plan.", ""), "missing or empty '## Instructions' section");
+  rejectsWith(validRole.replace(/## Workflow[\s\S]*$/, ""), "missing or empty '## Workflow' section");
+  rejectsWith(validRole.replace("1. Read.\n2. Plan.\n", ""), "missing or empty '## Workflow' section");
+});
+
+test("section parsing ignores heading-like lines inside fenced code blocks", () => {
+  const withInstructions = (body: string) => validRole.replace("Write a numbered plan.", body);
+  const cases: Array<[string, string]> = [
+    ["fenced ## line", "Use this:\n\n```md\n## Summary\n```"],
+    ["fenced ## Workflow line", "Template:\n\n```\n## Workflow\nnot the real one\n```"],
+    ["tilde fence", "~~~\n## Summary\n~~~"],
+    ["indented fence", "Code:\n\n   ```md\n## Summary\n   ```"],
+    ["longer closing marker", "````md\n## Summary\n```\n## Still fenced\n`````"],
+    ["tilde fence with backticks inside", "~~~\n```\n## Summary\n~~~"],
+  ];
+  for (const [label, body] of cases) {
+    const role = validateRole(withInstructions(body));
+    assert.equal(role.instructions, body, label);
+    assert.equal(role.workflow, "1. Read.\n2. Plan.", label);
+  }
+  const fencedSummary = validRole.replace("Plans work before it starts.", "Plans work.\n\n```\n## Instructions\n```");
+  assert.equal(validateRole(fencedSummary).summary, "Plans work.\n\n```\n## Instructions\n```");
+  rejectsWith(validRole.replace("## Workflow\n\n1. Read.", "```\n## Workflow\n```\n\n1. Read."), "missing or empty '## Workflow' section");
+  // A four-space-indented marker is not a fence, so the ## line still ends Instructions.
+  assert.equal(validateRole(withInstructions("Code:\n\n    ```\n## Summary\n    ```")).instructions, "Code:\n\n    ```");
+});
+
+test("an unclosed fence makes the role invalid", () => {
+  rejectsWith(validRole.replace("Write a numbered plan.", "```md\n## Summary"), "unclosed code fence");
+  rejectsWith(validRole.replace("Write a numbered plan.", "````\n```"), "unclosed code fence");
+  rejectsWith(validRole.replace("Write a numbered plan.", "~~~\n```"), "unclosed code fence");
+  rejectsWith(`${validRole}\n\`\`\`\n`, "unclosed code fence");
+});
+
+test("a horizontal rule near the top is not frontmatter (BL-0051)", () => {
+  const ruled = validRole.replace("Plans work before it starts.", "Plans work before it starts.\n\n---").replace("Write a numbered plan.", "---\n\nWrite a numbered plan.");
+  assert.equal(validateRole(ruled).summary, "Plans work before it starts.\n\n---");
+  assert.equal(validateRole(ruled).instructions, "---\n\nWrite a numbered plan.");
+});
+
+test("role validation rejects oversize and secret-like text without quoting it", () => {
+  assert.doesNotThrow(() => validateRole(validRole + "x".repeat(49_152 - Buffer.byteLength(validRole))));
+  rejectsWith(validRole + "x".repeat(49_153 - Buffer.byteLength(validRole)), "larger than 49152 bytes");
+  const secret = "sk-abcdefghijklmnopqrstuvwxyz";
+  assert.throws(() => validateRole(validRole.replace("Write a numbered plan.", `Use ${secret}.`)), (error: unknown) => {
+    assert.ok(error instanceof InvalidRoleError);
+    assert.equal(error.reason, "secret-like text");
+    assert.ok(!error.message.includes(secret));
+    return true;
+  });
+});
+
+test("loadRole reads a valid file and rejects bad ids, missing files, and non-regular files", async () => {
+  const roles = await temporaryRoles();
+  const outside = await temporaryRoles();
+  try {
+    await writeFile(join(roles, "planner.md"), validRole);
+    assert.deepEqual(await loadRole(roles, "planner"), { id: "planner", ...validateRole(validRole) });
+
+    for (const id of ["../planner", "Planner", "-planner", "", "a".repeat(65), "planner.md"]) {
+      await assert.rejects(loadRole(roles, id), { name: "InvalidRoleError", reason: "invalid role id" });
+    }
+    await assert.rejects(loadRole(roles, "missing"), { name: "InvalidRoleError", reason: "role file not found" });
+
+    await writeFile(join(outside, "target.md"), validRole);
+    await symlink(join(outside, "target.md"), join(roles, "linked.md"));
+    await assert.rejects(loadRole(roles, "linked"), { name: "InvalidRoleError", reason: "not a regular file" });
+    await mkdir(join(roles, "folder.md"));
+    await assert.rejects(loadRole(roles, "folder"), { name: "InvalidRoleError", reason: "not a regular file" });
+
+    await writeFile(join(roles, "big.md"), validRole + "x".repeat(49_152));
+    await assert.rejects(loadRole(roles, "big"), { name: "InvalidRoleError", reason: "larger than 49152 bytes" });
+  } finally {
+    await rm(roles, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("listRoles returns an empty list for a missing folder and creates nothing", async () => {
+  const parent = await temporaryRoles();
+  try {
+    const roles = join(parent, "roles");
+    assert.deepEqual(await listRoles(roles), []);
+    await assert.rejects(loadRole(roles, "planner"), { reason: "role file not found" });
+    await assert.rejects(stat(roles), { code: "ENOENT" });
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("listRoles lists valid and invalid role files and ignores other files", async () => {
+  const roles = await temporaryRoles();
+  const outside = await temporaryRoles();
+  try {
+    await writeFile(join(roles, "planner.md"), validRole);
+    await writeFile(join(roles, "broken.md"), "# Not a role\n");
+    await writeFile(join(roles, "Bad Name.md"), validRole);
+    await writeFile(join(roles, "notes.txt"), validRole);
+    await writeFile(join(roles, "secret.md"), validRole.replace("Write a numbered plan.", "password: hunter2"));
+    await writeFile(join(outside, "target.md"), validRole);
+    await symlink(join(outside, "target.md"), join(roles, "linked.md"));
+
+    assert.deepEqual(await listRoles(roles), [
+      { id: "Bad Name", name: null, summary: null, valid: false, reason: "invalid role id" },
+      { id: "broken", name: null, summary: null, valid: false, reason: "first line must be '# Role: <Name>'" },
+      { id: "linked", name: null, summary: null, valid: false, reason: "not a regular file" },
+      { id: "planner", name: "Test Planner", summary: "Plans work before it starts.", valid: true, reason: null },
+      { id: "secret", name: null, summary: null, valid: false, reason: "secret-like text" },
+    ]);
+  } finally {
+    await rm(roles, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("renderRoleBlock renders demoted headings and the authority line", () => {
+  assert.equal(renderRoleBlock(validateRole(validRole)), `## Equipped Role: Test Planner
+
+Plans work before it starts.
+
+### Instructions
+
+Write a numbered plan.
+
+### Workflow
+
+1. Read.
+2. Plan.
+
+This Equipped Role ranks below the Agent Profile and inoai safety rules. Follow them when they conflict.
+`);
+});
+
+test("the role id none is reserved: rejected by isValidRoleId and loadRole, and listed as invalid", async () => {
+  const directory = await temporaryRoles();
+  try {
+    assert.equal(isValidRoleId("none"), false);
+    assert.equal(isValidRoleId("none-2"), true);
+    await writeFile(join(directory, "none.md"), validRole);
+    await assert.rejects(loadRole(directory, "none"), (error: unknown) => {
+      assert.ok(error instanceof InvalidRoleError);
+      assert.equal(error.reason, "reserved role id");
+      return true;
+    });
+    assert.deepEqual(await listRoles(directory), [{ id: "none", name: null, summary: null, valid: false, reason: "reserved role id" }]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

@@ -214,7 +214,7 @@ export function renderAppShell(token: string): string {
 
 <script type="module">
 // ---------- data ----------
-const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], insights: null };
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], roles: { equipped: null, list: [] }, insights: null };
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -792,6 +792,104 @@ function insightCharts(w) {
       ? hbars(w.skills.map((s) => ({ label: s.skill, value: s.count })), 'var(--pink)', 'Skill calls') : noData(), true),
   ];
 }
+// ---------- roles ----------
+// The Role block in the agent profile reads view.data.roles and writes through the
+// token-checked role routes (ADR 0031). All values reach the page as text nodes.
+const roleSearch = { query: '', option: 'all' };
+let roleNote = null, roleBusy = false;
+// The equipped role is none, missing from the list, invalid, or valid.
+function equippedRole(roles) {
+  if (roles.equipped === null) return { kind: 'none' };
+  const role = roles.list.find((r) => r.id === roles.equipped);
+  return role ? { kind: role.valid ? 'valid' : 'invalid', id: role.id, role } : { kind: 'missing', id: roles.equipped };
+}
+const roleName = (role) => role.name ? role.name + ' (' + role.id + ')' : role.id;
+// The search matches id, name, and summary.
+const roleSearchText = (role) => [role.id, role.name ?? '', role.summary ?? ''].join(' ');
+// Applies a route reply: { role } after equip, { role: null } after unequip.
+// An equip can return 200 with valid: false after a race. The role is then equipped and shown as invalid.
+function applyRoleReply(reply) {
+  const roles = view.data.roles, role = reply.role;
+  if (!role) { roles.equipped = null; roleNote = { error: false, text: 'Role unequipped.' }; return; }
+  roles.list = [...roles.list.filter((r) => r.id !== role.id), role].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  roles.equipped = role.id;
+  roleNote = role.valid ? { error: false, text: 'Equipped ' + roleName(role) + '.' }
+    : { error: true, text: 'Equipped ' + role.id + ', but it is invalid: ' + role.reason + '. Fix roles/' + role.id + '.md or unequip it.' };
+}
+// POSTs to a role route with the page token, like taskWrite.
+async function roleWrite(path, body = {}) {
+  const token = uiToken();
+  if (!/^[0-9a-f]+$/.test(token)) return { ok: false, status: 0, error: 'This page has no write token. Reload the page.' };
+  let response;
+  try {
+    response = await fetch(path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', [TOKEN_HEADER]: token }, body: JSON.stringify(body) });
+  } catch { return { ok: false, status: 0, error: 'The UI server is not reachable. Try again.', retryable: true }; }
+  let data = null;
+  try { data = await response.json(); } catch { /* not JSON */ }
+  if (response.ok && data && 'role' in data) return { ok: true, status: response.status, role: data.role };
+  return { ok: false, status: response.status, error: data?.error ?? 'Request failed (' + response.status + ').', retryable: data?.retryable === true };
+}
+// Re-renders the profile drawer and keeps its scroll position.
+function redrawRole() {
+  if (openSection !== 'profile') return;
+  const body = document.getElementById('d-body'), scroll = body.scrollTop;
+  openDrawer('profile', true);
+  body.scrollTop = scroll;
+}
+// Equip or unequip, then refresh the data. A 404 or 409 also refreshes, because the list may be stale.
+// A retryable error (busy database, server not reachable) offers Try again.
+async function changeRole(action, id) {
+  if (roleBusy) return;
+  roleBusy = true; roleNote = null;
+  redrawRole();
+  const result = action === 'equip' ? await roleWrite('/api/role/equip', { roleId: id }) : await roleWrite('/api/role/unequip');
+  if (result.ok) applyRoleReply({ role: result.role });
+  else roleNote = { error: true, text: result.error, retry: result.retryable ? { action, id } : null };
+  if (result.ok || result.status === 404 || result.status === 409) await reloadView();
+  roleBusy = false;
+  redrawRole();
+}
+const busyProps = () => roleBusy ? { disabled: '' } : {};
+const unequipButton = () => h('button', { class: 'btn danger', type: 'button', 'data-action': 'unequip', ...busyProps(), onclick: () => changeRole('unequip') }, 'Unequip');
+function equippedCard(e) {
+  if (e.kind === 'none') return h('div', { 'data-equipped': 'none', style: 'margin:0 0 10px;color:var(--muted);font-size:12px' }, 'No role equipped. The agent uses agent.md only.');
+  if (e.kind === 'valid') return h('div', { 'data-equipped': 'valid', style: 'margin:0 0 10px' },
+    h('p', { style: 'margin:0 0 4px' }, h('b', {}, e.role.name), h('span', { style: 'color:var(--muted);font-size:12px' }, ' · ' + e.id)),
+    h('p', { style: 'margin:0 0 10px;color:var(--muted);font-size:12px;overflow-wrap:anywhere' }, e.role.summary),
+    h('div', { class: 'actions', style: 'margin:0' }, unequipButton()));
+  const problem = e.kind === 'missing' ? 'is missing from roles/.' : 'is invalid: ' + e.role.reason + '.';
+  return h('div', { class: 'confirm', 'data-equipped': e.kind },
+    h('b', {}, e.id), ' is equipped but ' + problem + ' Turns and Task Runs fail until you fix roles/' + e.id + '.md or unequip it.',
+    h('div', { class: 'actions' }, unequipButton()));
+}
+function roleItem(role, equippedId) {
+  const equipped = equippedId === role.id;
+  return h('div', { class: 'item', 'data-role': role.id, style: 'display:flex;align-items:center;gap:10px' },
+    h('div', { style: 'flex:1;min-width:0' },
+      h('div', { class: 'meta' }, h('span', { style: 'color:var(--text)' }, role.id),
+        role.valid ? pill(equipped ? 'active' : 'valid', equipped ? 'equipped' : 'valid') : pill('failed', equipped ? 'equipped · invalid' : 'invalid')),
+      role.valid ? h('p', { style: 'font-size:12px' }, h('b', {}, role.name), h('span', { style: 'color:var(--muted)' }, ' · ' + role.summary))
+        : h('p', { style: 'color:var(--coral);font-size:12px' }, 'Invalid: ' + role.reason)),
+    role.valid && !equipped ? h('button', { class: 'btn primary', type: 'button', 'data-action': 'equip', ...busyProps(), onclick: () => changeRole('equip', role.id) }, 'Equip') : null);
+}
+function roleNoteView() {
+  if (!roleNote) return roleBusy ? h('div', { class: 'note', style: 'margin:0 0 10px' }, 'Saving…') : null;
+  const retry = roleNote.retry;
+  return h('div', { class: roleNote.error ? 'form-error' : 'done', 'data-role-note': roleNote.error ? 'error' : 'done' }, roleNote.text,
+    retry ? h('button', { class: 'btn', type: 'button', 'data-action': 'retry', style: 'margin-left:8px', ...busyProps(), onclick: () => changeRole(retry.action, retry.id) }, 'Try again') : null);
+}
+// The Role block in the agent profile.
+function roleBlock(v) {
+  const roles = v.data.roles, e = equippedRole(roles);
+  return h('div', { class: 'setting', 'data-role-block': e.kind, style: 'margin:0 0 16px' },
+    h('div', { class: 'setting-head' }, h('span', {}, 'Role'), h('small', {}, roles.list.length + (roles.list.length === 1 ? ' role' : ' roles'))),
+    equippedCard(e),
+    roleNoteView(),
+    roles.list.length ? searchable({ state: roleSearch, items: roles.list, noun: 'roles', options: ['all', 'valid', 'invalid'],
+      key: (role) => role.valid ? 'valid' : 'invalid', text: roleSearchText, render: (role) => roleItem(role, roles.equipped), placeholder: 'Search roles by id, name or summary' })
+      : empty('No role files in roles/'));
+}
+// ---------- end roles ----------
 const SECTIONS = {
   profile: (v) => ({ kicker: 'agent', title: v.data.profile.agentInstanceId, body: [
     h('dl', { class: 'kv' },
@@ -799,7 +897,8 @@ const SECTIONS = {
       h('dt', {}, 'Provider'), h('dd', {}, v.data.profile.provider),
       h('dt', {}, 'Transport'), h('dd', {}, v.data.profile.transport),
       h('dt', {}, 'Workspaces'), h('dd', {}, v.data.profile.workspaceIds.join(', ') || '—'),
-      h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · read-only')),
+      h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · Tasks and role writes')),
+    roleBlock(v),
     markdown(v.data.agentMarkdown)] }),
   health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [
     h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
@@ -1394,3 +1493,4 @@ function startScene() {
 </html>
 `;
 }
+

@@ -52,6 +52,10 @@ try {
       notices += `\n\npartial-json-parser (vendored in ${metadata.name} ${metadata.version}) — covered by the ${metadata.name} LICENSE and LICENSE-MIT above\n\n${await readFile(vendored, "utf8")}\n`;
     }
   }
+  // The embedded role catalog is converted from awesome-copilot (MIT); see src/inoai/roles/catalog-vendoring.md.
+  const catalogCommit = (await readFile(join(root, "src", "inoai", "roles", "catalog-vendoring.md"), "utf8")).match(/^- Commit: `([0-9a-f]+)`$/m)?.[1];
+  if (!catalogCommit) throw new Error("Role catalog vendoring report has no upstream commit");
+  notices += `\n\nawesome-copilot role catalog (github/awesome-copilot ${catalogCommit}, converted agents) — LICENSE\n\n${await readFile(join(root, "licenses", "awesome-copilot-LICENSE.md"), "utf8")}\n`;
   const noticesFile = join(temporary, "THIRD_PARTY_NOTICES.txt");
   await writeFile(noticesFile, notices);
   const main = join(temporary, "main.cjs");

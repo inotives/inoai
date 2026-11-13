@@ -174,6 +174,22 @@ operating rules, safety boundaries, and references to the instance's available
 capabilities.
 _Avoid_: Agent Account, runtime configuration, skill
 
+**Role**:
+A Markdown working-mode overlay for an Agent Instance, stored as
+`roles/<role-id>.md` in its runtime home. It has a name, a summary, an
+Instructions section, and a Workflow section. A Role ranks below the Agent
+Profile and inoai safety rules, and it never changes provider permissions. New
+runtime homes get a role catalog converted from `github/awesome-copilot`
+([ADR 0031](docs/adr/0031-equippable-roles.md)).
+_Avoid_: persona, agent mode, Skill Package, user role (the `users.role` owner or family value)
+
+**Equipped Role**:
+The one Role an Agent Instance applies to every chat Turn and Task Run, or no
+role. Only the owner equips or unequips it, from Discord, the CLI, or the UI.
+SQLite records it in `role_equips`. A change applies from the next Turn and
+keeps the agent session.
+_Avoid_: active persona, session role
+
 **Agent Deployment**:
 The provisioning operation that creates or validates one Agent Instance's
 runtime home, selects its Chat Transport and Agent Runtime, and prepares its

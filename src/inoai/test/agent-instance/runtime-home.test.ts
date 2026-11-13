@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,9 @@ import {
   UnsafeRuntimeHomeError,
 } from "../../agent-instance/runtime-home.js";
 import { defaultAgentProfile } from "../../agent-instance/profile.js";
+import { listRoles } from "../../roles/role-file.js";
+import { roleCatalog } from "../../roles/role-catalog.generated.js";
+import { fixtureRole, useFixtureRoles } from "../roles/role-fixtures.js";
 import { start } from "../../../index.js";
 import { openDatabase, withMaintenanceDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
@@ -213,6 +216,35 @@ test("bootstraps and preserves an isolated default runtime home", async () => {
     await writeFile(home.envFile, "OWNER_DISCORD_USER_ID=owner\n");
     await bootstrapRuntimeHome(deployment);
     assert.equal(await readFile(home.envFile, "utf8"), "OWNER_DISCORD_USER_ID=owner\n");
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap copies the role catalog only when roles/ is missing", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    const catalogNames = Object.keys(roleCatalog).sort();
+    assert.ok(catalogNames.length > 100);
+    assert.equal(home.rolesDirectory, join(home.directory, "roles"));
+    assert.equal((await stat(home.rolesDirectory)).mode & 0o777, 0o700);
+    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), catalogNames);
+    for (const [name, contents] of Object.entries(roleCatalog)) {
+      assert.equal(await readFile(join(home.rolesDirectory, name), "utf8"), contents);
+    }
+    const listed = await listRoles(home.rolesDirectory);
+    assert.equal(listed.length, catalogNames.length);
+    assert.deepEqual(listed.filter((role) => !role.valid), []);
+
+    const edited = `${roleCatalog["planner.md"]}\nEdited by the owner.\n`;
+    await writeFile(join(home.rolesDirectory, "planner.md"), edited);
+    await bootstrapRuntimeHome(deployment);
+    assert.equal(await readFile(join(home.rolesDirectory, "planner.md"), "utf8"), edited);
+
+    await rm(join(home.rolesDirectory, "planner.md"));
+    await bootstrapRuntimeHome(deployment);
+    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), catalogNames.filter((name) => name !== "planner.md"));
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }
@@ -768,6 +800,172 @@ test("Memory add reports a retryable busy error without a partial insert", async
     if (database?.isTransaction) database.exec("ROLLBACK");
     database?.close();
     await instance?.release();
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+type RoleEquipRow = { id: number; role_id: string; equipped_by: string; unequipped_at: number | null; unequipped_by: string | null; created_by: string; updated_by: string };
+
+test("role CLI list, show, equip, and unequip work under a live runtime lock", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  let verification: DatabaseSync | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(deployment, connectDirectory);
+    await instance.release();
+    await useFixtureRoles(home.rolesDirectory);
+    await writeFile(join(home.rolesDirectory, "broken.md"), "# Role: Broken\n\nNo sections.\n");
+    await writeFile(join(home.rolesDirectory, "none.md"), fixtureRole("Planner"));
+    // A stopped home uses the normal startup path.
+    const stopped = await runCli(deployment, ["role", "show", "--connect-dir", connectDirectory]);
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.equal(JSON.parse(stopped.stdout).role_id, "none");
+
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    verification = new DatabaseSync(home.databaseFile);
+    const rows = () => verification!.prepare("SELECT * FROM role_equips ORDER BY id").all() as RoleEquipRow[];
+    const role = (args: string[]) => runCli(deployment, ["role", ...args, "--connect-dir", connectDirectory]);
+
+    const shownNone = await role(["show"]);
+    assert.equal(shownNone.code, 0, shownNone.stderr);
+    assert.deepEqual(JSON.parse(shownNone.stdout), { role_id: "none", name: null, valid: null, reason: null });
+
+    const listed = await role(["list"]);
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.deepEqual((JSON.parse(listed.stdout) as Array<{ id: string; valid: boolean; reason: string | null; equipped: boolean }>)
+      .map(({ id, valid, reason, equipped }) => [id, valid, reason, equipped]), [
+      ["broken", false, "missing or empty '## Instructions' section", false],
+      ["designer", true, null, false],
+      ["none", false, "reserved role id", false],
+      ["planner", true, null, false],
+      ["reviewer", true, null, false],
+    ]);
+
+    for (const [id, reason] of [["ghost", "role file not found"], ["broken", "missing or empty '## Instructions' section"], ["none", "reserved role id"], ["Bad_ID", "invalid role id"]]) {
+      const refused = await role(["equip", id!]);
+      assert.equal(refused.code, 1);
+      assert.match(refused.stderr, new RegExp(`Cannot equip role: ${reason!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    }
+    assert.deepEqual(rows(), []);
+
+    const unequipNone = await role(["unequip"]);
+    assert.equal(unequipNone.code, 0, unequipNone.stderr);
+    assert.deepEqual(JSON.parse(unequipNone.stdout), { action: "unequip", role_id: "none", previous: "none", changed: false });
+    assert.deepEqual(rows(), []);
+
+    const equipped = await role(["equip", "planner"]);
+    assert.equal(equipped.code, 0, equipped.stderr);
+    assert.deepEqual(JSON.parse(equipped.stdout), { action: "equip", role_id: "planner", previous: "none", changed: true });
+    const again = await role(["equip", "planner"]);
+    assert.equal(again.code, 0, again.stderr);
+    assert.deepEqual(JSON.parse(again.stdout), { action: "equip", role_id: "planner", previous: "planner", changed: false });
+    assert.equal(rows().length, 1);
+
+    const shown = await role(["show"]);
+    assert.deepEqual(JSON.parse(shown.stdout), { role_id: "planner", name: "Planner", valid: true, reason: null });
+    const listedEquipped = await role(["list"]);
+    assert.deepEqual((JSON.parse(listedEquipped.stdout) as Array<{ id: string; equipped: boolean }>).filter(({ equipped }) => equipped).map(({ id }) => id), ["planner"]);
+
+    const switched = await role(["equip", "reviewer"]);
+    assert.deepEqual(JSON.parse(switched.stdout), { action: "equip", role_id: "reviewer", previous: "planner", changed: true });
+    const unequipped = await role(["unequip"]);
+    assert.deepEqual(JSON.parse(unequipped.stdout), { action: "unequip", role_id: "none", previous: "reviewer", changed: true });
+
+    const history = rows();
+    assert.deepEqual(history.map(({ role_id, equipped_by, unequipped_by, created_by, updated_by }) => [role_id, equipped_by, unequipped_by, created_by, updated_by]), [
+      ["planner", "cli:owner", "cli:owner", "cli:owner", "cli:owner"],
+      ["reviewer", "cli:owner", "cli:owner", "cli:owner", "cli:owner"],
+    ]);
+    assert.ok(history.every(({ unequipped_at }) => unequipped_at !== null));
+
+    for (const bad of [[], ["equip"], ["equip", "planner", "extra"], ["show", "planner"], ["unequip", "planner"], ["delete"], ["equip", "--connect-dir"]]) {
+      const usage = await runCli(deployment, ["role", ...bad]);
+      assert.equal(usage.code, 1);
+      assert.match(usage.stderr, /Usage: inoai role <list\|show\|equip <id>\|unequip> \[--connect-dir \.inoai-connect\*\]/);
+    }
+
+    // A live CLI never creates roles/ or role files.
+    await rm(home.rolesDirectory, { recursive: true });
+    const emptyList = await role(["list"]);
+    assert.equal(emptyList.code, 0, emptyList.stderr);
+    assert.deepEqual(JSON.parse(emptyList.stdout), []);
+    const missingFolder = await role(["equip", "planner"]);
+    assert.equal(missingFolder.code, 1);
+    assert.match(missingFolder.stderr, /Cannot equip role: role file not found/);
+    await assert.rejects(stat(home.rolesDirectory), { code: "ENOENT" });
+    assert.equal(rows().length, 2);
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    verification?.close();
+    await lockHolder?.stop();
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("role CLI reports no role for reads and the upgrade message for writes when role_equips is missing", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(deployment, connectDirectory);
+    await instance.release();
+    const database = new DatabaseSync(home.databaseFile);
+    database.exec("DROP TABLE role_equips");
+    database.close();
+
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    const role = (args: string[]) => runCli(deployment, ["role", ...args, "--connect-dir", connectDirectory]);
+    const shown = await role(["show"]);
+    assert.equal(shown.code, 0, shown.stderr);
+    assert.equal(JSON.parse(shown.stdout).role_id, "none");
+    const listed = await role(["list"]);
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.ok((JSON.parse(listed.stdout) as Array<{ equipped: boolean }>).every(({ equipped }) => !equipped));
+    for (const args of [["equip", "planner"], ["unequip"]]) {
+      const write = await role(args);
+      assert.equal(write.code, 1);
+      assert.match(write.stderr, /Start the Agent Instance once to upgrade its database\./);
+    }
+    const verification = new DatabaseSync(home.databaseFile);
+    assert.equal(verification.prepare("SELECT 1 FROM sqlite_master WHERE name='role_equips'").get(), undefined);
+    verification.close();
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    await lockHolder?.stop();
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("role equip reports a retryable busy error without a partial write", async () => {
+  const deployment = await temporaryDeployment();
+  const connectDirectory = ".robin-xai-test";
+  let lockHolder: Awaited<ReturnType<typeof startRuntimeLockHolder>> | undefined;
+  let database: DatabaseSync | undefined;
+  try {
+    const home = await bootstrapRuntimeHome(deployment, connectDirectory);
+    await writeFile(home.envFile, validEnv);
+    const instance = await start(deployment, connectDirectory);
+    await instance.release();
+    lockHolder = await startRuntimeLockHolder(deployment, connectDirectory);
+    database = new DatabaseSync(home.databaseFile);
+    database.exec("BEGIN IMMEDIATE");
+
+    const result = await runCli(deployment, ["role", "equip", "planner", "--connect-dir", connectDirectory]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /SQLite database is busy\. Retry the role command shortly\./);
+
+    database.exec("ROLLBACK");
+    assert.equal(database.prepare("SELECT 1 FROM role_equips").get(), undefined);
+    assert.equal(await readFile(home.lockFile, "utf8"), `${lockHolder.lockContents}\n`);
+  } finally {
+    if (database?.isTransaction) database.exec("ROLLBACK");
+    database?.close();
+    await lockHolder?.stop();
     await rm(deployment, { recursive: true, force: true });
   }
 });

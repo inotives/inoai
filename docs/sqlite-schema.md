@@ -365,6 +365,27 @@ CREATE TABLE task_proposals (
 CREATE UNIQUE INDEX one_pending_task_proposal_per_conversation
   ON task_proposals(transport, workspace_id, conversation_id)
   WHERE state = 'pending' AND deleted_at IS NULL;
+
+CREATE TABLE role_equips (
+  id INTEGER PRIMARY KEY,
+  role_id TEXT NOT NULL CHECK (length(role_id) > 0),
+  equipped_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  equipped_by TEXT NOT NULL,
+  unequipped_at INTEGER,
+  unequipped_by TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  created_by TEXT NOT NULL DEFAULT 'system',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  CHECK ((unequipped_at IS NULL AND unequipped_by IS NULL) OR (unequipped_at IS NOT NULL AND unequipped_by IS NOT NULL)),
+  CHECK ((deleted_at IS NULL AND deleted_by IS NULL) OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX one_equipped_role
+  ON role_equips((unequipped_at IS NULL))
+  WHERE unequipped_at IS NULL;
 ```
 
 ## Audit fields
@@ -390,6 +411,7 @@ The append-only tables `memory_uses`, `agent_history_sessions`, and `agent_histo
 - `tasks` binds one bounded goal to its Conversation and Agent Session. `goal` holds the instruction. A legacy Task (`schedule_kind` NULL, created by `/inoai task create`) keeps its earlier behaviour: a one-time Task has no interval or automatic due time, and a recurring interval uses whole hours stored as seconds, with the first due time one interval after creation. A scheduled Task (`schedule_kind` set) follows the rules in [Task schedules](#task-schedules). The cursor is the newest archived message consumed by the Task.
 - `task_runs` records one Agent Runtime iteration and output paths relative to the runtime home, under `results/<task-id>/<run-id>/`. The files remain outside SQLite but inside the runtime home. A completed run's `artifact_paths_json` includes `result.md`. The partial unique index permits only one active run in an Agent Instance database. Failure details are capped at 500 characters and credential-shaped values are redacted. Startup marks interrupted runs failed without retrying them. `start()` runs this recovery (`recoverTaskRuns`) after it takes the Runtime Home Lock and bootstraps the owner; `openDatabase` no longer does. Recovery returns the runs it failed, and `start()` writes their `result.md` (see [Result file](#result-file)). It sets a legacy recurring Task's next due time one interval after recovery, and a scheduled Task's next run from the schedule.
 - `task_proposals` holds a Task create, edit, or management action that the agent proposed in chat, until the owner confirms or cancels it on its Discord card (ADR 0027). It never changes `tasks` by itself. See [Chat-proposed Tasks](#chat-proposed-tasks).
+- `role_equips` holds one row per role equip. The open row (`unequipped_at` NULL) is the Agent Instance's equipped role. See [Role equips](#role-equips).
 - `approvals` remains in the schema for compatibility, but V1 creates no new pending approvals or Discord approval controls (ADR 0003). Codex approval requests are declined immediately; only a non-secret outcome Event is stored. On restart, any pending row left by an earlier local build becomes `failed`; legacy summaries and linked agent-authored request bodies are redacted, without changing user-authored Messages. Its saved data is never authority to answer or replay a lost runtime request (ADR 0001).
 
 ## Task schedules
@@ -573,6 +595,31 @@ A `memory_uses` row records one Memory added to one prompt:
 - The CHECK requires `message_id` or `task_run_id`.
 - One batch is one transaction. The write is best effort: a failed write is dropped and never fails the Turn or the run.
 - Triggers reject every `UPDATE` and `DELETE`. Soft-deleting a Memory leaves its use rows unchanged.
+
+## Role equips
+
+`role_equips` and the `role_applied` Event exist only in SQLite (IP-0008). The PostgreSQL store has no role methods.
+
+Startup creates the table and its index in a fresh or older database (`migrateRoleEquips`, `CREATE ... IF NOT EXISTS`). They are not part of the initial schema list that live maintenance checks, so a live maintenance connection still accepts a database that has not run this migration. Role reads and writes on such a database are handled by their callers.
+
+- `role_id` is the role file name without `.md`. The store does not validate role ids or role files; callers do.
+- `equipped_at` and `equipped_by` record the equip. `unequipped_at` and `unequipped_by` are both NULL while the row is open and both set when it closes.
+- The partial unique index `one_equipped_role` allows at most one row with `unequipped_at IS NULL`. No open row means no role is equipped (the base Agent Profile only).
+- Rows are never physically deleted. Unequip and replacement only close the open row.
+
+Store methods (optional on the store port, like Memory proposals):
+
+| Method | Result | Writes |
+| --- | --- | --- |
+| `getEquippedRole()` | The open row, or `null` when no role is equipped. | None. |
+| `equipRole(roleId, actor)` | `{ changed, previous, current }`. `previous` is the open row before the call, or `null`. | None when `roleId` is already equipped (`changed: false`). Otherwise one `BEGIN IMMEDIATE` transaction closes the open row, if any, and inserts the new row. |
+| `unequipRole(actor)` | `{ changed, previous }`. | None when no role is equipped (`changed: false`). Otherwise closes the open row. |
+| `lastAppliedRole(sessionId)` | `undefined` when the Session has no `role_applied` Event; `{ roleId: null }` when it last applied no role; otherwise `{ roleId }`. | None. |
+| `recordRoleApplied(sessionId, roleId, actor)` | The new Event. | One `role_applied` Event. |
+
+An equip or unequip sets `equipped_by` or `unequipped_by`, plus the matching `created_by` or `updated_by`, to the caller's actor: `cli:owner`, `discord:owner`, or `ui:owner`.
+
+A `role_applied` Event records the role a Session last applied. Its `session_id` is the Session, `message_id` is NULL, and `detail` is `role=<role id>` or `role=none` for no role. The latest such Event for the Session is the Session's applied role. The conversation worker writes it with actor `conversation-worker`, and the Task Run executor with actor `task-runtime`.
 
 ## Agent history
 

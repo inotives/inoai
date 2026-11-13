@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { inspectRuntimeHomeLock, type RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
+import { InvalidRoleError, listRoles, loadRole } from "../../inoai/roles/role-file.js";
 import { validateEnabledSkills, type EnabledSkillsDocument } from "../../inoai/skills/skill-manifest.js";
 import { describeSchedule, taskSpecFromRow } from "../../inoai/tasks/schedule.js";
 
@@ -22,6 +23,10 @@ export type UiTaskRun = {
   result: string | null; resultNote: string | null;
 };
 type UiSkill = { id: string; version: string; approvedAt: string; capabilities: Record<string, string | boolean>; files: UiSkillFile[] };
+/** One role file in `roles/`. UI data carries no role text (IP-0008 "No role text in UI data"). */
+export type UiRole = { id: string; name: string | null; summary: string | null; valid: boolean; reason: string | null };
+/** `equipped` is the equipped role id, or null for no role. It may name a file that is now missing or invalid. */
+export type UiRoles = { equipped: string | null; list: UiRole[] };
 type UiMemory = { id: number; origin: string; state: string; body: string; review: { id: number; state: string; recap: string | null } | null; createdAt: string; updatedAt: string };
 
 export type UiData = {
@@ -36,6 +41,7 @@ export type UiData = {
   health: Array<{ eventType: string; detail: string | null; createdAt: string }>;
   messages: UiMessage[];
   memories: UiMemory[];
+  roles: UiRoles;
   insights: { "24h": InsightWindow; "7d": InsightWindow; "30d": InsightWindow };
 };
 
@@ -373,11 +379,40 @@ async function loadTaskRuns(home: RuntimeHome, rows: RunRow[]): Promise<UiTaskRu
   return runs;
 }
 
+function invalidRole(id: string, reason: string): UiRole {
+  return { id, name: null, summary: null, valid: false, reason };
+}
+
+/** Reads one role file for the UI: id, name, summary, and validity. It returns no role text and never creates anything. */
+export async function readUiRole(rolesDirectory: string, id: string): Promise<UiRole> {
+  try {
+    const role = await loadRole(rolesDirectory, id);
+    return { id, name: redact(role.name), summary: redact(role.summary), valid: true, reason: null };
+  } catch (error) {
+    if (error instanceof InvalidRoleError) return invalidRole(id, error.reason);
+    return invalidRole(id, "role file cannot be read");
+  }
+}
+
+/** The equipped role id from `role_equips`. A database without the table reports no role. */
+export function readEquippedRoleId(database: DatabaseSync): string | null {
+  if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='role_equips'").get()) return null;
+  const row = database.prepare("SELECT role_id AS roleId FROM role_equips WHERE unequipped_at IS NULL AND deleted_at IS NULL ORDER BY id DESC LIMIT 1").get() as { roleId: string } | undefined;
+  return row?.roleId ?? null;
+}
+
+// Lists `roles/` without creating it. A missing or unreadable folder lists nothing.
+async function readRoleList(rolesDirectory: string): Promise<UiRole[]> {
+  const entries = await listRoles(rolesDirectory).catch(() => []);
+  return Promise.all(entries.map((entry) => entry.valid ? readUiRole(rolesDirectory, entry.id) : invalidRole(entry.id, entry.reason ?? "invalid role")));
+}
+
 export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<UiData> {
-  const [agentMarkdown, skillDetails, lockState] = await Promise.all([
+  const [agentMarkdown, skillDetails, lockState, roleList] = await Promise.all([
     readFile(home.agentFile, "utf8").then(redact),
     readEnabledSkills(home),
     inspectRuntimeHomeLock(home.lockFile),
+    readRoleList(home.rolesDirectory),
   ]);
   const database = new DatabaseSync(home.databaseFile, { readOnly: true });
   try {
@@ -397,7 +432,8 @@ export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<U
     const health = (database.prepare("SELECT event_type AS eventType, detail, created_at AS createdAt FROM events WHERE event_type LIKE 'heartbeat%' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 24").all() as Array<{ eventType: string; detail: string | null; createdAt: number }>).map((row) => ({ eventType: row.eventType, detail: row.detail === null ? null : redact(row.detail), createdAt: timestamp(row.createdAt) }));
     const status = lockState === "live" ? "running" : lockState === "missing" || lockState === "stale" ? "stopped" : "unknown";
     const taskRuns = await loadTaskRuns(home, runRows);
-    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, taskRuns, tools: [], health, messages, memories, insights };
+    const roles = { equipped: readEquippedRoleId(database), list: roleList };
+    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, taskRuns, tools: [], health, messages, memories, roles, insights };
   } finally {
     database.close();
   }

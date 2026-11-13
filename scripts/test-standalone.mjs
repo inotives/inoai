@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createAgent } from "../dist/inoai/agent-instance/setup.js";
+import { roleCatalog } from "../dist/inoai/roles/role-catalog.generated.js";
 
 const root = await mkdtemp(join(tmpdir(), "inoai-standalone-test-"));
 const executable = join(root, "inoai");
@@ -17,10 +18,16 @@ try {
   const licenses = run(["--licenses"]);
   assert.equal(licenses.status, 0, licenses.stderr);
   assert.equal(licenses.stdout.trimEnd(), (await readFile(resolve("dist/standalone/THIRD_PARTY_NOTICES.txt"), "utf8")).trimEnd());
-  for (const text of ["Node.js", "@sapphire/async-queue", "@sapphire/snowflake", "skills 1.7.4", "ThirdPartyNoticeText.txt", "discord.js", "@opentelemetry/api", "standardwebhooks", "partial-json-parser (vendored in @anthropic-ai/sdk"]) assert.ok(licenses.stdout.includes(text), `Missing notice for ${text}`);
+  for (const text of ["Node.js", "@sapphire/async-queue", "@sapphire/snowflake", "skills 1.7.4", "ThirdPartyNoticeText.txt", "discord.js", "@opentelemetry/api", "standardwebhooks", "partial-json-parser (vendored in @anthropic-ai/sdk", "awesome-copilot role catalog (github/awesome-copilot 222eba62d518c27317e917c92e3ec1a7e6729455"]) assert.ok(licenses.stdout.includes(text), `Missing notice for ${text}`);
   for (const file of ["LICENSE", "LICENSE-MIT"]) assert.match(licenses.stdout, new RegExp(`^@anthropic-ai/sdk \\d+\\.\\d+\\.\\d+ — ${file}$`, "m"), `Missing @anthropic-ai/sdk ${file} notice`);
   const answers = ["demo", agent, root, "codex", "fake.token", "123", "456", "789"];
   await createAgent(async () => answers.shift(), async () => true);
+  // Setup does not create roles/; the executable's first bootstrap fills it from its own embedded catalog.
+  await rm(join(agent, "roles"), { recursive: true, force: true });
+  const rebootstrapped = run(["validate", "--dir", agent]);
+  assert.equal(rebootstrapped.status, 0, rebootstrapped.stderr);
+  assert.deepEqual((await readdir(join(agent, "roles"))).sort(), Object.keys(roleCatalog).sort());
+  for (const [name, text] of Object.entries(roleCatalog)) assert.equal(await readFile(join(agent, "roles", name), "utf8"), text, name);
   for (const args of [["validate", "--dir", agent], ["skills", "list", "--dir", agent], ["memory", "list", "--dir", agent]]) {
     const result = run(args);
     assert.equal(result.status, 0, result.stderr);
@@ -36,7 +43,7 @@ try {
   const child = run(["start", "--dir", agent, "--port", String(port)]);
   assert.notEqual(child.status, 0);
   await new Promise((done) => server.close(done));
-  console.log("Standalone notices, validation, management, missing Git and occupied-port checks passed.");
+  console.log("Standalone notices, role catalog, validation, management, missing Git and occupied-port checks passed.");
 } finally {
   await rm(root, { recursive: true, force: true });
 }

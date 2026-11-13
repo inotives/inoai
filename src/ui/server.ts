@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolveRuntimeHome, type RuntimeHome } from "../inoai/agent-instance/runtime-home.js";
 import { loadUiData } from "./api/read-model.js";
+import { equipUiRole, unequipUiRole } from "./api/role-writes.js";
 import { applyUiTaskAction, createUiTask, editUiTask, TaskWriteError, type TaskAction } from "./api/task-writes.js";
 import { renderAppShell } from "./pages/app-shell.js";
 import { UI_DEFAULT_HOST, UI_DEFAULT_PORT } from "./common/options.js";
@@ -89,9 +90,37 @@ function taskRoute(method: string, path: string): TaskRoute | undefined {
   return { kind: "action", id, action: match[2] as TaskAction };
 }
 
+type RoleRoute = "equip" | "unequip";
+
+function isRolePath(path: string): boolean {
+  return path === "/api/role" || path.startsWith("/api/role/");
+}
+
+function roleRoute(method: string, path: string): RoleRoute | undefined {
+  if (!isRolePath(path)) return undefined;
+  const match = /^\/api\/role\/(equip|unequip)$/.exec(path);
+  if (!match) throw new RequestRejected(404, "route", "Not found.");
+  if (method !== "POST") throw new RequestRejected(405, "method", "Method not allowed.", "POST");
+  return match[1] as RoleRoute;
+}
+
 // Logs only the method, path, and reason. Never the token, headers, or body.
 function logRejection(method: string, path: string, reason: string): void {
-  console.warn(`ui task write rejected: ${method} ${path} ${reason}`);
+  console.warn(`ui ${isRolePath(path) ? "role" : "task"} write rejected: ${method} ${path} ${reason}`);
+}
+
+function respondWriteError(response: ServerResponse<IncomingMessage>, error: unknown, method: string, path: string, failure: string): void {
+  if (error instanceof RequestRejected) {
+    logRejection(method, path, error.reason);
+    response.setHeader("connection", "close");
+    respondJson(response, error.status, { error: error.publicMessage });
+  } else if (error instanceof TaskWriteError) {
+    if (error.status >= 500) logRejection(method, path, error.retryable ? "busy" : "unavailable");
+    respondJson(response, error.status, { error: error.message, ...(error.fields ? { fields: error.fields } : {}), ...(error.retryable ? { retryable: true } : {}) });
+  } else {
+    logRejection(method, path, "write-failed");
+    respondJson(response, 500, { error: failure });
+  }
 }
 
 async function handleTaskWrite(request: IncomingMessage, response: ServerResponse<IncomingMessage>, home: RuntimeHome,
@@ -104,17 +133,20 @@ async function handleTaskWrite(request: IncomingMessage, response: ServerRespons
         : applyUiTaskAction(home, route.id, route.action);
     respondJson(response, route.kind === "create" ? 201 : 200, { task });
   } catch (error) {
-    if (error instanceof RequestRejected) {
-      logRejection(method, path, error.reason);
-      response.setHeader("connection", "close");
-      respondJson(response, error.status, { error: error.publicMessage });
-    } else if (error instanceof TaskWriteError) {
-      if (error.status >= 500) logRejection(method, path, error.retryable ? "busy" : "unavailable");
-      respondJson(response, error.status, { error: error.message, ...(error.fields ? { fields: error.fields } : {}), ...(error.retryable ? { retryable: true } : {}) });
-    } else {
-      logRejection(method, path, "write-failed");
-      respondJson(response, 500, { error: "Task write failed." });
-    }
+    respondWriteError(response, error, method, path, "Task write failed.");
+  }
+}
+
+// Same security checks, in the same order, as Task writes (ADR 0026, ADR 0031).
+async function handleRoleWrite(request: IncomingMessage, response: ServerResponse<IncomingMessage>, home: RuntimeHome,
+  route: RoleRoute, hosts: string[], token: string, method: string, path: string): Promise<void> {
+  try {
+    checkWriteRequest(request, hosts, token);
+    const body = await readJsonBody(request);
+    const role = route === "equip" ? await equipUiRole(home, body) : await unequipUiRole(home);
+    respondJson(response, 200, { role });
+  } catch (error) {
+    respondWriteError(response, error, method, path, "Role write failed.");
   }
 }
 
@@ -128,7 +160,7 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
     const hosts = host === UI_DEFAULT_HOST ? [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`] : [`${host}:${boundPort}`];
     // Every path needs the server's own Host, so a DNS-rebinding page cannot read the page, token, or data.
     if (!hosts.includes(request.headers.host ?? "")) {
-      if (path === "/api/tasks" || path.startsWith("/api/tasks/")) logRejection(method, path, "host");
+      if (path === "/api/tasks" || path.startsWith("/api/tasks/") || isRolePath(path)) logRejection(method, path, "host");
       response.setHeader("connection", "close");
       respondJson(response, 403, { error: "Forbidden." });
       return;
@@ -144,8 +176,10 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
       return;
     }
     let route: TaskRoute | undefined;
+    let role: RoleRoute | undefined;
     try {
       route = taskRoute(method, path);
+      role = route ? undefined : roleRoute(method, path);
     } catch (error) {
       const rejected = error as RequestRejected;
       logRejection(method, path, rejected.reason);
@@ -154,6 +188,7 @@ export async function launchUi(launchDirectory: string, connectDirectory?: strin
       return;
     }
     if (route) { await handleTaskWrite(request, response, home, route, hosts, token, method, path); return; }
+    if (role) { await handleRoleWrite(request, response, home, role, hosts, token, method, path); return; }
     respondJson(response, 404, { error: "Not found." });
   });
   await new Promise<void>((resolve, reject) => {

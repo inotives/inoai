@@ -79,11 +79,12 @@ export class DiscordTransport implements ChatTransport {
       const group = interaction.options.getSubcommandGroup(false);
       if (command !== "status" && command !== "cancel" && command !== "reset"
          && !(group === "task" && (command === "create" || command === "list" || command === "pause" || command === "resume" || command === "run" || command === "cancel"))
-         && !(group === "memory" && (command === "list" || command === "forget" || command === "review"))) return;
+         && !(group === "memory" && (command === "list" || command === "forget" || command === "review"))
+         && !(group === "role" && (command === "list" || command === "show" || command === "equip" || command === "unequip"))) return;
       void (async () => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await onControl({
-          command: (group === "task" || group === "memory" ? `${group}-${command}` : command) as ThreadControl["command"],
+          command: (group === "task" || group === "memory" || group === "role" ? `${group}-${command}` : command) as ThreadControl["command"],
           workspaceId: interaction.guildId, conversationId: interaction.channelId,
           parentConversationId: interaction.channel?.isThread() ? interaction.channel.parentId : null,
           guildTextChannelId: interaction.channel?.type === ChannelType.GuildText ? interaction.channelId
@@ -99,6 +100,7 @@ export class DiscordTransport implements ChatTransport {
           })() : undefined,
            taskId: group === "task" && (command === "pause" || command === "resume" || command === "run" || command === "cancel") ? interaction.options.getInteger("id") ?? undefined : undefined,
           memoryId: group === "memory" && command === "forget" ? interaction.options.getInteger("id", true) : undefined,
+          roleId: group === "role" && command === "equip" ? interaction.options.getString("id", true) : undefined,
           respond: (text) => interaction.editReply({ content: text, allowedMentions: { parse: [] } }).then(() => undefined),
         });
       })().catch(() => { void interaction.editReply({ content: "Control unavailable. Please try again." }).catch(() => undefined); });
@@ -169,7 +171,13 @@ export class DiscordTransport implements ChatTransport {
         .addSubcommand((part) => part.setName("list").setDescription("List active Memories"))
         .addSubcommand((part) => part.setName("forget").setDescription("Forget a Memory")
           .addIntegerOption((option) => option.setName("id").setDescription("Memory ID").setRequired(true).setMinValue(1)))
-        .addSubcommand((part) => part.setName("review").setDescription("Run a Memory Review now")));
+        .addSubcommand((part) => part.setName("review").setDescription("Run a Memory Review now")))
+      .addSubcommandGroup((group) => group.setName("role").setDescription("Manage the equipped role")
+        .addSubcommand((part) => part.setName("list").setDescription("List roles"))
+        .addSubcommand((part) => part.setName("show").setDescription("Show the equipped role"))
+        .addSubcommand((part) => part.setName("equip").setDescription("Equip a role")
+          .addStringOption((option) => option.setName("id").setDescription("Role ID").setRequired(true).setMaxLength(64)))
+        .addSubcommand((part) => part.setName("unequip").setDescription("Unequip the role")));
     if (!this.client.application) throw new Error("Discord application unavailable for command registration");
     await this.client.application.commands.create(command.toJSON(), guildId);
   }

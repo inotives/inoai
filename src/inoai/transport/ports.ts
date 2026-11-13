@@ -24,7 +24,7 @@ export type TransportHealth = {
 
 export type ThreadControl = {
   command: "status" | "cancel" | "reset" | "task-create" | "task-list" | "task-pause" | "task-resume" | "task-run" | "task-cancel"
-    | "memory-list" | "memory-forget" | "memory-review";
+    | "memory-list" | "memory-forget" | "memory-review" | "role-list" | "role-show" | "role-equip" | "role-unequip";
   workspaceId: string | null;
   conversationId: string;
   parentConversationId: string | null;
@@ -36,6 +36,7 @@ export type ThreadControl = {
   intervalSeconds?: number;
   taskId?: number;
   memoryId?: number;
+  roleId?: string;
   respond(text: string): Promise<void>;
 };
 

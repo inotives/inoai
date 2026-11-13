@@ -35,6 +35,8 @@ import { openDatabase, withMaintenanceDatabase } from "./connectors/persistence/
 import { createSqliteOperationalStore } from "./connectors/persistence/sqlite/operational-store.js";
 import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operational-store.js";
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
+import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } from "./roles/role-operations.js";
+import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
 import { loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
@@ -299,6 +301,26 @@ export async function startTransport(
       await request.respond(`Memory #${memory.id} forgotten.`);
       return;
     }
+    if (request.command.startsWith("role-")) {
+      const unavailable = "Role control unavailable in this channel.";
+      if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
+        || request.externalUserId !== instance.configuration.discordOwnerUserId) {
+        await request.respond(unavailable);
+        return;
+      }
+      const owner = await store.findUser("discord", request.workspaceId, request.externalUserId);
+      if (!owner || owner.id !== instance.owner.id) { await request.respond(unavailable); return; }
+      let reply: string;
+      try {
+        reply = await roleControlReply(store, instance.runtimeHome.rolesDirectory,
+          request.command as "role-list" | "role-show" | "role-equip" | "role-unequip", request.roleId);
+      } catch (error) {
+        if (!isSqliteBusyError(error)) throw error;
+        reply = "SQLite database is busy. Retry the role command shortly.";
+      }
+      await request.respond(reply);
+      return;
+    }
     if (request.command.startsWith("task-")) {
       if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
         || request.externalUserId !== instance.configuration.discordOwnerUserId || !request.guildTextChannelId
@@ -411,7 +433,8 @@ export async function startTransport(
         uncertain_delivery: messages.filter((message) => message.direction === "agent" && message.delivery_state === "uncertain").length,
       };
       await request.respond(`Project: ${session.project_path}\nSession: ${session.agent_session_id.startsWith("pending:") ? "pending" : "active"}`
-        + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`);
+        + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`
+        + `\n${await roleStatusLine(store, instance.runtimeHome.rolesDirectory)}`);
       return;
     }
     if (!worker) { await request.respond("Control unavailable. Please try again."); return; }
@@ -514,6 +537,32 @@ export async function manageMemory(
   }
 }
 
+/**
+ * Role CLI commands. A live runtime home uses a short-lived maintenance connection and never creates files or folders
+ * (ADR 0025 pattern). A stopped home uses the normal startup path.
+ */
+export async function manageRole(operation: RoleOperation, roleId: string | undefined, launchDirectory = process.cwd(), connectDirectory?: string): Promise<RoleOperationOutput> {
+  try {
+    const runtimeHome = resolveRuntimeHome(launchDirectory, connectDirectory);
+    if (await inspectRuntimeHomeLock(runtimeHome.lockFile) === "live") {
+      return await withMaintenanceDatabase(runtimeHome, (database) => {
+        const schemaReady = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='role_equips'").get() !== undefined;
+        return manageRoleWithStore(createSqliteOperationalStore(database), runtimeHome.rolesDirectory, operation, roleId, schemaReady);
+      });
+    }
+
+    const instance = await start(launchDirectory, connectDirectory);
+    try {
+      return await manageRoleWithStore(instance.store, instance.runtimeHome.rolesDirectory, operation, roleId);
+    } finally {
+      await instance.release();
+    }
+  } catch (error) {
+    if (isSqliteBusyError(error)) throw new Error("SQLite database is busy. Retry the role command shortly.");
+    throw error;
+  }
+}
+
 type AllowlistStore = Pick<OperationalStore, "findUser" | "upsertUser">;
 export type AllowlistOperation = "add" | "disable";
 
@@ -552,6 +601,15 @@ function parseMemoryCommand(args: string[]): { operation: "add" | "list" | "dele
   if ((operation === "add" || operation === "delete") && values.length === 1 && !(operation === "add" && values[0] === "--core")) return { operation, argument: values[0], connectDirectory, kind: "topic" };
   if (operation === "list" && values.length === 0) return { operation, argument: undefined, connectDirectory, kind: "topic" };
   throw new Error("Usage: inoai memory <add [--core] <text>|list|delete <id>> [--connect-dir .inoai-connect*]");
+}
+
+function parseRoleCommand(args: string[]): { operation: RoleOperation; roleId: string | undefined; connectDirectory: string | undefined } {
+  const connectDirectory = args.length >= 2 && args.at(-2) === "--connect-dir" ? args.at(-1) : undefined;
+  const command = connectDirectory === undefined ? args : args.slice(0, -2);
+  const [operation, ...values] = command;
+  if ((operation === "list" || operation === "show" || operation === "unequip") && values.length === 0) return { operation, roleId: undefined, connectDirectory };
+  if (operation === "equip" && values.length === 1 && !values[0]!.startsWith("--")) return { operation, roleId: values[0], connectDirectory };
+  throw new Error("Usage: inoai role <list|show|equip <id>|unequip> [--connect-dir .inoai-connect*]");
 }
 
 function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation; userId: string; displayName?: string; connectDirectory?: string } {
@@ -713,6 +771,11 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     const { operation, argument, connectDirectory, kind } = parseMemoryCommand(args.slice(1));
     const result = await manageMemory(operation, argument, process.cwd(), connectDirectory, kind);
     console.log(JSON.stringify(result));
+    return;
+  }
+  if (args[0] === "role") {
+    const { operation, roleId, connectDirectory } = parseRoleCommand(args.slice(1));
+    console.log(JSON.stringify(await manageRole(operation, roleId, process.cwd(), connectDirectory)));
     return;
   }
   if (args[0] === "validate") {
