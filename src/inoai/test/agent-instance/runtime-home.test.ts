@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,8 @@ import {
   UnsafeRuntimeHomeError,
 } from "../../agent-instance/runtime-home.js";
 import { defaultAgentProfile } from "../../agent-instance/profile.js";
+import { listRoles } from "../../roles/role-file.js";
+import { starterRoles } from "../../roles/starter-roles.js";
 import { start } from "../../../index.js";
 import { openDatabase, withMaintenanceDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
@@ -213,6 +215,33 @@ test("bootstraps and preserves an isolated default runtime home", async () => {
     await writeFile(home.envFile, "OWNER_DISCORD_USER_ID=owner\n");
     await bootstrapRuntimeHome(deployment);
     assert.equal(await readFile(home.envFile, "utf8"), "OWNER_DISCORD_USER_ID=owner\n");
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap creates roles/ with valid starter roles only when the folder is missing", async () => {
+  const deployment = await temporaryDeployment();
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    assert.equal(home.rolesDirectory, join(home.directory, "roles"));
+    assert.equal((await stat(home.rolesDirectory)).mode & 0o777, 0o700);
+    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), ["designer.md", "planner.md", "reviewer.md"]);
+    for (const [name, contents] of Object.entries(starterRoles)) {
+      assert.equal(await readFile(join(home.rolesDirectory, name), "utf8"), contents);
+    }
+    assert.deepEqual((await listRoles(home.rolesDirectory)).map((role) => [role.id, role.valid]), [
+      ["designer", true], ["planner", true], ["reviewer", true],
+    ]);
+
+    const edited = starterRoles["planner.md"].replace("Turn a goal", "Turn any goal");
+    await writeFile(join(home.rolesDirectory, "planner.md"), edited);
+    await bootstrapRuntimeHome(deployment);
+    assert.equal(await readFile(join(home.rolesDirectory, "planner.md"), "utf8"), edited);
+
+    await rm(join(home.rolesDirectory, "planner.md"));
+    await bootstrapRuntimeHome(deployment);
+    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), ["designer.md", "reviewer.md"]);
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }

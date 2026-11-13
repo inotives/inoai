@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { defaultAgentProfile } from "./profile.js";
 import { EnabledSkillsDocument, validateEnabledSkills } from "../skills/skill-manifest.js";
+import { starterRoles } from "../roles/starter-roles.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -21,6 +22,7 @@ export type RuntimeHome = {
   agentFile: string;
   skillsDirectory: string;
   skillsEnabledFile: string;
+  rolesDirectory: string;
   databaseFile: string;
   lockFile: string;
 };
@@ -100,9 +102,32 @@ export function resolveRuntimeHome(launchDirectory: string, connectDirectory = "
     agentFile: join(directory, "agent.md"),
     skillsDirectory: join(directory, "skills"),
     skillsEnabledFile: join(directory, "skills-enabled.json"),
+    rolesDirectory: join(directory, "roles"),
     databaseFile: join(directory, "inoai.sqlite"),
     lockFile: join(directory, "inoai.lock"),
   };
+}
+
+/**
+ * Creates `roles/` only when it is missing, then copies in the starter roles.
+ * An existing folder is left alone, so edited or deleted starters stay that way.
+ */
+async function bootstrapRoles(rolesDirectory: string): Promise<void> {
+  try {
+    await mkdir(rolesDirectory, { mode: 0o700 });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    throw error;
+  }
+  await Promise.all(
+    Object.entries(starterRoles).map(async ([name, contents]) => {
+      try {
+        await writeFile(join(rolesDirectory, name), contents, { flag: "wx", mode: 0o600 });
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+    }),
+  );
 }
 
 export async function bootstrapRuntimeHome(
@@ -124,6 +149,7 @@ export async function bootstrapRuntimeHome(
       }
     }),
   );
+  await bootstrapRoles(home.rolesDirectory);
   validateEnabledSkills(JSON.parse(await readFile(home.skillsEnabledFile, "utf8")));
   return home;
 }
