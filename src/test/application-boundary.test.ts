@@ -7,7 +7,7 @@ import test from "node:test";
 import { startAgentSession } from "../inoai/conversation/agent-session.js";
 import { classifyIncomingMessage } from "../inoai/conversation/inbound-policy.js";
 import { manageMemoryWithStore } from "../inoai/memory/memory-operations.js";
-import { defaultAgentProfile } from "../inoai/agent-instance/profile.js";
+import { defaultAgentProfile, inoaiSafetySection } from "../inoai/agent-instance/profile.js";
 
 test("conversation application policy uses its owned store port", async () => {
   const user = { id: 7 };
@@ -45,7 +45,7 @@ test("conversation session use case uses runtime and persistence ports", async (
     };
     const runtime = { async createSession(project: string, instructions: string) { calls.push(`${project}:${instructions}`); return "runtime-session"; } };
     assert.equal(await startAgentSession(database, runtime, 1, { agentFile }), "runtime-session");
-    assert.deepEqual(calls, [`/project:${defaultAgentProfile}`, "runtime-session:runtime:codex"]);
+    assert.deepEqual(calls, [`/project:${defaultAgentProfile.trimEnd()}\n\n${inoaiSafetySection}\n`, "runtime-session:runtime:codex"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

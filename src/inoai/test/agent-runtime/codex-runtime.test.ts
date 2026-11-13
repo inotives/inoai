@@ -12,7 +12,7 @@ import { CodexRuntime } from "../../connectors/agent-runtime/codex-runtime.js";
 import { RuntimeFailure } from "../../agent-runtime/ports.js";
 import { createSession, getSession, openDatabase, upsertUser } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
-import { defaultAgentProfile } from "../../agent-instance/profile.js";
+import { defaultAgentProfile, inoaiSafetySection } from "../../agent-instance/profile.js";
 
 class FakeServer {
   sent: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -50,6 +50,7 @@ test("starts a persistent thread, stores its ID, and resumes with project instru
     const home = await bootstrapRuntimeHome(project);
     const profile = defaultAgentProfile.replace("You are inoai", "You are Planner");
     await writeFile(home.agentFile, profile);
+    const instructions = `${profile.trimEnd()}\n\n${inoaiSafetySection}\n`;
     const database = openDatabase(home);
     try {
       const user = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner", display_name: null, role: "owner", state: "active" })!;
@@ -58,9 +59,9 @@ test("starts a persistent thread, stores its ID, and resumes with project instru
       const runtime = new CodexRuntime(fake.client());
       assert.equal(await startAgentSession(sqliteStore(database), runtime, session.id, home), "real-thread");
       assert.equal(getSession(database, session.id)?.agent_session_id, "real-thread");
-      assert.deepEqual(fake.sent[0], { method: "thread/start", params: { cwd: project, developerInstructions: profile } });
+      assert.deepEqual(fake.sent[0], { method: "thread/start", params: { cwd: project, developerInstructions: instructions } });
       assert.equal(await resumeAgentSession(sqliteStore(database), runtime, session.id, home), "real-thread");
-      assert.deepEqual(fake.sent[1], { method: "thread/resume", params: { threadId: "real-thread", cwd: project, developerInstructions: profile } });
+      assert.deepEqual(fake.sent[1], { method: "thread/resume", params: { threadId: "real-thread", cwd: project, developerInstructions: instructions } });
       await assert.rejects(startAgentSession(sqliteStore(database), runtime, session.id, home), /not pending/);
     } finally { database.close(); }
   } finally { await rm(project, { recursive: true, force: true }); }

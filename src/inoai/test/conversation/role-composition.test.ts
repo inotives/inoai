@@ -130,6 +130,7 @@ test("with a role, a chat Turn and a Task Run pass instructions that end with th
     assert.equal(calls[0]?.text, expected);
     assert.ok(calls[0]?.text.endsWith(block));
     assert.match(calls[0]!.text, /\n\n## Equipped Role: Planner\n/);
+    assert.ok(calls[0]!.text.indexOf("## inoai Safety") < calls[0]!.text.indexOf("## Equipped Role: Planner"), "the role block comes after inoai Safety");
     assert.equal(calls[1]?.text, "m1"); // A new Session gets no note.
     assert.deepEqual(roleEvents(f.database, session.id), ["role=planner"]);
     const actor = f.database.prepare("SELECT created_by FROM events WHERE event_type='role_applied' AND session_id=?").get(session.id) as { created_by: string };

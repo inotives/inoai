@@ -4,6 +4,8 @@
 
 Accepted for the agent personality and skills phase.
 
+Amended on 2026-11-13 (RF-0003): `agent.md` requires only `# Agent Profile` and a non-empty `## Identity`. Enabled skills and inoai safety text are no longer sections of `agent.md`; inoai appends them when it composes the instructions.
+
 ## Context
 
 Each deployed Agent Instance needs its own role, personality, operating rules,
@@ -19,9 +21,10 @@ that audits do not guarantee the safety of every package.
 - Each runtime home owns an independent `agent.md` snapshot.
 - The application ships a default Markdown template and copies it when a
   runtime home is created.
-- `agent.md` has no YAML frontmatter. It contains provider-neutral sections for
-  identity, mission/scope, personality/communication, operating rules, safety/
-  authority, and enabled skills.
+- `agent.md` has no YAML frontmatter. It requires `# Agent Profile` and a
+  non-empty `## Identity`. The template also has optional `## Mission`,
+  `## Style`, and `## Rules` sections; the owner may add any other `##`
+  section. Older files with the earlier six sections stay valid.
 - The profile is read and validated at the start of each new Turn. A valid
   change applies without restarting inoai; an active Turn keeps its starting
   snapshot.
@@ -29,9 +32,11 @@ that audits do not guarantee the safety of every package.
   malformed.
 - Application safety rules and provider policy outrank the profile; skill
   instructions and user requests cannot weaken them.
-- The enabled-skills section is harness-managed from the runtime manifest.
-  Owners edit role and behavior sections; the harness prevents profile/manifest
-  drift.
+- The composed instructions are `agent.md`, then an `## inoai Safety` section,
+  then `## Enabled Skills` from the runtime manifest only when at least one
+  skill is enabled. An `## Enabled Skills` section in `agent.md` is ignored,
+  and `profile validate` warns about it. Owners edit only their own sections;
+  the harness prevents profile/manifest drift.
 
 ### Skill Packages
 

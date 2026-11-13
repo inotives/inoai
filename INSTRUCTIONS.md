@@ -167,10 +167,41 @@ Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it
 
 ### Agent profile
 
-The runtime-home profile is provider-neutral Markdown. It must contain the
-required identity, mission and scope, personality and communication, operating
-rules, safety and authority, and enabled skills sections. Validate it without
-starting the app or contacting a provider:
+The runtime-home profile `agent.md` is provider-neutral Markdown with no
+frontmatter. It holds only what you write. It must start with
+`# Agent Profile` and have a non-empty `## Identity` section. The template also
+has `## Mission`, `## Style`, and `## Rules`; these and any other `##` sections
+are optional:
+
+```markdown
+# Agent Profile
+
+## Identity
+
+You are Robin, a local coding agent for this project.
+
+## Mission
+
+Help the owner with work in the configured project. Stay within the requested scope.
+
+## Style
+
+Be clear, concise, and useful.
+
+## Rules
+
+- Plan before complex work.
+```
+
+inoai composes each Turn's instructions in this order: `agent.md`, an
+`## inoai Safety` section, `## Enabled Skills` only when at least one skill is
+enabled ([Skills](#skills)), and the Equipped Role ([Roles](#roles)). Do not
+write safety or skill sections yourself. Files in the older six-section format
+stay valid. inoai ignores their `## Enabled Skills` section, and
+`profile validate` prints a warning about it; delete that section to silence
+the warning. inoai never rewrites `agent.md`.
+
+Validate it without starting the app or contacting a provider:
 
 ```bash
 npm start -- profile validate --connect-dir .robin-xai-test

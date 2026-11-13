@@ -1,13 +1,13 @@
 import type { AgentSessionHome, AgentSessionRuntime, AgentSessionStore } from "./ports.js";
 import { loadAgentProfile } from "../agent-instance/profile.js";
-import { loadAgentProfileWithSkills, type SkillHome } from "../skills/skill-loader.js";
+import { loadAgentProfileWithSkills, renderEnabledSkillsProfile, type SkillHome } from "../skills/skill-loader.js";
 
 async function loadProfileInstructions(home: AgentSessionHome): Promise<string> {
   if (home.skillsDirectory && home.skillsEnabledFile) return loadAgentProfileWithSkills(home as SkillHome);
-  return loadAgentProfile(home.agentFile);
+  return renderEnabledSkillsProfile(await loadAgentProfile(home.agentFile), { version: 1, skills: [] });
 }
 
-// The role block goes after skill rendering so the Enabled Skills replacement cannot drop it. No block: unchanged.
+// Order: agent.md, inoai Safety, Enabled Skills (when any), then the role block. No block: profile instructions only.
 async function loadInstructions(home: AgentSessionHome, roleBlock?: string): Promise<string> {
   const profile = await loadProfileInstructions(home);
   return roleBlock ? `${profile.replace(/\n*$/, "\n")}\n${roleBlock}` : profile;

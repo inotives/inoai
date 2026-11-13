@@ -2,10 +2,10 @@
 id: BL-0050
 title: Text after the Enabled Skills heading in agent.md is silently dropped
 type: idea
-status: open
+status: promoted
 created_at: 2026-11-13T02:24:45Z
 source: IP-0007 live check
-promoted_to: null
+promoted_to: RF-0003
 ---
 
 # BL-0050: Text after the Enabled Skills heading in agent.md is silently dropped
@@ -20,7 +20,7 @@ promoted_to: null
 
 ## Discussion
 
-- None yet.
+- [2026-11-13] Promoted to RF-0003 (streamline the agent.md format). `## Enabled Skills` is no longer part of `agent.md`; an old section is ignored and `profile validate` warns about it, so owner text under later headings is kept.
 
 ## Open questions
 

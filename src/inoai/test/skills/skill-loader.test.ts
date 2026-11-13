@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { defaultAgentProfile, inoaiSafetySection } from "../../agent-instance/profile.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { enableSkill, installSkillPackage } from "../../skills/skill-lifecycle.js";
 import { buildEnabledSkillIndex, loadAgentProfileWithSkills, loadSelectedSkill, selectEnabledSkill, SkillSelectionError } from "../../skills/skill-loader.js";
@@ -38,6 +39,30 @@ test("index exposes only current approvals and profile loading does not inject f
     const profile = await loadAgentProfileWithSkills(home);
     assert.match(profile, /web-search \(version 1\.0\.0\)/);
     assert.doesNotMatch(profile, /Full private instructions/);
+  } finally {
+    await rm(deployment, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+  }
+});
+
+test("composed profile order is agent.md, inoai Safety, then Enabled Skills only when any are enabled", async () => {
+  const deployment = await mkdtemp(join(tmpdir(), "inoai-skill-order-"));
+  const source = await mkdtemp(join(tmpdir(), "inoai-skill-source-"));
+  try {
+    const home = await bootstrapRuntimeHome(deployment);
+    let profile = await loadAgentProfileWithSkills(home);
+    assert.equal(profile, `${defaultAgentProfile.trimEnd()}\n\n${inoaiSafetySection}\n`);
+    assert.doesNotMatch(profile, /Enabled Skills/);
+
+    await writeFile(home.agentFile, "# Agent Profile\n\n## Identity\n\nRobin.\n\n## Enabled Skills\n\nold owner list\n\n## Notes\n\nKeep this owner text.\n");
+    await installSkillPackage(home, await packageDirectory(source, "web-search"));
+    await enableSkill(home, "web-search", "owner");
+    profile = await loadAgentProfileWithSkills(home);
+    assert.doesNotMatch(profile, /old owner list/);
+    assert.match(profile, /Keep this owner text\./);
+    const order = ["## Identity", "## Notes", "## inoai Safety", "## Enabled Skills", "- web-search (version 1.0.0)"].map((heading) => profile.indexOf(heading));
+    assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1]!)), `unexpected order: ${order.join(",")}`);
+    assert.equal(profile.match(/^## Enabled Skills$/gm)?.length, 1);
   } finally {
     await rm(deployment, { recursive: true, force: true });
     await rm(source, { recursive: true, force: true });
