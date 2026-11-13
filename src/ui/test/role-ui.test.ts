@@ -76,11 +76,11 @@ test("UI equip and unequip write role_equips rows with actor ui:owner", async ()
     const equipped = await send("POST", "/api/role/equip", { roleId: "planner" });
     assert.equal(equipped.status, 200);
     assert.deepEqual(Object.keys(equipped.body), ["role"]);
-    assert.deepEqual(Object.keys(equipped.body.role).sort(), ["id", "name", "reason", "summary", "text", "valid"]);
+    assert.deepEqual(Object.keys(equipped.body.role).sort(), ["id", "name", "reason", "summary", "valid"], "the reply carries no role text");
     assert.equal(equipped.body.role.id, "planner");
     assert.equal(equipped.body.role.valid, true);
     assert.equal(equipped.body.role.reason, null);
-    assert.match(equipped.body.role.text, /^# Role: /);
+    assert.equal(typeof equipped.body.role.name, "string");
     let [row] = rows(home);
     assert.deepEqual([row!.role_id, row!.equipped_by, row!.created_by, row!.updated_by, row!.unequipped_at], ["planner", "ui:owner", "ui:owner", "ui:owner", null]);
 
@@ -238,7 +238,7 @@ test("UI role write returns a retryable 503 when the database stays busy", async
   });
 });
 
-test("UI data lists roles with text only for valid files", async (t) => {
+test("UI data lists roles without role text", async (t) => {
   const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-roles-data-"));
   t.after(() => rm(deploymentDirectory, { recursive: true, force: true }));
   const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
@@ -255,9 +255,10 @@ test("UI data lists roles with text only for valid files", async (t) => {
   assert.equal(roles.equipped, "writer");
   assert.deepEqual(roles.list.map((role) => role.id), ["Bad_Name", "broken", "designer", "leaky", "planner", "reviewer", "writer"]);
   const writer = roles.list.find((role) => role.id === "writer")!;
-  assert.deepEqual(writer, { id: "writer", name: "Writer", summary: "A short summary.", valid: true, reason: null, text: validRole("Writer") });
+  assert.deepEqual(writer, { id: "writer", name: "Writer", summary: "A short summary.", valid: true, reason: null });
+  for (const role of roles.list) assert.deepEqual(Object.keys(role).sort(), ["id", "name", "reason", "summary", "valid"], `${role.id} has no text`);
+  assert.equal(JSON.stringify(roles).includes("Do the work."), false, "no role body text reaches UI data");
   for (const role of roles.list.filter((item) => !item.valid)) {
-    assert.deepEqual(Object.keys(role).sort(), ["id", "name", "reason", "summary", "valid"], role.id);
     assert.equal(role.name, null);
     assert.equal(role.summary, null);
   }

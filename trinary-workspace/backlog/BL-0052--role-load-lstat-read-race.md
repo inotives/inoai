@@ -20,7 +20,7 @@ promoted_to: null
 
 ## Discussion
 
-- None yet.
+- 2026-11-13: The T-0008 reviewer noted that the UI read model now uses `loadRole` too, so the same window applies there. Hardening `loadRole` with `O_NOFOLLOW` on an opened handle would cover the runtime and the UI together.
 
 ## Open questions
 

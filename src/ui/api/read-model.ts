@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { inspectRuntimeHomeLock, type RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
-import { InvalidRoleError, listRoles, loadRole, maxRoleBytes, validateRole } from "../../inoai/roles/role-file.js";
+import { InvalidRoleError, listRoles, loadRole } from "../../inoai/roles/role-file.js";
 import { validateEnabledSkills, type EnabledSkillsDocument } from "../../inoai/skills/skill-manifest.js";
 import { describeSchedule, taskSpecFromRow } from "../../inoai/tasks/schedule.js";
 
@@ -23,8 +23,8 @@ export type UiTaskRun = {
   result: string | null; resultNote: string | null;
 };
 type UiSkill = { id: string; version: string; approvedAt: string; capabilities: Record<string, string | boolean>; files: UiSkillFile[] };
-/** One role file in `roles/`. `text` is the full file text and is present only when the file is valid. */
-export type UiRole = { id: string; name: string | null; summary: string | null; valid: boolean; reason: string | null; text?: string };
+/** One role file in `roles/`. UI data carries no role text (IP-0008 "No role text in UI data"). */
+export type UiRole = { id: string; name: string | null; summary: string | null; valid: boolean; reason: string | null };
 /** `equipped` is the equipped role id, or null for no role. It may name a file that is now missing or invalid. */
 export type UiRoles = { equipped: string | null; list: UiRole[] };
 type UiMemory = { id: number; origin: string; state: string; body: string; review: { id: number; state: string; recap: string | null } | null; createdAt: string; updatedAt: string };
@@ -383,25 +383,11 @@ function invalidRole(id: string, reason: string): UiRole {
   return { id, name: null, summary: null, valid: false, reason };
 }
 
-/**
- * Reads one role file for the UI. It validates with `loadRole`, then reads the text again with O_NOFOLLOW
- * and validates that text, so `text` is always the text of a valid file. It never creates anything.
- */
+/** Reads one role file for the UI: id, name, summary, and validity. It returns no role text and never creates anything. */
 export async function readUiRole(rolesDirectory: string, id: string): Promise<UiRole> {
   try {
-    await loadRole(rolesDirectory, id);
-    const handle = await open(join(rolesDirectory, `${id}.md`), constants.O_RDONLY | constants.O_NOFOLLOW);
-    let text: string;
-    try {
-      const info = await handle.stat();
-      if (!info.isFile()) return invalidRole(id, "not a regular file");
-      if (info.size > maxRoleBytes) return invalidRole(id, `larger than ${maxRoleBytes} bytes`);
-      text = (await handle.readFile()).toString("utf8");
-    } finally {
-      await handle.close();
-    }
-    const role = validateRole(text);
-    return { id, name: redact(role.name), summary: redact(role.summary), valid: true, reason: null, text: redact(text) };
+    const role = await loadRole(rolesDirectory, id);
+    return { id, name: redact(role.name), summary: redact(role.summary), valid: true, reason: null };
   } catch (error) {
     if (error instanceof InvalidRoleError) return invalidRole(id, error.reason);
     return invalidRole(id, "role file cannot be read");
