@@ -16,9 +16,11 @@ import {
   switchTaskSessionProvider,
   createMemoryProposal, getMemoryProposal, listPendingMemoryProposals, setMemoryProposalCardMessage, confirmMemoryProposal,
   rejectMemoryProposal, expireDueMemoryProposals, wasMemoryProposalRejected, recordMemoryUses, storeReviewProposals,
+  readOrCreateHistorySession, listHistory, appendHistory,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
+import type { AgentHistoryStore } from "../../../agent-runtime/ports.js";
 import type { MessageQueueMode, NewAgentResponse, NewEvent, NewMemory, NewMemoryReview, NewMessage, NewSession, NewUser, SessionRecord, UserRecord, MemoryReviewRecord, NewTask, TaskRecord, TaskRunRecord, NewTaskProposal, TaskProposalOutcome, TaskProposalRecord, OpenTaskProposalCard, TaskEditResult, PendingTaskOwner, RecoveredTaskRun, TaskProviderSwitch } from "./legacy-database.js";
 import type { TaskColumns, TaskSpec } from "../../../tasks/schedule.js";
 
@@ -52,7 +54,7 @@ export interface TaskOperationsStore {
   switchTaskSessionProvider(sessionId: number, change: TaskProviderSwitch, now: number, actor?: string): Promise<boolean>;
 }
 
-export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore {
+export function createSqliteOperationalStore(database: DatabaseSync): OperationalStore & MemoryOperationsStore & TaskOperationsStore & AgentHistoryStore {
   function transaction<T>(work: () => T): T {
     database.exec("BEGIN IMMEDIATE");
     try {
@@ -64,7 +66,10 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
       throw error;
     }
   }
-  const store: OperationalStore & TaskOperationsStore = {
+  const store: OperationalStore & TaskOperationsStore & AgentHistoryStore = {
+    async readOrCreateHistorySession(sessionId, agentSessionId, initial, actor) { return readOrCreateHistorySession(database, sessionId, agentSessionId, initial, actor); },
+    async listHistory(sessionId, agentSessionId) { return listHistory(database, sessionId, agentSessionId); },
+    async appendHistory(sessionId, agentSessionId, entries, actor) { appendHistory(database, sessionId, agentSessionId, entries, actor); },
     async createCommandApproval(sessionId, runtimeApprovalId, expiresAt) { return createCommandApproval(database, sessionId, runtimeApprovalId, expiresAt); },
     async setCommandApprovalCard(approvalId, messageId) { return setCommandApprovalCard(database, approvalId, messageId); },
     async resolveCommandApproval(approvalId, state) { return resolveCommandApproval(database, approvalId, state); },

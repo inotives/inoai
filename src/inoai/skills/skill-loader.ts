@@ -122,9 +122,10 @@ export function selectEnabledSkill(index: EnabledSkillIndex, request?: { skillId
 
 /**
  * Load full instructions only after the selected skill has passed the current
- * trust and hash checks. Unknown and disabled skills fail closed.
+ * trust and hash checks. Unknown and disabled skills fail closed. `executionPolicy: false` leaves out the script
+ * execution policy for a runtime that cannot run commands.
  */
-export async function loadSelectedSkill(home: SkillHome, request?: { skillId?: string; prompt?: string }): Promise<string | undefined> {
+export async function loadSelectedSkill(home: SkillHome, request?: { skillId?: string; prompt?: string; executionPolicy?: boolean }): Promise<string | undefined> {
   const index = await buildEnabledSkillIndex(home);
   const selected = selectEnabledSkill(index, request);
   if (!selected) return undefined;
@@ -134,5 +135,5 @@ export async function loadSelectedSkill(home: SkillHome, request?: { skillId?: s
   if (!info.isFile() || info.isSymbolicLink()) throw new SkillSelectionError(`Skill instructions are not a regular file: ${selected.id}`);
   const instructions = (await readFile(file, "utf8")).trim();
   if (!instructions) throw new SkillSelectionError(`Skill instructions are empty: ${selected.id}`);
-  return `\n\n[Enabled skill: ${selected.id}]\n${instructions}\n[End enabled skill: ${selected.id}]${skillExecutionPolicyInstructions}`;
+  return `\n\n[Enabled skill: ${selected.id}]\n${instructions}\n[End enabled skill: ${selected.id}]${request?.executionPolicy === false ? "" : skillExecutionPolicyInstructions}`;
 }

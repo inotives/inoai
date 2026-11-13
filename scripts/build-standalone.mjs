@@ -39,11 +39,17 @@ try {
   for (const directory of [...packageDirectories].sort()) {
     const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
     const files = (await readdir(directory)).filter((name) => /^(licen[sc]e|copying|notice|thirdparty)/i.test(name)).sort();
-    if (!files.length && ["@sapphire/async-queue", "@sapphire/snowflake"].includes(metadata.name)) {
-      notices += `\n\n${metadata.name} ${metadata.version}\n\n${await readFile(join(root, "licenses/sapphire-utilities-LICENSE.md"), "utf8")}\n`;
+    const upstreamLicense = { "@sapphire/async-queue": "sapphire-utilities-LICENSE.md", "@sapphire/snowflake": "sapphire-utilities-LICENSE.md", standardwebhooks: "standardwebhooks-LICENSE.md" }[metadata.name];
+    if (!files.length && upstreamLicense) {
+      notices += `\n\n${metadata.name} ${metadata.version}\n\n${await readFile(join(root, "licenses", upstreamLicense), "utf8")}\n`;
     } else {
       if (!files.length) throw new Error(`No license file for bundled dependency ${metadata.name} (${directory})`);
       for (const file of files) notices += `\n\n${metadata.name} ${metadata.version} — ${file}\n\n${await readFile(join(directory, file), "utf8")}\n`;
+    }
+    // The SDK vendors partial-json-parser without its own package.json; the SDK's licenses above cover it.
+    if (metadata.name === "@anthropic-ai/sdk") {
+      const vendored = join(directory, "src", "_vendor", "partial-json-parser", "README.md");
+      notices += `\n\npartial-json-parser (vendored in ${metadata.name} ${metadata.version}) — covered by the ${metadata.name} LICENSE and LICENSE-MIT above\n\n${await readFile(vendored, "utf8")}\n`;
     }
   }
   const noticesFile = join(temporary, "THIRD_PARTY_NOTICES.txt");

@@ -21,6 +21,7 @@ function failureNotice(kind: RuntimeFailure["kind"], { displayName: name, loginH
     case "cancelled": return `${name} turn was cancelled. Please send a fresh request if needed.`;
     case "uncertain": return `${name} turn ended without a confirmed answer. Please send a fresh request.`;
     case "session_missing": return `This thread's ${name} session could not be found. Use /inoai reset to start a new session.`;
+    case "context_exhausted": return `This thread's ${name} conversation is too long for the model. Use /inoai reset to start a new session.`;
   }
 }
 

@@ -1,6 +1,6 @@
 # inoai implementation phases
 
-V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. It does not add a scheduler or remote UI access. A later opt-in phase adds UI access from one selected private LAN address; Internet UI access remains out of scope.
+V1 proves a safe Discord-to-Codex conversation flow, with Claude CLI and OpenCode added as further runtimes in Phases 5a and 5b, using the local CLI's configured capabilities. IP-0007 adds a fourth runtime, `anthropic-api`, that calls the Anthropic Messages API with an API key. The Codex and Claude CLI runtimes still use only subscription sign-in. It does not add a scheduler or remote UI access. A later opt-in phase adds UI access from one selected private LAN address; Internet UI access remains out of scope.
 
 ## Delivery status
 
@@ -235,7 +235,7 @@ Phase 5b acceptance requires deterministic fake-CLI tests and the live Discord s
 
 **Purpose:** distill stable preferences and project decisions from the local archive without adding chat noise.
 
-A Recap covers one Agent Session's archived Messages since that Session's prior Recap. Reviews run text-only in throwaway runtime sessions ([ADR 0010](adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)). Claude is fully supported and live-verified. Codex review support is implemented with the read-only sandbox and approval policy `never` settings but disabled, because a Codex review thread still loads the owner's MCP servers; Codex and OpenCode homes skip reviews and record the skip without moving any cursor.
+A Recap covers one Agent Session's archived Messages since that Session's prior Recap. Reviews run text-only in throwaway runtime sessions ([ADR 0010](adr/0010-memory-reviews-run-text-only-in-throwaway-sessions.md)). Claude is fully supported and live-verified. Codex review support is implemented with the read-only sandbox and approval policy `never` settings but disabled, because a Codex review thread still loads the owner's MCP servers; Codex and OpenCode homes skip reviews and record the skip without moving any cursor. Since IP-0007, `anthropic-api` homes also review, with one tool-free request ([ADR 0030](adr/0030-anthropic-api-runtime.md)).
 
 ### Tasks
 
@@ -396,3 +396,21 @@ Automatic local rotating backups are not implemented. A future local-network bac
 ## Agent Tasks — implemented
 
 The Agent Tasks phase adds owner-only Discord controls, durable SQLite Task and Task Run state, and a dedicated Conversation and Agent Session for each Task. One-time Tasks run on request. Recurring Tasks use whole-hour or whole-day intervals and are checked by the in-process minute scheduler. After downtime, an overdue Task runs once; failed or interrupted runs are not retried automatically. Task-thread messages guide a later run. Requested files go to deployment-root `results/<task-id>/<run-id>/` and are uploaded to the Task thread when possible. See [Tasks in INSTRUCTIONS.md](../INSTRUCTIONS.md#tasks) and [the SQLite schema](sqlite-schema.md#how-the-tables-work).
+
+## Anthropic API runtime (IP-0007)
+
+**Purpose:** add `AGENT_PROVIDER=anthropic-api`, a fourth Agent Runtime that calls the Anthropic Messages API directly with `ANTHROPIC_API_KEY` from the runtime home's `.env`. See [ADR 0030](adr/0030-anthropic-api-runtime.md) and [the provider section in INSTRUCTIONS.md](../INSTRUCTIONS.md#anthropic-api).
+
+This narrows the V1 "no API" boundary. It still applies to the `codex` and `claude` providers: their credential rules are unchanged, and the Claude CLI guard still refuses `ANTHROPIC_API_KEY`. Only `anthropic-api` uses an API key.
+
+Delivered:
+
+- Settings `ANTHROPIC_API_KEY` (required), `ANTHROPIC_API_MODEL` (default `claude-opus-5-5`), and `ANTHROPIC_API_EFFORT` (optional). Other homes ignore them with a warning that names the setting only.
+- A pinned SDK client and a startup model check that spends no tokens.
+- Streamed Turns with adaptive thinking, Anthropic-hosted web search and web fetch, `pause_turn` continuations, refusal fallbacks, and a `Sources:` list for cited search results.
+- Append-only `agent_history_sessions` and `agent_history` tables ([schema](sqlite-schema.md)). History survives restarts. The system prompt and tools are frozen per Session; instruction changes go in as system messages.
+- The failure kind `context_exhausted`, with a notice to use `/inoai reset`. Fixed notices for refusals and over-long replies.
+- Memory Review as one tool-free request. Text-only Task runs. Skills without scripts.
+- `inoai setup` support, with a hidden key prompt and no `PATH` check.
+
+No local tools, MCP servers, compaction, cost recording, or UI view of the stored history. The live check runs at feature acceptance with owner approval.

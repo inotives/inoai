@@ -99,7 +99,7 @@ test("rejects a malformed Claude model and names unsupported agent providers", (
   for (const provider of ["other", "OpenCode", "opencode "]) {
     assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: provider }), (error: unknown) => {
       assert(error instanceof ConfigurationError);
-      assert.match(error.message, /AGENT_PROVIDER must be codex, claude, or opencode/);
+      assert.match(error.message, /AGENT_PROVIDER must be codex, claude, opencode, or anthropic-api/);
       return true;
     });
   }
@@ -218,4 +218,84 @@ test("resolves OWNER_TIMEZONE when absent, blank, valid, or invalid", async () =
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+const sentinelKey = "sk-ant-api03-SENTINEL-do-not-print";
+
+test("requires ANTHROPIC_API_KEY for an anthropic-api home and never quotes it", () => {
+  const api = { ...validValues, AGENT_PROVIDER: "anthropic-api" };
+  for (const key of [undefined, "", "   "]) {
+    assert.throws(() => validateConfiguration({ ...api, ANTHROPIC_API_KEY: key }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /ANTHROPIC_API_KEY is required when AGENT_PROVIDER is anthropic-api/);
+      return true;
+    });
+  }
+  const configuration = validateConfiguration({ ...api, ANTHROPIC_API_KEY: ` ${sentinelKey} ` });
+  assert.equal(configuration.agentProvider, "anthropic-api");
+  assert.equal(configuration.anthropicApiKey, sentinelKey);
+  assert.equal(configuration.warnings, undefined);
+  assert.equal(configuration.claudeModel, undefined);
+});
+
+test("defaults the anthropic-api model and accepts an override", () => {
+  const api = { ...validValues, AGENT_PROVIDER: "anthropic-api", ANTHROPIC_API_KEY: sentinelKey };
+  assert.equal(validateConfiguration(api).anthropicApiModel, "claude-opus-5-5");
+  assert.equal(validateConfiguration({ ...api, ANTHROPIC_API_MODEL: "  " }).anthropicApiModel, "claude-opus-5-5");
+  assert.equal(validateConfiguration({ ...api, ANTHROPIC_API_MODEL: " claude-sonnet-5-5 " }).anthropicApiModel, "claude-sonnet-5-5");
+});
+
+test("accepts each documented effort and rejects any other value without quoting the key", () => {
+  const api = { ...validValues, AGENT_PROVIDER: "anthropic-api", ANTHROPIC_API_KEY: sentinelKey };
+  assert.equal("anthropicApiEffort" in validateConfiguration(api), false);
+  assert.equal("anthropicApiEffort" in validateConfiguration({ ...api, ANTHROPIC_API_EFFORT: " " }), false);
+  for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+    assert.equal(validateConfiguration({ ...api, ANTHROPIC_API_EFFORT: effort }).anthropicApiEffort, effort);
+  }
+  for (const effort of ["HIGH", "minimal", "extra", "1", sentinelKey]) {
+    assert.throws(() => validateConfiguration({ ...api, ANTHROPIC_API_EFFORT: effort }), (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.match(error.message, /ANTHROPIC_API_EFFORT must be low, medium, high, xhigh, max, or blank/);
+      assert.equal(error.message.includes(sentinelKey), false);
+      return true;
+    }, effort);
+  }
+});
+
+test("ignores anthropic-api settings on other homes with a warning that names only the setting", async () => {
+  const stray = { ANTHROPIC_API_KEY: sentinelKey, ANTHROPIC_API_MODEL: "claude-sonnet-5-5", ANTHROPIC_API_EFFORT: "bogus" };
+  for (const provider of ["claude", "codex", "opencode"]) {
+    const configuration = validateConfiguration({ ...validValues, AGENT_PROVIDER: provider, ...stray });
+    assert.equal(configuration.agentProvider, provider);
+    for (const field of ["anthropicApiKey", "anthropicApiModel", "anthropicApiEffort"]) assert.equal(field in configuration, false);
+    assert.deepEqual(configuration.warnings, [
+      "ANTHROPIC_API_KEY is ignored because AGENT_PROVIDER is not anthropic-api",
+      "ANTHROPIC_API_MODEL is ignored because AGENT_PROVIDER is not anthropic-api",
+      "ANTHROPIC_API_EFFORT is ignored because AGENT_PROVIDER is not anthropic-api",
+    ]);
+    assert.equal(JSON.stringify(configuration.warnings).includes(sentinelKey), false);
+  }
+  // Blank is unset, so a shared sample line does not warn.
+  assert.equal("warnings" in validateConfiguration({ ...validValues, AGENT_PROVIDER: "claude", ANTHROPIC_API_KEY: "", ANTHROPIC_API_MODEL: " " }), false);
+  const directory = await mkdtemp(join(tmpdir(), "inoai-test-"));
+  try {
+    const envFile = join(directory, ".env");
+    await writeFile(envFile, [...Object.entries({ ...validValues, AGENT_PROVIDER: "claude" }).map(([key, value]) => `${key}=${value}`), `ANTHROPIC_API_KEY=${sentinelKey}`].join("\n"));
+    const configuration = await loadConfiguration(envFile);
+    assert.equal(configuration.agentProvider, "claude");
+    assert.deepEqual(configuration.warnings, ["ANTHROPIC_API_KEY is ignored because AGENT_PROVIDER is not anthropic-api"]);
+    assert.equal(JSON.stringify(configuration).includes(sentinelKey), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("never quotes the API key in a configuration error", () => {
+  assert.throws(() => validateConfiguration({ ...validValues, AGENT_PROVIDER: "anthropic-api", ANTHROPIC_API_KEY: sentinelKey, MEMORY_REVIEW_TIME: "25:00", ANTHROPIC_API_EFFORT: "nope" }),
+    (error: unknown) => {
+      assert(error instanceof ConfigurationError);
+      assert.equal(error.message.includes(sentinelKey), false);
+      assert.equal(error.issues.some((issue) => issue.includes(sentinelKey)), false);
+      return true;
+    });
 });

@@ -5,7 +5,7 @@
 <h1 align="center">inoai</h1>
 
 <p align="center">
-  A local Discord bridge to your own signed-in coding-agent CLI: Codex, Claude Code, or OpenCode.
+  A local Discord bridge to your own signed-in coding-agent CLI (Codex, Claude Code, or OpenCode) or to the Anthropic API with your own API key.
 </p>
 
 <p align="center">
@@ -31,9 +31,9 @@
 
 ## What It Is
 
-inoai is a local personal-agent bridge. It connects a Discord bot to a coding-agent CLI that is already installed and signed in on your machine, and it keeps operational conversation history and durable agent Memory in local SQLite.
+inoai is a local personal-agent bridge. It connects a Discord bot to a coding-agent CLI that is already installed and signed in on your machine, or to the Anthropic API, and it keeps operational conversation history and durable agent Memory in local SQLite.
 
-It drives the CLI you already use instead of calling a model API. Codex runs on your ChatGPT sign-in, Claude Code on your Claude subscription, and OpenCode on whatever provider it is configured with. inoai itself never calls the OpenAI or Anthropic API, and it never loosens the CLI's own permission policy.
+By default it drives the CLI you already use instead of calling a model API. Codex runs on your ChatGPT sign-in, Claude Code on your Claude subscription, and OpenCode on whatever provider it is configured with. With the `codex` and `claude` providers, inoai never calls the OpenAI or Anthropic API, and it never loosens the CLI's own permission policy. The separate `anthropic-api` provider calls the Anthropic Messages API directly with a Console API key from the runtime home's `.env`, billed to that key's organization ([ADR 0030](docs/adr/0030-anthropic-api-runtime.md)).
 
 - An `@inoai` mention starts a dedicated Discord thread, and follow-ups in that thread continue the same Agent Session.
 - SQLite records users, sessions, messages, events, approvals, daily Recaps, and shared Memory, with audit fields and soft deletion in each runtime home.
@@ -42,7 +42,7 @@ It drives the CLI you already use instead of calling a model API. Codex runs on 
 - Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
 - A UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks. It binds to loopback by default or one selected private LAN address with `--host`; SQLite is the core runtime's source of truth.
 
-Status: Conversation workers, Codex, Claude CLI, OpenCode, Daily Memory Review (Claude homes only in V1), Tasks, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
+Status: Conversation workers, Codex, Claude CLI, OpenCode, the Anthropic API runtime, Daily Memory Review (Claude and Anthropic API homes in V1), Tasks, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
 
 ## Quick Start (Codex)
 
@@ -62,7 +62,7 @@ npm run validate
 npm start
 ```
 
-For Claude, OpenCode, skills, Tasks, the local UI, the Heartbeat Supervisor, and all commands, see [INSTRUCTIONS.md](INSTRUCTIONS.md).
+For Claude, OpenCode, the Anthropic API, skills, Tasks, the local UI, the Heartbeat Supervisor, and all commands, see [INSTRUCTIONS.md](INSTRUCTIONS.md).
 
 ## Documentation
 

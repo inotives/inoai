@@ -27,10 +27,30 @@ export type RuntimeEvent =
   | { type: "answer"; text: string }
   | { type: "usage"; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number; costUsd?: number };
 
-export type RuntimeFailureKind = "authentication" | "usage" | "pre_start" | "timed_out" | "cancelled" | "uncertain" | "session_missing";
+export type RuntimeFailureKind = "authentication" | "usage" | "pre_start" | "timed_out" | "cancelled" | "uncertain" | "session_missing" | "context_exhausted";
 
 export class RuntimeFailure extends Error {
   constructor(readonly kind: RuntimeFailureKind, readonly replaySafe = false) {
     super(kind);
   }
+}
+
+/** The frozen request prefix of one Agent Session: the system prompt and tool list as JSON, and the model that froze them. */
+export type AgentHistorySession = { systemJson: string; toolsJson: string; model: string };
+
+export type AgentHistoryRole = "user" | "assistant" | "system";
+
+/** One stored message. `contentJson` holds the content blocks exactly as sent or returned. */
+export type AgentHistoryEntry = { role: AgentHistoryRole; model: string | null; contentJson: string };
+
+export type AgentHistoryRow = AgentHistoryEntry & { ordinal: number };
+
+/** Append-only conversation history for runtimes that resend it on every Turn. Keyed by the inoai Session and its Agent Session ID. */
+export interface AgentHistoryStore {
+  /** Returns the stored Session record, or stores `initial` and returns it when none exists. */
+  readOrCreateHistorySession(sessionId: number, agentSessionId: string, initial: AgentHistorySession, actor?: string): Promise<AgentHistorySession>;
+  /** Lists the Agent Session's rows in `ordinal` order. */
+  listHistory(sessionId: number, agentSessionId: string): Promise<AgentHistoryRow[]>;
+  /** Appends one Turn's rows after the last ordinal in one transaction. Nothing is written if any row fails. */
+  appendHistory(sessionId: number, agentSessionId: string, entries: AgentHistoryEntry[], actor?: string): Promise<void>;
 }

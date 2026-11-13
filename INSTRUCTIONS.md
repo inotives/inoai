@@ -16,6 +16,7 @@ see [README.md](README.md). For the architecture and folder layout, see
   - [Skills](#skills)
   - [Claude](#claude)
   - [OpenCode](#opencode)
+  - [Anthropic API](#anthropic-api)
 - [Common Commands](#common-commands)
 - [Tasks](#tasks)
   - [Tasks from chat](#tasks-from-chat)
@@ -41,7 +42,7 @@ see [README.md](README.md). For the architecture and folder layout, see
 Node.js 22.23.4+, 24.22.1+, or 26.12.1+ for source builds (not needed for the standalone CLI)
 macOS (V1 release target)
 A Discord bot per concurrently running Agent Instance
-One signed-in agent CLI per runtime home: codex, claude, or opencode
+One agent runtime per runtime home: a signed-in codex, claude, or opencode CLI, or an Anthropic Console API key (anthropic-api)
 ```
 
 ## Standalone macOS CLI
@@ -49,7 +50,8 @@ One signed-in agent CLI per runtime home: codex, claude, or opencode
 The standalone executable targets Apple Silicon Macs. It includes the inoai
 runtime, web UI and skills installer; it does not need Node, npm, or a source
 checkout at runtime. Install and sign in to the provider CLI you want to use
-(Codex, Claude, or OpenCode) before setup. Create a Discord bot and obtain its
+(Codex, Claude, or OpenCode) before setup, or have an Anthropic Console API
+key ready for the `anthropic-api` provider. Create a Discord bot and obtain its
 token, server ID, owner user ID and status channel ID. Use a different bot
 for each concurrently running agent.
 
@@ -83,7 +85,10 @@ inoai start --dir /path/to/agent --port 1133
 
 Setup asks for a new agent data folder and a separate existing working folder.
 It checks that the chosen provider executable exists, but does not check its
-login state. The bot token is hidden as you type and stored in the agent's
+login state. For `anthropic-api` there is no executable to check: setup asks
+for the API key instead, hidden as you type, writes it only to the agent's
+`.env`, and sets `ANTHROPIC_API_MODEL=claude-opus-5-5`. Setup does not check
+the key; the first start does. The bot token is hidden as you type and stored in the agent's
 private `.env` file. Edit `agent.md` in the agent folder to customize the
 starter profile. Setup never overwrites an existing agent folder.
 
@@ -150,7 +155,7 @@ npm start
 
 Set `DISCORD_STATUS_CHANNEL_ID` to the channel for the startup online notice; it never starts conversations. The older `DISCORD_ALLOWED_CHANNEL_ID` key is no longer accepted; update existing local runtime-home `.env` files before starting this version. The bot needs access to the status channel and to every channel where you start conversations, including permission to create threads.
 
-`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, or `opencode`), a well-formed optional `CLAUDE_MODEL`, a well-formed optional `CLAUDE_ALLOWED_TOOLS` (Claude homes only), an optional `CLAUDE_PROMPT_CACHE_TTL` that is `1h` or blank (Claude homes only), a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. It does not contact Discord or any agent CLI.
+`npm run validate` is offline. It checks the required settings, `CHAT_PROVIDER=discord`, `AGENT_PROVIDER` (`codex`, `claude`, `opencode`, or `anthropic-api`), a well-formed optional `CLAUDE_MODEL`, a well-formed optional `CLAUDE_ALLOWED_TOOLS` (Claude homes only), an optional `CLAUDE_PROMPT_CACHE_TTL` that is `1h` or blank (Claude homes only), a digits-only optional `DISCORD_TASK_CHANNEL_ID`, a local `HH:MM` `MEMORY_REVIEW_TIME`, and a positive `MEMORY_REVIEW_MAX_CHARS`. For `anthropic-api` homes it also requires `ANTHROPIC_API_KEY` and checks that `ANTHROPIC_API_EFFORT` is `low`, `medium`, `high`, `xhigh`, `max`, or blank. On other homes, a non-blank `ANTHROPIC_API_KEY`, `ANTHROPIC_API_MODEL`, or `ANTHROPIC_API_EFFORT` prints a warning and validation still passes ([Anthropic API](#anthropic-api)). It does not contact Discord, any agent CLI, or the Anthropic API.
 
 ### Agent profile
 
@@ -284,6 +289,70 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 - The free tier allows use only "from within OpenCode". inoai works today because it runs the stock CLI; a future OpenCode change could refuse these runs, which shows up as the OpenCode authentication notice.
 
 **Permissive defaults.** OpenCode's built-in rules allow shell commands and file edits, and only a few actions ask (such as file tools outside the project or reading `.env` files). With default settings a Discord message can make OpenCode run commands and change files in the deployment folder; only the asking cases are rejected. inoai keeps your configured policy and never passes `--auto`, `--yolo`, or `--dangerously-skip-permissions`. For Codex-like behavior, set shell and edit to `ask` in your own OpenCode configuration.
+
+### Anthropic API
+
+The `anthropic-api` provider calls the Anthropic Messages API directly with an Anthropic Console API key ([ADR 0030](docs/adr/0030-anthropic-api-runtime.md)). It needs no agent CLI. It is a separate provider: the Claude CLI and Codex runtimes never use an API key, and the Claude credential guard above still refuses one.
+
+The headless CLIs stay the default. `anthropic-api` is off unless you turn it on for a runtime home: set `AGENT_PROVIDER=anthropic-api` and `ANTHROPIC_API_KEY` in that home's `.env`, or choose `anthropic-api` in `inoai setup`. Other homes are not affected.
+
+```bash
+npm run validate -- --connect-dir .inoai-connect-api
+cp .env.sample .inoai-connect-api/.env
+# Edit .inoai-connect-api/.env: set AGENT_PROVIDER=anthropic-api, ANTHROPIC_API_KEY, and your local Discord values.
+npm run validate -- --connect-dir .inoai-connect-api
+npm start -- --connect-dir .inoai-connect-api
+```
+
+`inoai setup` also offers `anthropic-api` ([Standalone macOS CLI](#standalone-macos-cli)).
+
+**Settings.** inoai reads them only from the runtime home's `.env`, never from your shell:
+
+- `ANTHROPIC_API_KEY` is required. Keep it only in that `.env`. inoai never writes it to SQLite, logs, Discord, or UI data, and no error message quotes it.
+- `ANTHROPIC_API_MODEL` is optional. Blank uses `claude-opus-5-5`. Any model ID is accepted if the startup check passes.
+- `ANTHROPIC_API_EFFORT` is optional: `low`, `medium`, `high`, `xhigh`, or `max`. Blank uses the model's own default (`medium` on Opus 5.5).
+
+**Startup.** Before Discord connects, inoai:
+
+- refuses to start when `ANTHROPIC_CUSTOM_HEADERS` is set in its process environment. Unset it in the shell or LaunchAgent that starts inoai.
+- sends every request to `https://api.anthropic.com` with the configured key. `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_LOG`, and `ANTHROPIC_OPEN_TELEMETRY*` in your environment change nothing.
+- looks up the model (no tokens are spent). Startup stops with a fixed message, such as `Anthropic API model check failed: ANTHROPIC_API_KEY was rejected` or `Anthropic API model check failed: ANTHROPIC_API_MODEL is not a known model`, when the key is rejected, the model is unknown, or the model does not support adaptive thinking, web search, or the configured effort.
+
+The home runs different threads in parallel without a concurrency probe. Turns in one thread stay FIFO. After an uncertain or timed-out Turn, the home falls back to one global FIFO queue, as for the other providers.
+
+**Data and billing.** Prompts, conversation history, Memory sections, `SKILL.md` text, and web results go to Anthropic. They are billed to the Console organization that owns the key. Web search is also billed per search. inoai records input, cached, and output tokens for each Turn, but no dollar cost.
+
+**Web tools and limits.** The model can use only Anthropic-hosted web search and web fetch. It has no local tools: it cannot read or change files, run commands, or use MCP servers or skill scripts, and there are no approval cards. Per request, it may run at most 5 searches and 5 fetches, and each fetched page is cut to 20,000 tokens. A long tool loop that pauses is continued at most 5 times per Turn. Each reply may use up to the model's output limit, capped at 64,000 tokens.
+
+**Sources.** When an answer cites web search results, inoai appends a `Sources:` list of up to 5 unique titles and URLs. Pages read with web fetch are not listed.
+
+**History.** inoai stores each thread's API history in the runtime home's SQLite file (`agent_history_sessions` and `agent_history`) and resends it on every Turn, so a thread continues after a restart. The UI does not show it.
+
+- A thread keeps the `agent.md` and enabled-skill index it started with. When you change either, the next Turn sends the new instructions as a system message, and the thread continues.
+- Model limitation: Claude Sonnet 5 does not accept these mid-conversation system messages. With that model, an `agent.md` or skill change makes every later Turn in an existing thread fail until you run `/inoai reset`. The default `claude-opus-5-5` accepts them.
+- Each stored message holds the full prompt of its Turn, including the Memory section. Later Turns resend it, also after that Memory is deleted.
+- There is no compaction. A thread too long for the model fails with the notice below; use `/inoai reset` to start a new session. Old history stays in SQLite and is never resent.
+- If inoai stops after it stores a Turn's history but before it posts the answer, that answer stays in history although you never saw it. The Message is marked failed or uncertain as usual.
+
+**Fixed notices.** These replies are fixed text and never quote an API error:
+
+| Case | Notice |
+| --- | --- |
+| The model declined, also after fallbacks | The model declined this request, so this reply was not saved to the conversation. You can rephrase it and try again. |
+| The reply hit the output limit (`max_tokens`) | The reply was too long to finish, so it was not saved to the conversation. Ask for a shorter answer or split the request. |
+| The thread is too long for the model (`context_exhausted`) | This thread's Anthropic API conversation is too long for the model. Use /inoai reset to start a new session. |
+| The key was rejected (401 or 403) | The Anthropic API key was rejected. Check ANTHROPIC_API_KEY in the runtime home's .env, restart inoai, then send a fresh request. |
+| Rate limit (429) or billing error | Anthropic API usage is unavailable. Check your account locally, then send a fresh request. |
+
+The refusal and `max_tokens` replies write no history, so the thread continues as if the request had not been sent. A low-credit error that the API reports as a plain 400 shows the generic "turn ended without a confirmed answer" notice instead of the usage notice. Connection errors and server errors before the reply starts are retried, as for the other providers. A Turn with no stream event for 300 seconds times out; a long silent thinking phase at a high effort could trip this.
+
+**Task runs and skills.** Task runs are text-only: the prompt tells the model that it cannot create files, and inoai writes its reply to `result.md`. A refusal or `max_tokens` notice becomes that run's `result.md`, and the run counts as completed. A selected skill adds its `SKILL.md` text to the prompt, but its scripts are not prepared or run.
+
+**Memory Review.** These homes review ([Daily Memory Review](#daily-memory-review)).
+
+**Settings on other homes.** A Codex, Claude, or OpenCode home ignores `ANTHROPIC_API_KEY`, `ANTHROPIC_API_MODEL`, and `ANTHROPIC_API_EFFORT`. `npm run validate` and startup print one warning per setting that is set, for example `Warning: ANTHROPIC_API_KEY is ignored because AGENT_PROVIDER is not anthropic-api`. The warning never shows the value, and the home starts normally. inoai never copies `.env` into the environment, so the key never reaches the Claude CLI. Remove the line to silence the warning.
+
+**`.env` exposure on Claude homes.** A Claude home runs the CLI in `PROJECT_DIRECTORY`, or, when that is unset, in the folder that holds the runtime home. When the runtime home is inside the working folder, the Claude CLI's read tools may be able to read its `.env`, including any key in it. This is an existing risk, not added by `anthropic-api`. Keep API keys out of Claude homes, and set `PROJECT_DIRECTORY` to a folder that does not contain the runtime home.
 
 ## Common Commands
 
@@ -623,15 +692,15 @@ acceptance. Record those limits and any environment-gated skips in the handoff.
 
 ## Runtime Behavior
 
-All three runtimes share the same queue, archive, and safety rules:
+All four runtimes share the same queue, archive, and safety rules. The [Anthropic API](#anthropic-api) section lists where `anthropic-api` differs:
 
-- Turns run FIFO per Agent Session. When a runtime proves cross-session concurrency at startup (Codex and Claude probes), different threads run in parallel; otherwise, and always for OpenCode, all Turns share one global FIFO queue.
+- Turns run FIFO per Agent Session. When a runtime proves cross-session concurrency at startup (Codex and Claude probes), different threads run in parallel; otherwise, and always for OpenCode, all Turns share one global FIFO queue. `anthropic-api` homes start in parallel mode without a probe.
 - Only Turns proven never to have started are retried (at most three attempts in total). An uncertain outcome is recorded and you are asked for a fresh request ([ADR 0002](docs/adr/0002-retry-only-proven-safe-runtime-turns.md)).
 - A supported Codex command request shows its complete command and working directory in an owner-only Discord card. **Approve** accepts that one live request; **Reject** declines it. The card expires after 15 minutes. Missing, unsafe, network-specific, or broader permission requests still fail closed with a fixed notice to use local Codex ([ADR 0003](docs/adr/0003-fail-closed-on-unsafe-approval-previews.md)). SQLite stores a fixed summary and outcome, not the command or working directory. Claude and OpenCode prompts still fail closed and record only a denial count ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)). When the Turn still answers, inoai posts a short note that the agent skipped some tool calls that need approval and answered without them; for Claude, the note points to `CLAUDE_ALLOWED_TOOLS`. When the Turn does not answer, inoai posts the fixed notice to use local Claude or OpenCode for the blocked action. Neither message names the tools. The `approval_unsupported` Event detail records `turn=completed` or `turn=failed` and the denial count.
 - Each CLI's own settings, MCP servers, skills, sandbox, and permission rules apply unchanged to Turns; Memory Reviews run without them. For Claude, the CLI denies any action your settings do not already allow.
 - At startup, Codex and Claude run a concurrency probe; the Claude probe makes two short, tool-free `haiku` calls that count against your subscription usage. Startup logs which mode is active.
 - Sign-in and usage failures post the runtime's own fixed notice, for example to run `codex login` or `claude /login`.
-- `agent.md` is sent with every Turn, so edits apply from the next Turn, including in existing threads.
+- `agent.md` is sent with every Turn, so edits apply from the next Turn, including in existing threads. On `anthropic-api` homes the edit arrives as a system message; see the Claude Sonnet 5 limitation in [Anthropic API](#anthropic-api).
 - A chat thread bound to a different provider is not resumed; its notice offers `/inoai reset` or a new thread. Task runs instead move their Task's session to the active provider (ADR 0028). A session the CLI can no longer find fails closed with a notice to run `/inoai reset`, and is never silently recreated.
 
 ## Daily Memory Review
@@ -658,13 +727,15 @@ A review that adds, updates, or deletes Memory, or stores proposals, posts a sum
 
 Runtime support:
 
-- **Claude** is the only runtime that reviews in V1. Each review is a throwaway, text-only `claude -p` run in a temporary folder with no tools, no MCP servers, no saved session, `--safe-mode`, and a fixed inoai system prompt, so your `CLAUDE.md`, skills, plugins, hooks, and Claude memory are not used. A run that still reports tools, MCP servers, or memory paths fails. Reviews count against your Claude subscription usage.
+- **Claude** and **Anthropic API** homes review in V1.
+- **Claude**: each review is a throwaway, text-only `claude -p` run in a temporary folder with no tools, no MCP servers, no saved session, `--safe-mode`, and a fixed inoai system prompt, so your `CLAUDE.md`, skills, plugins, hooks, and Claude memory are not used. A run that still reports tools, MCP servers, or memory paths fails. Reviews count against your Claude subscription usage.
 - **Codex** review code is present but disabled. The 2026-10-03 probe against `codex-cli 0.159.3` saw 11 MCP startup notifications (6 `starting`, 5 `ready`) in the authenticated throwaway app-server session, so it did not prove MCP-free execution. No tool request or disposable-project file change occurred, but a correct-looking answer is insufficient to enable reviews; see [ADR 0011](docs/adr/0011-codex-memory-reviews-need-tool-free-proof.md).
+- **Anthropic API**: each review is one streamed request with no tools, no history, and inoai's fixed review instructions as the system prompt. It uses the model's default effort; `ANTHROPIC_API_EFFORT` does not apply. Its reply is capped at 16,000 tokens, and it times out after 600 seconds with no stream event. A reply that is not plain text fails the review. Reviews are billed to the key's Console organization.
 - **OpenCode** reviews are not supported.
 
 Codex and OpenCode homes record a `memory_review_skipped` Event and keep their review cursors, so no Messages are marked reviewed without a review.
 
-A review sends archived Message text, current Memory, pending Memory proposals, and recent Recaps to the runtime's provider (Anthropic, for Claude homes), with secret-like lines replaced by `[redacted: secret-like text]`. inoai stores only the Recap, accepted Memory, and accepted proposals, never the prompt or the model's raw reply.
+A review sends archived Message text, current Memory, pending Memory proposals, and recent Recaps to the runtime's provider (Anthropic, for Claude and Anthropic API homes), with secret-like lines replaced by `[redacted: secret-like text]`. inoai stores only the Recap, accepted Memory, and accepted proposals, never the prompt or the model's raw reply.
 
 ### Memory proposals
 
@@ -707,6 +778,8 @@ Token and cost numbers depend on what each CLI reports. The adapters in `src/ino
 - **Claude** (`claude-runtime.ts`): the `result` event's `usage`. Input must still be `input_tokens` + `cache_creation_input_tokens`, with `cache_read_input_tokens` reported apart as cached input. `total_cost_usd` must still be cumulative for a resumed session; inoai keeps it only for a Turn that starts a new session.
 - **Codex** (`codex-runtime.ts`): the `thread/tokenUsage/updated` notice. `total` must still be the thread's running total and `last` the last model call, so each new total equals the previous total plus `last`. `inputTokens` must still include `cachedInputTokens`, and `outputTokens` must include `reasoningOutputTokens`.
 - **OpenCode** (`opencode-runtime.ts`): undocumented internals. Each `step_finish` event of `opencode run --format json --standalone` must still carry that step's own `tokens` and `cost`, with input excluding cache reads and writes and output excluding reasoning. Also recheck `--standalone` and the `opencode api --standalone GET /api/session/<id>` session check.
+
+The `anthropic-api` runtime (`anthropic-api-runtime.ts`) reads the Messages API `usage` object and needs no CLI check. Input is `input_tokens` + `cache_creation_input_tokens`, `cache_read_input_tokens` is cached input, and usage is summed across `pause_turn` continuations and fallback attempts. It records no cost.
 
 After a check, run `npm test` and update the versions below. Usage mapping last verified with:
 

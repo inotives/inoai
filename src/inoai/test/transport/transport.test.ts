@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -951,7 +951,7 @@ test("a missing OpenCode CLI fails startup before any external connection and re
 // A fake `claude` placed on PATH: it answers --version, `auth status --json` from status.json, and each -p Turn
 // with one permission denial and an answer. Only the subscription fields matter; identity fields are sentinels.
 const fakeClaudeScript = `
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const dir = dirname(fileURLToPath(import.meta.url));
@@ -963,6 +963,9 @@ if (argv[0] === "auth") {
   process.exit(exit);
 }
 const sid = argv[argv.findIndex((arg) => arg === "--session-id" || arg === "--resume") + 1];
+// Records only whether the Turn child saw an Anthropic API key, never a value.
+writeFileSync(join(dir, "turn-env.json"), JSON.stringify({ hasKey: "ANTHROPIC_API_KEY" in process.env,
+  leaked: Object.values(process.env).some((value) => value?.includes("SENTINEL-CLAUDE-ENV-KEY")) }));
 process.stdin.resume();
 process.stdin.on("end", () => {
   for (const event of [
@@ -1071,6 +1074,130 @@ test("Claude startup with the subscription login wires the runtime and an answer
       assert.equal(restarted.database.prepare("SELECT agent_provider FROM sessions").get()?.agent_provider, "claude");
     } finally { await restarted.release(); }
   });
+});
+
+test("a claude home with ANTHROPIC_API_KEY in .env starts, warns without the value, and keeps the key out of the CLI child", async () => {
+  const hadKey = Object.hasOwn(process.env, "ANTHROPIC_API_KEY");
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    await withFakeClaude(claudeSubscription, async (directory, home) => {
+      await appendFile(home.envFile, "\nANTHROPIC_API_KEY=sk-ant-SENTINEL-CLAUDE-ENV-KEY\n");
+      const fake = new FakeClient();
+      const logged: unknown[] = [];
+      const [originalLog, originalError, originalWarn] = [console.log, console.error, console.warn];
+      console.log = (...args: unknown[]) => { logged.push(args); };
+      console.error = (...args: unknown[]) => { logged.push(args); };
+      console.warn = (...args: unknown[]) => { logged.push(args); };
+      try {
+        await run([], new DiscordTransport("token", fake as unknown as Client), undefined, beforeReviewTime);
+        fake.emit(Events.MessageCreate, {
+          guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
+          channel: { isThread: () => false }, reference: null,
+          mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
+        });
+        await until(() => JSON.stringify(fake.sent).includes("claude answer"));
+        process.emit("SIGTERM");
+        await until(() => !existsSync(home.lockFile));
+      } finally {
+        [console.log, console.error, console.warn] = [originalLog, originalError, originalWarn];
+      }
+      assert.match(JSON.stringify(logged), /Warning: ANTHROPIC_API_KEY is ignored because AGENT_PROVIDER is not anthropic-api/);
+      assert.equal(JSON.stringify([logged, fake.sent]).includes("SENTINEL-CLAUDE-ENV-KEY"), false);
+      assert.deepEqual(JSON.parse(await readFile(join(directory, "bin", "turn-env.json"), "utf8")), { hasKey: false, leaked: false });
+    });
+  } finally {
+    if (hadKey) process.env.ANTHROPIC_API_KEY = previousKey;
+    else delete process.env.ANTHROPIC_API_KEY;
+  }
+});
+
+// A fake Anthropic API: the startup model check and one streamed text answer per Messages request.
+function fakeAnthropicApi() {
+  const requests: string[] = [];
+  const sse = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  const support = { supported: true };
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    requests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+    if (url.includes("/v1/models/")) {
+      return new Response(JSON.stringify({ type: "model", id: "claude-opus-5-5", display_name: "Claude Opus 5.5", created_at: "2026-01-01T00:00:00Z",
+        max_tokens: 128000, max_input_tokens: 1000000, capabilities: { thinking: { supported: true, types: { adaptive: support } },
+          server_tools: { supported: true, web_search: support }, effort: { supported: true, high: support } } }),
+      { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const body = [
+      sse("message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-opus-5-5", content: [],
+        stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }),
+      sse("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "api answer" } }),
+      sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+      sse("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } }),
+      sse("message_stop", { type: "message_stop" }),
+    ].join("");
+    return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  return { requests, fetch };
+}
+
+test("anthropic-api startup checks the model, answers a Turn with stored history, enables reviews, and runs per Session", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "inoai-anthropic-api-run-"));
+  const previousDirectory = process.cwd();
+  const previousExitCode = process.exitCode;
+  const key = "sk-ant-api03-SENTINEL-APP-KEY";
+  const logged: unknown[] = [];
+  const [originalLog, originalError, originalWarn] = [console.log, console.error, console.warn];
+  try {
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, `${validEnv.replace("AGENT_PROVIDER=codex", "AGENT_PROVIDER=anthropic-api")}\nANTHROPIC_API_KEY=${key}\nANTHROPIC_API_EFFORT=high\n`);
+    process.chdir(directory);
+    const api = fakeAnthropicApi();
+    const fake = new FakeClient();
+    let loginRequests = -1;
+    const login = fake.login.bind(fake);
+    fake.login = async () => { loginRequests = api.requests.length; return login(); };
+    // After the 06:00 review time with no timer: the startup cycle runs once against a Session-free archive.
+    const afterReviewTime = { ...beforeReviewTime, anthropicApiFetch: api.fetch, schedulerClock: {
+      now: () => new Date(2026, 9, 3, 7, 0), setInterval: () => undefined, clearInterval: () => {},
+    } satisfies SchedulerClock, storeFactory: (runtimeHome: Awaited<ReturnType<typeof start>>["runtimeHome"]) => createSqliteOperationalStore(openDatabase(runtimeHome)) };
+    console.log = (...args: unknown[]) => { logged.push(args); };
+    console.error = (...args: unknown[]) => { logged.push(args); };
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      await run([], new DiscordTransport("token", fake as unknown as Client), undefined, afterReviewTime);
+      fake.emit(Events.MessageCreate, {
+        guildId: "guild", channelId: "channel", id: "request", author: { id: "owner", bot: false }, content: "<@inoai> task",
+        channel: { isThread: () => false }, reference: null,
+        mentions: { parsedUsers: new Map([["inoai", { id: "inoai", bot: true }]]) },
+      });
+      await until(() => JSON.stringify(fake.sent).includes("api answer"));
+      process.emit("SIGTERM");
+      await until(() => !existsSync(home.lockFile));
+      await until(() => process.exitCode === 0);
+    } finally {
+      [console.log, console.error, console.warn] = [originalLog, originalError, originalWarn];
+    }
+    // The model check ran before Discord started; the Turn is one Messages request.
+    assert.equal(loginRequests, 1);
+    assert.deepEqual(api.requests, ["GET /v1/models/claude-opus-5-5", "POST /v1/messages"]);
+    assert.match(JSON.stringify(logged), /Anthropic API cross-session concurrency: enabled/);
+    assert.equal(JSON.stringify([logged, fake.sent]).includes(key), false);
+    const restarted = await startWithTestStore(directory);
+    try {
+      const events = listEvents(restarted.database);
+      assert.equal(events.some((event) => event.event_type === "memory_review_skipped"), false);
+      assert.equal(events.some((event) => event.event_type === "memory_review_cycle"), true);
+      assert.equal(restarted.database.prepare("SELECT agent_provider FROM sessions").get()?.agent_provider, "anthropic-api");
+      assert.equal(restarted.database.prepare("SELECT COUNT(*) AS count FROM agent_history").get()?.count, 2);
+      const dump = JSON.stringify(["events", "messages", "agent_history", "agent_history_sessions"].map((table) =>
+        restarted.database.prepare(`SELECT * FROM ${table}`).all()));
+      assert.equal(dump.includes(key), false);
+    } finally { await restarted.release(); }
+  } finally {
+    process.chdir(previousDirectory);
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 // A fake `opencode` placed on PATH: it answers --version and each run with two auto-rejected tools, one ordinary tool

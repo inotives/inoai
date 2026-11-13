@@ -2,7 +2,7 @@
 
 Use this file as the first routing guide when working in this repository.
 
-inoai is a local TypeScript bridge between a chat transport and a locally authenticated coding-agent CLI. V1 uses Discord with Codex CLI (the owner's ChatGPT sign-in) or, from Phase 5a, Claude CLI (the owner's Claude subscription sign-in), or, from Phase 5b, OpenCode (its configured provider; free OpenCode Zen today). Codex and Claude never use the OpenAI or Anthropic API.
+inoai is a local TypeScript bridge between a chat transport and a coding-agent runtime. V1 uses Discord with Codex CLI (the owner's ChatGPT sign-in) or, from Phase 5a, Claude CLI (the owner's Claude subscription sign-in), or, from Phase 5b, OpenCode (its configured provider; free OpenCode Zen today), or, from IP-0007, the Anthropic Messages API (`anthropic-api`, with a Console API key in the runtime home's `.env`). The `codex` and `claude` providers never use the OpenAI or Anthropic API or an API key ([ADR 0030](docs/adr/0030-anthropic-api-runtime.md)).
 
 ## Trinary Agents workflow
 
@@ -43,7 +43,7 @@ status, dependencies, or canonical handoff files.
 - The portable core and the local SPA UI are separate applications.
 - A deployment folder contains the core executable, sibling SPA UI bundle, and one or more ignored `.inoai-connect*` runtime homes.
 - Each runtime home is an independent Agent Instance with its own `.env`, `agent.md`, SQLite archive, Memory, approvals, and lock file.
-- Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), and OpenCode (Phase 5b) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
+- Each runtime home selects one chat transport and one agent-runtime provider. Discord is the only V1 transport; Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the Anthropic API (`anthropic-api`, IP-0007) are the V1 agent runtimes. Provider seams are deliberately narrow for later adapters.
 - The SPA UI reads the selected runtime home's SQLite file and Task `result.md` files. Its only writes are Task create, edit, run now, pause, resume, and cancel, through short-lived SQLite connections (ADR 0026). Everything else is read-only. It must never read `.env` or expose credentials.
 - The UI server listens on `127.0.0.1` by default. An explicit `--host` may bind it to one private LAN IPv4 address. Every request must use the bound address and port in `Host`; the loopback default also accepts `localhost:<port>`. Other hosts get 403 on every path. `/` accepts GET and HEAD, and `/api/ui-data` accepts GET; other methods get 405. Unknown paths get 404. LAN mode has no password, so any device that can reach it can read UI data and change Tasks.
 
@@ -126,4 +126,4 @@ This file is repository guidance, not an agent persona. The core copies a defaul
 
 ## V1 boundaries
 
-V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), and the accepted implementation phases. The SPA UI writes only Tasks (ADR 0026) and stays on loopback unless explicitly bound to a private LAN address. The Agent Tasks phase is active. IP-0003 delivered chat-proposed Tasks (ADR 0027) and was accepted on 2026-10-24. Defer Internet UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.
+V1 targets macOS, owner-only access, local SQLite, Discord, Codex, Claude CLI (Phase 5a), OpenCode (Phase 5b), the Anthropic API runtime (IP-0007, ADR 0030), and the accepted implementation phases. Only `anthropic-api` uses an API key; the `codex` and `claude` providers stay on subscription sign-in. The SPA UI writes only Tasks (ADR 0026) and stays on loopback unless explicitly bound to a private LAN address. The Agent Tasks phase is active. IP-0003 delivered chat-proposed Tasks (ADR 0027) and was accepted on 2026-10-24. Defer Internet UI access, family access, cross-Agent-Instance Memory sharing, and other adapters until their phase is explicitly started.

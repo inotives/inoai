@@ -17,7 +17,8 @@ try {
   const licenses = run(["--licenses"]);
   assert.equal(licenses.status, 0, licenses.stderr);
   assert.equal(licenses.stdout.trimEnd(), (await readFile(resolve("dist/standalone/THIRD_PARTY_NOTICES.txt"), "utf8")).trimEnd());
-  for (const text of ["Node.js", "@sapphire/async-queue", "@sapphire/snowflake", "skills 1.7.4", "ThirdPartyNoticeText.txt", "discord.js"]) assert.ok(licenses.stdout.includes(text), `Missing notice for ${text}`);
+  for (const text of ["Node.js", "@sapphire/async-queue", "@sapphire/snowflake", "skills 1.7.4", "ThirdPartyNoticeText.txt", "discord.js", "@opentelemetry/api", "standardwebhooks", "partial-json-parser (vendored in @anthropic-ai/sdk"]) assert.ok(licenses.stdout.includes(text), `Missing notice for ${text}`);
+  for (const file of ["LICENSE", "LICENSE-MIT"]) assert.match(licenses.stdout, new RegExp(`^@anthropic-ai/sdk \\d+\\.\\d+\\.\\d+ — ${file}$`, "m"), `Missing @anthropic-ai/sdk ${file} notice`);
   const answers = ["demo", agent, root, "codex", "fake.token", "123", "456", "789"];
   await createAgent(async () => answers.shift(), async () => true);
   for (const args of [["validate", "--dir", agent], ["skills", "list", "--dir", agent], ["memory", "list", "--dir", agent]]) {

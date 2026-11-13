@@ -4,7 +4,7 @@ import { agentSchemaName, normalizeAgentInstanceId } from "../../../agent-instan
 export type AgentProvisioningInput = {
   agentInstanceId: string;
   agentName: string;
-  agentProvider: "codex" | "claude" | "opencode";
+  agentProvider: "codex" | "claude" | "opencode" | "anthropic-api";
   runtimeHome: string;
   ownerUserId: string;
 };
@@ -25,8 +25,8 @@ function requiredText(value: string, field: string): string {
 }
 
 function agentProvider(value: string): AgentProvisioningInput["agentProvider"] {
-  if (value !== "codex" && value !== "claude" && value !== "opencode") {
-    throw new Error("agentProvider must be codex, claude, or opencode");
+  if (value !== "codex" && value !== "claude" && value !== "opencode" && value !== "anthropic-api") {
+    throw new Error("agentProvider must be codex, claude, opencode, or anthropic-api");
   }
   return value;
 }
