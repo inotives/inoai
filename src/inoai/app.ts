@@ -36,6 +36,7 @@ import { createSqliteOperationalStore } from "./connectors/persistence/sqlite/op
 import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operational-store.js";
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } from "./roles/role-operations.js";
+import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
 import { loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
@@ -300,6 +301,26 @@ export async function startTransport(
       await request.respond(`Memory #${memory.id} forgotten.`);
       return;
     }
+    if (request.command.startsWith("role-")) {
+      const unavailable = "Role control unavailable in this channel.";
+      if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
+        || request.externalUserId !== instance.configuration.discordOwnerUserId) {
+        await request.respond(unavailable);
+        return;
+      }
+      const owner = await store.findUser("discord", request.workspaceId, request.externalUserId);
+      if (!owner || owner.id !== instance.owner.id) { await request.respond(unavailable); return; }
+      let reply: string;
+      try {
+        reply = await roleControlReply(store, instance.runtimeHome.rolesDirectory,
+          request.command as "role-list" | "role-show" | "role-equip" | "role-unequip", request.roleId);
+      } catch (error) {
+        if (!isSqliteBusyError(error)) throw error;
+        reply = "SQLite database is busy. Retry the role command shortly.";
+      }
+      await request.respond(reply);
+      return;
+    }
     if (request.command.startsWith("task-")) {
       if (instance.closing || request.workspaceId !== instance.configuration.discordGuildId
         || request.externalUserId !== instance.configuration.discordOwnerUserId || !request.guildTextChannelId
@@ -412,7 +433,8 @@ export async function startTransport(
         uncertain_delivery: messages.filter((message) => message.direction === "agent" && message.delivery_state === "uncertain").length,
       };
       await request.respond(`Project: ${session.project_path}\nSession: ${session.agent_session_id.startsWith("pending:") ? "pending" : "active"}`
-        + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`);
+        + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`
+        + `\n${await roleStatusLine(store, instance.runtimeHome.rolesDirectory)}`);
       return;
     }
     if (!worker) { await request.respond("Control unavailable. Please try again."); return; }
