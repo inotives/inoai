@@ -48,7 +48,7 @@ The role catalog is converted from [github/awesome-copilot](https://github.com/g
 
 ## Rendering
 
-The composed instructions are `renderEnabledSkillsProfile(agent.md)`, a blank line, and the role block. The role block comes after skill rendering, so the Enabled Skills section replacement cannot drop it. Role headings are demoted: `## Equipped Role: <Name>`, the summary, `### Instructions`, and `### Workflow`.
+The composed instructions are `renderEnabledSkillsProfile(agent.md)`, a blank line, and the role block. Since RF-0003, `renderEnabledSkillsProfile` returns `agent.md` (without any old `## Enabled Skills` section), then `## inoai Safety`, then `## Enabled Skills` only when a skill is enabled ([ADR 0018](0018-agent-profiles-and-local-skill-packages.md)). The role block always comes last. Role headings are demoted: `## Equipped Role: <Name>`, the summary, `### Instructions`, and `### Workflow`.
 
 ## Persistence
 

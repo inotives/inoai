@@ -37,7 +37,7 @@ import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operat
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } from "./roles/role-operations.js";
 import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
-import { loadAgentProfile } from "./agent-instance/profile.js";
+import { enabledSkillsSectionWarning, hasEnabledSkillsSection, loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
 import { parseHeartbeatSetupCommand, runHeartbeatSetup } from "./heartbeat/setup.js";
@@ -785,7 +785,8 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
     return;
   }
   if (args[0] === "profile" && args[1] === "validate") {
-    const { runtimeHome } = await validateProfile(process.cwd(), parseConnectDirectory(args.slice(2)));
+    const { runtimeHome, profile } = await validateProfile(process.cwd(), parseConnectDirectory(args.slice(2)));
+    if (hasEnabledSkillsSection(profile)) console.warn(`Warning: ${enabledSkillsSectionWarning}`);
     console.log(`inoai agent profile is valid: ${runtimeHome.agentFile}`);
     return;
   }

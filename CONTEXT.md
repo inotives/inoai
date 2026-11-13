@@ -169,9 +169,9 @@ _Avoid_: Infrastructure bucket, composition root
 
 **Agent Profile**:
 The canonical role and behavior description for one Agent Instance, stored as
-`agent.md` in its deployed runtime home. It defines identity, personality,
-operating rules, safety boundaries, and references to the instance's available
-capabilities.
+`agent.md` in its deployed runtime home. It holds the owner's identity,
+mission, style, and rules. inoai appends its own safety text, the enabled
+skills, and the Equipped Role when it composes instructions.
 _Avoid_: Agent Account, runtime configuration, skill
 
 **Role**:

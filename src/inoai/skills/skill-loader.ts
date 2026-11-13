@@ -1,7 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadAgentProfile } from "../agent-instance/profile.js";
+import { inoaiSafetySection, loadAgentProfile, withoutEnabledSkillsSection } from "../agent-instance/profile.js";
 import { inspectInstalledSkill } from "./skill-lifecycle.js";
 import {
   isSkillApprovalCurrent,
@@ -71,24 +71,24 @@ export async function buildEnabledSkillIndex(home: SkillHome): Promise<EnabledSk
   return { version: 1, skills: entries };
 }
 
-function managedSection(index: EnabledSkillIndex): string {
-  if (!index.skills.length) return "No skills are enabled for this Agent Instance.";
+function enabledSkillsSection(index: EnabledSkillIndex): string {
   return [
+    "## Enabled Skills",
+    "",
     "The harness exposes only the following owner-approved provider-neutral skills.",
     "Full instructions load only when the harness selects a skill for the current Turn.",
     ...index.skills.map((skill) => `- ${skill.id} (version ${skill.version})`),
   ].join("\n");
 }
 
-/** Replace only the harness-owned Enabled Skills section in a profile snapshot. */
+/**
+ * Compose the profile instructions: agent.md without any old Enabled Skills section,
+ * then inoai Safety, then Enabled Skills only when at least one skill is enabled.
+ */
 export function renderEnabledSkillsProfile(profile: string, index: EnabledSkillIndex): string {
-  const marker = /^## Enabled Skills\s*$/m;
-  const match = marker.exec(profile);
-  if (!match) throw new SkillSelectionError("Agent profile is missing the Enabled Skills section");
-  const bodyStart = match.index + match[0].length;
-  const nextSection = profile.slice(bodyStart).search(/^##\s/m);
-  const bodyEnd = nextSection < 0 ? profile.length : bodyStart + nextSection;
-  return `${profile.slice(0, bodyStart).trimEnd()}\n\n${managedSection(index)}\n${profile.slice(bodyEnd).replace(/^\n+/, "\n")}`;
+  const parts = [withoutEnabledSkillsSection(profile).trimEnd(), inoaiSafetySection];
+  if (index.skills.length) parts.push(enabledSkillsSection(index));
+  return `${parts.join("\n\n")}\n`;
 }
 
 /** Load a profile snapshot with the current trust-derived skill index. */

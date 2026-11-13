@@ -513,10 +513,23 @@ test("the executable validates the runtime-home agent profile offline", async ()
   const executable = fileURLToPath(new URL("../../../index.js", import.meta.url));
   const home = await bootstrapRuntimeHome(deployment, ".inoai-connect-profile");
   await writeFile(home.envFile, validEnv);
-  const child = spawn(process.execPath, [executable, "profile", "validate", "--connect-dir", ".inoai-connect-profile"], { cwd: deployment });
-  try {
+  // Runs `profile validate` and returns its exit code and stderr.
+  const validateProfileCli = async () => {
+    const child = spawn(process.execPath, [executable, "profile", "validate", "--connect-dir", ".inoai-connect-profile"], { cwd: deployment });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
     const [code] = await once(child, "exit");
-    assert.equal(code, 0);
+    return { code, stderr };
+  };
+  try {
+    let result = await validateProfileCli();
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stderr, /Enabled Skills/, "the new template prints no warning");
+    // An old-format file with the harness-owned Enabled Skills section warns but still passes.
+    await writeFile(home.agentFile, `${defaultAgentProfile}\n## Enabled Skills\n\nNo skills are enabled for this Agent Instance.\n`);
+    result = await validateProfileCli();
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /Warning: agent\.md has an '## Enabled Skills' section\. inoai manages enabled skills and ignores this section; remove it\./);
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }
