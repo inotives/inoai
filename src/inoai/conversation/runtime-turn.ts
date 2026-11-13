@@ -1,5 +1,5 @@
 import { RuntimeFailure } from "../agent-runtime/ports.js";
-import type { AgentRuntime, RuntimeEvent } from "../agent-runtime/ports.js";
+import type { AgentRuntime, RuntimeEvent, TurnConnections } from "../agent-runtime/ports.js";
 
 export type RuntimeTurnStore = {
   createEvent(input: { session_id: number; message_id: number | null; event_type: string; detail: string }, actor: string): Promise<unknown>;
@@ -32,6 +32,12 @@ function failureKind(error: unknown): { reason: RuntimeFailure["kind"]; replaySa
   if (error instanceof Error && error.message.startsWith("Codex request timed out:")) return { reason: "timed_out", replaySafe: false };
   return { reason: "uncertain", replaySafe: false };
 }
+
+/** One Turn's connections and a listener for the runtime's server status report. */
+export type RuntimeTurnConnections = {
+  connections?: TurnConnections;
+  onConnectionStatus?: (connections: Extract<RuntimeEvent, { type: "connection_status" }>["connections"]) => void;
+};
 
 export type Usage = Omit<Extract<RuntimeEvent, { type: "usage" }>, "type">;
 const usageKeys = [["inputTokens", "input"], ["outputTokens", "output"], ["cachedInputTokens", "cached"], ["reasoningTokens", "reasoning"], ["costUsd", "cost_usd"]] as const;
@@ -68,6 +74,7 @@ export async function runRuntimeTurn(
   onProgress: (text: string) => void = () => {},
   messageId: number | null = null,
   shutdown?: AbortSignal,
+  turn: RuntimeTurnConnections = {},
 ): Promise<RuntimeTurnOutcome> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (shutdown?.aborted) return { state: "failed", reason: "cancelled", notice: failureNotice("cancelled", runtime), attempts: attempt - 1, replaySafe: false };
@@ -75,8 +82,10 @@ export async function runRuntimeTurn(
     const usage: Usage = {};
     try {
       let answer: string | undefined;
-      for await (const event of runtime.runTurn(agentSessionId, prompt)) {
+      const events = turn.connections ? runtime.runTurn(agentSessionId, prompt, { connections: turn.connections }) : runtime.runTurn(agentSessionId, prompt);
+      for await (const event of events) {
         if (event.type === "progress") onProgress(event.text);
+        else if (event.type === "connection_status") turn.onConnectionStatus?.(event.connections);
         else if (event.type === "session") {
           const session = await database.getSession(sessionId);
           if (!session) throw new RuntimeFailure("uncertain");

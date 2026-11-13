@@ -1,10 +1,11 @@
 import { dirname } from "node:path";
+import { lstat } from "node:fs/promises";
 import { manageLaunchAgent, parseLaunchAgentCommand } from "./heartbeat/launchagent.js";
 import { runHeartbeat } from "./heartbeat/foreground.js";
 
 import type { AgentHistoryStore, AgentRuntime } from "./agent-runtime/ports.js";
 import { ApprovalRelay, legacyApprovalNotice, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "./transport/approval-relay.js";
-import { ClaudeRuntime } from "./connectors/agent-runtime/claude-runtime.js";
+import { ClaudeRuntime, removeLeftoverMcpConfigDirs } from "./connectors/agent-runtime/claude-runtime.js";
 import { CodexAppServer } from "./connectors/agent-runtime/codex-app-server.js";
 import { CodexRuntime } from "./connectors/agent-runtime/codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "./connectors/agent-runtime/concurrency-probe.js";
@@ -37,7 +38,8 @@ import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operat
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } from "./roles/role-operations.js";
 import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
-import { inspectConnections } from "./connections/connections-file.js";
+import { inspectConnections, loadResolvedConnections } from "./connections/connections-file.js";
+import { connectionsIgnoredWarning } from "./connections/turn-connections.js";
 import { enabledSkillsSectionWarning, hasEnabledSkillsSection, loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
@@ -88,6 +90,14 @@ export async function validateProfile(launchDirectory = process.cwd(), connectDi
 
 export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore & Partial<TaskOperationsStore>) {
   const { runtimeHome, configuration } = await validate(launchDirectory, connectDirectory);
+  if (configuration.agentProvider === "claude") {
+    // An unusable file refuses startup. InvalidConnectionsError names the file and the problem, never a value.
+    await loadResolvedConnections(runtimeHome);
+    await removeLeftoverMcpConfigDirs();
+  } else if (await lstat(runtimeHome.connectionsFile).then(() => true, () => false)) {
+    // Other providers never refuse to start or fail Turns because of the file, even an invalid one.
+    console.warn(`Warning: ${connectionsIgnoredWarning}`);
+  }
   const release = await acquireRuntimeHomeLock(runtimeHome);
   let store: (OperationalStore & Partial<TaskOperationsStore>) | undefined;
   try {

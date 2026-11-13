@@ -14,6 +14,9 @@ import type { SessionRecord, TaskProposalRecord, TaskRecord } from "../connector
 import { extractTaskBlock, taskBlockInstruction, validateTaskBlock } from "../tasks/task-block.js";
 import { InvalidRoleError } from "../roles/role-file.js";
 import { invalidRoleNotice, prepareTurnRole, recordTurnRole, withRoleNote } from "../roles/equipped-role.js";
+import { InvalidConnectionsError } from "../connections/connections-file.js";
+import { connectionFailureNote, invalidConnectionsNotice, prepareTurnConnections, recordConnectionStatuses } from "../connections/turn-connections.js";
+import type { ConnectionStatusReport, PreparedConnections } from "../connections/turn-connections.js";
 
 const failureNotice = "I couldn't complete that turn safely. Please check the local archive before sending a new request.";
 const uncertainNotice = "I can't confirm whether that turn completed. I won't replay it automatically. Please check the local archive.";
@@ -197,6 +200,9 @@ export class ConversationWorker {
     showWorking();
     const indicator = this.transport?.showWorking ? setInterval(showWorking, 8_000) : undefined;
     indicator?.unref();
+    // Set once the runtime is called with connections; the finally block records their status for every ending.
+    let startedConnections: PreparedConnections | undefined;
+    let connectionReport: ConnectionStatusReport | undefined;
     try {
       if (!session || session.state !== "active") return;
       if (session.agent_provider !== this.agentProvider) {
@@ -209,6 +215,8 @@ export class ConversationWorker {
       }
       // The role is read once here, so a switch during this Turn applies only from the next Turn.
       const role = await prepareTurnRole(this.database, this.home.rolesDirectory, session.id);
+      // Connections are read once here too, so a file change applies from the next Turn. Only Claude homes use them.
+      const connections = await prepareTurnConnections(this.home, this.agentProvider);
       const agentSessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.database, this.runtime, session.id, this.home, role.block)
         : await resumeAgentSession(this.database, this.runtime, session.id, this.home, role.block);
@@ -240,17 +248,21 @@ export class ConversationWorker {
       this.activeAgentSessionIds.set(message.id, agentSessionId);
       await this.recordMemoryUses(session.id, message.id, composed.memoryIds);
       await recordTurnRole(this.database, session.id, role, "conversation-worker");
-      const outcome = await runRuntimeTurn(this.database, this.runtime, session.id, agentSessionId, prompt, undefined, message.id, cancellation.signal);
+      startedConnections = connections;
+      const outcome = await runRuntimeTurn(this.database, this.runtime, session.id, agentSessionId, prompt, undefined, message.id, cancellation.signal,
+        connections ? { connections: connections.turn, onConnectionStatus: (report) => { connectionReport = report; } } : undefined);
       if (cancellation.signal.aborted) {
         await this.database.failProcessingMessage(message.id, "Cancelled by owner", "user:owner");
         return;
       }
       if (outcome.state === "completed") {
         const extracted = extractTaskBlock(outcome.answer ?? "");
+        const connectionNote = connectionFailureNote(connectionReport);
         if (extracted.found) {
-          await this.archiveWithTaskBlock(session, message, extracted, tasks);
+          await this.archiveWithTaskBlock(session, message, extracted, tasks, connectionNote);
         } else if (outcome.answer?.trim()) {
-          await this.database.archiveResponseChunks(message.id, splitFinalAnswer(outcome.answer), "conversation-worker");
+          await this.database.archiveResponseChunks(message.id,
+            splitFinalAnswer(connectionNote ? `${outcome.answer}\n\n${connectionNote}` : outcome.answer), "conversation-worker");
         } else if (await this.database.failProcessingMessage(message.id, "Runtime returned no final answer", "conversation-worker")) {
           await this.database.createEvent({ session_id: session.id, message_id: message.id,
             event_type: "turn_failed", detail: "reason=empty_answer" }, "conversation-worker");
@@ -275,6 +287,15 @@ export class ConversationWorker {
         }
         return;
       }
+      if (error instanceof InvalidConnectionsError) {
+        // Same replay rule as role_invalid: nothing reached the runtime, and the owner fixes the file and resends.
+        if (await this.database.failProcessingMessage(message.id, "Connections file invalid; replay_safe=false", "conversation-worker")) {
+          await this.database.createEvent({ session_id: message.session_id, message_id: message.id,
+            event_type: "turn_failed", detail: "reason=connections_invalid" }, "conversation-worker");
+          await this.database.archiveFailureNotice(message.id, invalidConnectionsNotice(error));
+        }
+        return;
+      }
       this.fallbackToGlobal();
       const detail = message.runtime_started_at === null && !this.activeAgentSessionIds.has(message.id)
         ? "Agent Session setup failed before runtime start" : "Runtime outcome uncertain";
@@ -287,6 +308,7 @@ export class ConversationWorker {
     } finally {
       if (indicator) clearInterval(indicator);
       this.activeAgentSessionIds.delete(message.id);
+      if (startedConnections) await recordConnectionStatuses(this.database, message.session_id, message.id, startedConnections, connectionReport, "conversation-worker");
     }
   }
 
@@ -317,7 +339,7 @@ export class ConversationWorker {
 
   // The raw block never reaches the archive or Discord. A block-only answer archives only its note, or nothing.
   private async archiveWithTaskBlock(session: SessionRecord, message: MessageRecord,
-    extracted: ReturnType<typeof extractTaskBlock> & { found: true }, tasks: TaskRecord[] | undefined): Promise<void> {
+    extracted: ReturnType<typeof extractTaskBlock> & { found: true }, tasks: TaskRecord[] | undefined, connectionNote?: string): Promise<void> {
     let note: string | undefined;
     let proposal: TaskProposalRecord | undefined;
     if (tasks && this.chatTasks) {
@@ -341,7 +363,8 @@ export class ConversationWorker {
       }
       await this.recordBestEffort(session.id, message.id, proposal ? "task_proposal_created" : "task_proposal_rejected", detail);
     }
-    const text = note ? (extracted.answer ? `${extracted.answer}\n\n${note}` : note) : extracted.answer;
+    const notes = [note, connectionNote].filter((item): item is string => item !== undefined).join("\n\n") || undefined;
+    const text = notes ? (extracted.answer ? `${extracted.answer}\n\n${notes}` : notes) : extracted.answer;
     const archived = await this.database.archiveResponseChunks(message.id, text ? splitFinalAnswer(text) : [], "conversation-worker");
     if (!proposal) return;
     if (!archived) {
