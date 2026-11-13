@@ -8,6 +8,7 @@ import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
 import { start, startTransport } from "../../app.js";
 import { openDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import type { ChatTransport, IncomingMessage, ThreadControl, TransportHealth } from "../../transport/ports.js";
+import { useFixtureRoles } from "../roles/role-fixtures.js";
 
 const env = ["DISCORD_BOT_TOKEN=unused", "DISCORD_GUILD_ID=guild", "DISCORD_OWNER_USER_ID=owner",
   "DISCORD_STATUS_CHANNEL_ID=status", "CHAT_PROVIDER=discord", "AGENT_PROVIDER=claude",
@@ -38,7 +39,9 @@ class ControlTransport implements ChatTransport {
 async function withInstance(fn: (instance: Awaited<ReturnType<typeof start>>, directory: string) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "inoai-role-controls-"));
   try {
-    await writeFile((await bootstrapRuntimeHome(directory)).envFile, env);
+    const home = await bootstrapRuntimeHome(directory);
+    await writeFile(home.envFile, env);
+    await useFixtureRoles(home.rolesDirectory);
     const instance = await start(directory);
     try { await fn(instance, directory); } finally { await instance.release(); }
   } finally { await rm(directory, { recursive: true, force: true }); }

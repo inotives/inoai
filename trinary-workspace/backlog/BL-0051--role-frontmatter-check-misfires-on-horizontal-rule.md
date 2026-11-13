@@ -2,10 +2,10 @@
 id: BL-0051
 title: Role frontmatter check misfires on a horizontal rule
 type: bug
-status: open
+status: promoted
 created_at: 2026-11-13T09:18:16Z
 source: IP-0008 T-0001 reviewer handoff
-promoted_to: null
+promoted_to: IP-0008
 ---
 
 # BL-0051: Role frontmatter check misfires on a horizontal rule
@@ -26,7 +26,7 @@ promoted_to: null
 
 ## Discussion
 
-- None yet.
+- 2026-11-13: Absorbed into IP-0008 by the role catalog change and fixed in T-0010: the frontmatter check is now `text.startsWith("---")`, with regression tests.
 
 ## Open questions
 

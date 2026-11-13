@@ -6,7 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { defaultAgentProfile } from "./profile.js";
 import { EnabledSkillsDocument, validateEnabledSkills } from "../skills/skill-manifest.js";
-import { starterRoles } from "../roles/starter-roles.js";
+import { roleCatalog } from "../roles/role-catalog.generated.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -109,8 +109,8 @@ export function resolveRuntimeHome(launchDirectory: string, connectDirectory = "
 }
 
 /**
- * Creates `roles/` only when it is missing, then copies in the starter roles.
- * An existing folder is left alone, so edited or deleted starters stay that way.
+ * Creates `roles/` only when it is missing, then copies in the vendored role catalog.
+ * An existing folder is left alone, so edited or deleted catalog roles stay that way.
  */
 async function bootstrapRoles(rolesDirectory: string): Promise<void> {
   try {
@@ -120,7 +120,7 @@ async function bootstrapRoles(rolesDirectory: string): Promise<void> {
     throw error;
   }
   await Promise.all(
-    Object.entries(starterRoles).map(async ([name, contents]) => {
+    Object.entries(roleCatalog).map(async ([name, contents]) => {
       try {
         await writeFile(join(rolesDirectory, name), contents, { flag: "wx", mode: 0o600 });
       } catch (error: unknown) {

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { secretLike } from "../conversation/prompt-context.js";
 
 export const roleIdPattern = /^[a-z0-9][a-z0-9-]{0,63}$/;
-export const maxRoleBytes = 16_384;
+export const maxRoleBytes = 49_152;
 /** Means "no role" in `role_applied` details and change notes, so no role file may use it. */
 export const reservedRoleId = "none";
 
@@ -50,7 +50,7 @@ export function validateRole(text: string): RoleContent {
   if (typeof text !== "string") throw new InvalidRoleError("role file must be text");
   if (Buffer.byteLength(text, "utf8") > maxRoleBytes) throw new InvalidRoleError(`larger than ${maxRoleBytes} bytes`);
   if (secretLike.test(text)) throw new InvalidRoleError("secret-like text");
-  if (/^---\s*$/m.test(text.slice(0, 200))) throw new InvalidRoleError("frontmatter is not allowed");
+  if (text.startsWith("---")) throw new InvalidRoleError("frontmatter is not allowed");
   const heading = text.match(/^# Role:[ \t]*(\S[^\r\n]*?)[ \t]*(?:\r?\n|$)/);
   if (!heading) throw new InvalidRoleError("first line must be '# Role: <Name>'");
   const rest = text.slice(heading[0].length);

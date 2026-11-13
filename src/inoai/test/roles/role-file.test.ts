@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,8 @@ import {
   renderRoleBlock,
   validateRole,
 } from "../../roles/role-file.js";
-import { starterRoles } from "../../roles/starter-roles.js";
+import { roleCatalog } from "../../roles/role-catalog.generated.js";
+import { secretLike } from "../../conversation/prompt-context.js";
 
 const validRole = `# Role: Test Planner
 
@@ -50,13 +51,28 @@ test("a valid role parses into its parts", () => {
   });
 });
 
-test("every starter role is valid", () => {
-  assert.deepEqual(Object.keys(starterRoles).sort(), ["designer.md", "planner.md", "reviewer.md"]);
-  for (const contents of Object.values(starterRoles)) validateRole(contents);
+test("every role in the vendored catalog is valid and has no secret-like text", () => {
+  const entries = Object.entries(roleCatalog);
+  assert.ok(entries.length > 100);
+  for (const [name, contents] of entries) {
+    assert.match(name, /^[a-z0-9][a-z0-9-]{0,63}\.md$/);
+    assert.notEqual(name, "none.md");
+    assert.doesNotThrow(() => validateRole(contents), name);
+    assert.equal(secretLike.test(contents), false, name);
+  }
+});
+
+test("the embedded catalog matches the committed catalog files", async () => {
+  // npm test runs from the repository root.
+  const directory = join(process.cwd(), "src", "inoai", "roles", "catalog");
+  const names = (await readdir(directory)).sort();
+  assert.deepEqual(Object.keys(roleCatalog).sort(), names);
+  for (const name of names) assert.equal(roleCatalog[name], await readFile(join(directory, name), "utf8"), name);
 });
 
 test("role validation fails closed for each format error", () => {
   rejectsWith(`---\nname: x\n---\n${validRole}`, "frontmatter is not allowed");
+  rejectsWith(`---\n${validRole}`, "frontmatter is not allowed");
   rejectsWith(validRole.replace("# Role: Test Planner", "# Test Planner"), "first line must be '# Role: <Name>'");
   rejectsWith(validRole.replace("# Role: Test Planner", "# Role:"), "first line must be '# Role: <Name>'");
   rejectsWith(`\n${validRole}`, "first line must be '# Role: <Name>'");
@@ -67,9 +83,15 @@ test("role validation fails closed for each format error", () => {
   rejectsWith(validRole.replace("1. Read.\n2. Plan.\n", ""), "missing or empty '## Workflow' section");
 });
 
+test("a horizontal rule near the top is not frontmatter (BL-0051)", () => {
+  const ruled = validRole.replace("Plans work before it starts.", "Plans work before it starts.\n\n---").replace("Write a numbered plan.", "---\n\nWrite a numbered plan.");
+  assert.equal(validateRole(ruled).summary, "Plans work before it starts.\n\n---");
+  assert.equal(validateRole(ruled).instructions, "---\n\nWrite a numbered plan.");
+});
+
 test("role validation rejects oversize and secret-like text without quoting it", () => {
-  assert.doesNotThrow(() => validateRole(validRole + "x".repeat(16_384 - Buffer.byteLength(validRole))));
-  rejectsWith(validRole + "x".repeat(16_385 - Buffer.byteLength(validRole)), "larger than 16384 bytes");
+  assert.doesNotThrow(() => validateRole(validRole + "x".repeat(49_152 - Buffer.byteLength(validRole))));
+  rejectsWith(validRole + "x".repeat(49_153 - Buffer.byteLength(validRole)), "larger than 49152 bytes");
   const secret = "sk-abcdefghijklmnopqrstuvwxyz";
   assert.throws(() => validateRole(validRole.replace("Write a numbered plan.", `Use ${secret}.`)), (error: unknown) => {
     assert.ok(error instanceof InvalidRoleError);
@@ -97,8 +119,8 @@ test("loadRole reads a valid file and rejects bad ids, missing files, and non-re
     await mkdir(join(roles, "folder.md"));
     await assert.rejects(loadRole(roles, "folder"), { name: "InvalidRoleError", reason: "not a regular file" });
 
-    await writeFile(join(roles, "big.md"), validRole + "x".repeat(16_384));
-    await assert.rejects(loadRole(roles, "big"), { name: "InvalidRoleError", reason: "larger than 16384 bytes" });
+    await writeFile(join(roles, "big.md"), validRole + "x".repeat(49_152));
+    await assert.rejects(loadRole(roles, "big"), { name: "InvalidRoleError", reason: "larger than 49152 bytes" });
   } finally {
     await rm(roles, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });

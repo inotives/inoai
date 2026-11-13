@@ -19,7 +19,7 @@ import {
 } from "../../agent-instance/runtime-home.js";
 import { defaultAgentProfile } from "../../agent-instance/profile.js";
 import { listRoles } from "../../roles/role-file.js";
-import { starterRoles } from "../../roles/starter-roles.js";
+import { roleCatalog } from "../../roles/role-catalog.generated.js";
 import { start } from "../../../index.js";
 import { openDatabase, withMaintenanceDatabase } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { createSqliteOperationalStore } from "../../connectors/persistence/sqlite/operational-store.js";
@@ -220,28 +220,30 @@ test("bootstraps and preserves an isolated default runtime home", async () => {
   }
 });
 
-test("bootstrap creates roles/ with valid starter roles only when the folder is missing", async () => {
+test("bootstrap copies the role catalog only when roles/ is missing", async () => {
   const deployment = await temporaryDeployment();
   try {
     const home = await bootstrapRuntimeHome(deployment);
+    const catalogNames = Object.keys(roleCatalog).sort();
+    assert.ok(catalogNames.length > 100);
     assert.equal(home.rolesDirectory, join(home.directory, "roles"));
     assert.equal((await stat(home.rolesDirectory)).mode & 0o777, 0o700);
-    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), ["designer.md", "planner.md", "reviewer.md"]);
-    for (const [name, contents] of Object.entries(starterRoles)) {
+    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), catalogNames);
+    for (const [name, contents] of Object.entries(roleCatalog)) {
       assert.equal(await readFile(join(home.rolesDirectory, name), "utf8"), contents);
     }
-    assert.deepEqual((await listRoles(home.rolesDirectory)).map((role) => [role.id, role.valid]), [
-      ["designer", true], ["planner", true], ["reviewer", true],
-    ]);
+    const listed = await listRoles(home.rolesDirectory);
+    assert.equal(listed.length, catalogNames.length);
+    assert.deepEqual(listed.filter((role) => !role.valid), []);
 
-    const edited = starterRoles["planner.md"].replace("Turn a goal", "Turn any goal");
+    const edited = `${roleCatalog["planner.md"]}\nEdited by the owner.\n`;
     await writeFile(join(home.rolesDirectory, "planner.md"), edited);
     await bootstrapRuntimeHome(deployment);
     assert.equal(await readFile(join(home.rolesDirectory, "planner.md"), "utf8"), edited);
 
     await rm(join(home.rolesDirectory, "planner.md"));
     await bootstrapRuntimeHome(deployment);
-    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), ["designer.md", "reviewer.md"]);
+    assert.deepEqual((await readdir(home.rolesDirectory)).sort(), catalogNames.filter((name) => name !== "planner.md"));
   } finally {
     await rm(deployment, { recursive: true, force: true });
   }
@@ -813,8 +815,12 @@ test("role CLI list, show, equip, and unequip work under a live runtime lock", a
     await writeFile(home.envFile, validEnv);
     const instance = await start(deployment, connectDirectory);
     await instance.release();
+    const fixtureRole = (name: string) => `# Role: ${name}\n\nA ${name} role.\n\n## Instructions\n\nDo ${name} work.\n\n## Workflow\n\nReport results.\n`;
+    await rm(home.rolesDirectory, { recursive: true });
+    await mkdir(home.rolesDirectory, { mode: 0o700 });
+    for (const name of ["Planner", "Reviewer", "Designer"]) await writeFile(join(home.rolesDirectory, `${name.toLowerCase()}.md`), fixtureRole(name));
     await writeFile(join(home.rolesDirectory, "broken.md"), "# Role: Broken\n\nNo sections.\n");
-    await writeFile(join(home.rolesDirectory, "none.md"), starterRoles["planner.md"]);
+    await writeFile(join(home.rolesDirectory, "none.md"), fixtureRole("Planner"));
     // A stopped home uses the normal startup path.
     const stopped = await runCli(deployment, ["role", "show", "--connect-dir", connectDirectory]);
     assert.equal(stopped.code, 0, stopped.stderr);

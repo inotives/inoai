@@ -10,6 +10,7 @@ import { bootstrapRuntimeHome, type RuntimeHome } from "../../inoai/agent-instan
 import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
 import { loadUiData } from "../api/read-model.js";
 import { launchUi, uiTokenHeader } from "../server.js";
+import { useFixtureRoles } from "../../inoai/test/roles/role-fixtures.js";
 
 type Reply = { status: number; body: any; text: string; allow?: string };
 type Send = (method: string, path: string, body?: unknown, headers?: Record<string, string | undefined>) => Promise<Reply>;
@@ -36,6 +37,7 @@ function httpRequest(port: number, method: string, path: string, headers: Record
 async function withUi(name: string, run: (context: { home: RuntimeHome; send: Send; token: string; port: number }) => Promise<void>): Promise<void> {
   const deploymentDirectory = await mkdtemp(join(tmpdir(), `inoai-ui-roles-${name}-`));
   const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  await useFixtureRoles(home.rolesDirectory);
   openDatabase(home).close();
   // Any route that read `.env` would fail on this unreadable file.
   await chmod(home.envFile, 0o000);
@@ -242,6 +244,7 @@ test("UI data lists roles without role text", async (t) => {
   const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-roles-data-"));
   t.after(() => rm(deploymentDirectory, { recursive: true, force: true }));
   const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  await useFixtureRoles(home.rolesDirectory);
   openDatabase(home).close();
   await writeFile(join(home.rolesDirectory, "broken.md"), "# Role: Broken\n");
   await writeFile(join(home.rolesDirectory, "leaky.md"), validRole("Leaky").replace("Do the work.", "password: hunter2"));
@@ -271,6 +274,7 @@ test("UI data reports an empty role list without creating a missing roles folder
   const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-roles-missing-"));
   t.after(() => rm(deploymentDirectory, { recursive: true, force: true }));
   const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  await useFixtureRoles(home.rolesDirectory);
   openDatabase(home).close();
   await rm(home.rolesDirectory, { recursive: true });
   const { roles } = await loadUiData(home);

@@ -15,6 +15,7 @@ import { TaskRunExecutor } from "../../conversation/task-run-executor.js";
 import type { OperationalStore } from "../../persistence/operational-store.js";
 import { loadRole, renderRoleBlock } from "../../roles/role-file.js";
 import { loadAgentProfileWithSkills } from "../../skills/skill-loader.js";
+import { useFixtureRoles } from "../roles/role-fixtures.js";
 
 const providers = ["codex", "claude", "opencode", "anthropic-api"] as const;
 type Provider = typeof providers[number];
@@ -25,6 +26,7 @@ type Fixture = { directory: string; home: RuntimeHome; database: DatabaseSync; o
 async function fixture(): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "inoai-role-composition-"));
   const home = await bootstrapRuntimeHome(directory);
+  await useFixtureRoles(home.rolesDirectory);
   const database = openDatabase(home);
   const owner = upsertUser(database, { transport: "discord", workspace_id: "guild", external_user_id: "owner",
     display_name: null, role: "owner", state: "active" })!;

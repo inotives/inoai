@@ -8,6 +8,7 @@ import { openDatabase } from "../../inoai/connectors/persistence/sqlite/legacy-d
 import { loadUiData, type UiRoles } from "../api/read-model.js";
 import { renderAppShell } from "../pages/app-shell.js";
 import { roleFixture } from "./role-fixtures.js";
+import { useFixtureRoles } from "../../inoai/test/roles/role-fixtures.js";
 
 const token = "ab".repeat(32);
 const pageScript = (html: string) => html.split('<script type="module">')[1]?.split("</script>")[0] ?? "";
@@ -86,6 +87,7 @@ test("the Role block renders live roles from the read model of a temporary home"
   const deploymentDirectory = await mkdtemp(join(tmpdir(), "inoai-ui-role-page-"));
   t.after(() => rm(deploymentDirectory, { recursive: true, force: true }));
   const home = await bootstrapRuntimeHome(deploymentDirectory, ".inoai-connect-test");
+  await useFixtureRoles(home.rolesDirectory);
   const database = openDatabase(home);
   database.exec("INSERT INTO role_equips (role_id, equipped_by, created_by, updated_by) VALUES ('reviewer', 'cli:owner', 'cli:owner', 'cli:owner')");
   database.close();
