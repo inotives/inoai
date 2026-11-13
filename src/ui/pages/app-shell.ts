@@ -1,7 +1,12 @@
+import type { UiRoles } from "../api/read-model.js";
+
 // The ring console: one self-contained page that reads /api/ui-data and draws it with three.js.
 // `token` is the per-launch write token. It is hex, so it is safe in an attribute.
-export function renderAppShell(token: string): string {
+// `roleFixtures` turns on the fixture-only Roles prototype (T-0007). Only the role
+// preview server passes it; the live server never does, so its page is unchanged.
+export function renderAppShell(token: string, roleFixtures?: Record<string, UiRoles>): string {
   if (!/^[0-9a-f]+$/.test(token)) throw new RangeError("UI token must be hex");
+  const roleFixtureJson = roleFixtures ? scriptJson(roleFixtures) : "null";
   return `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
@@ -215,6 +220,8 @@ export function renderAppShell(token: string): string {
 <script type="module">
 // ---------- data ----------
 const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], insights: null };
+// Fixture scenarios for the Roles prototype, or null on the live page.
+const ROLE_FIXTURES = ${roleFixtureJson};
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -792,6 +799,82 @@ function insightCharts(w) {
       ? hbars(w.skills.map((s) => ({ label: s.skill, value: s.count })), 'var(--pink)', 'Skill calls') : noData(), true),
   ];
 }
+// ---------- roles (fixture prototype) ----------
+// T-0007: the Role block in the agent profile renders fixture data in the /api/ui-data roles shape.
+// Equip and Unequip change only this page's state. This section makes no network calls.
+// All values reach the page as text nodes, so ids, names, summaries, and reasons never parse as HTML.
+let roleState = { equipped: null, list: [] }, roleScenario = null, roleNote = null;
+const roleSearch = { query: '', option: 'all' };
+function setRoleScenario(key) {
+  const fixture = ROLE_FIXTURES[key];
+  roleScenario = key;
+  roleState = { equipped: fixture.equipped, list: fixture.list.map((role) => ({ ...role })) };
+  roleNote = null;
+}
+if (ROLE_FIXTURES) setRoleScenario(Object.keys(ROLE_FIXTURES)[0]);
+// The equipped role is none, missing from the list, invalid, or valid.
+function equippedRole(state = roleState) {
+  if (state.equipped === null) return { kind: 'none' };
+  const role = state.list.find((r) => r.id === state.equipped);
+  return role ? { kind: role.valid ? 'valid' : 'invalid', id: role.id, role } : { kind: 'missing', id: state.equipped };
+}
+const roleName = (role) => role.name ? role.name + ' (' + role.id + ')' : role.id;
+// The search matches id, name, and summary.
+const roleSearchText = (role) => [role.id, role.name ?? '', role.summary ?? ''].join(' ');
+// Applies a reply in the route shape: { role } after equip, { role: null } after unequip.
+// An equip can return 200 with valid: false after a race. The role is then equipped and shown as invalid.
+function applyRoleReply(reply) {
+  const role = reply.role;
+  if (!role) { roleState.equipped = null; roleNote = { error: false, text: 'Role unequipped. Fixture only; nothing was saved.' }; return; }
+  const others = roleState.list.filter((r) => r.id !== role.id);
+  roleState.list = [...others, role].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  roleState.equipped = role.id;
+  roleNote = role.valid ? { error: false, text: 'Equipped ' + roleName(role) + '. Fixture only; nothing was saved.' }
+    : { error: true, text: 'Equipped ' + role.id + ', but it is invalid: ' + role.reason };
+}
+function equipFixtureRole(id) {
+  const role = roleState.list.find((r) => r.id === id);
+  if (!role || !role.valid) { roleNote = { error: true, text: 'Cannot equip role: ' + (role ? role.reason : 'role not found') }; return; }
+  applyRoleReply({ role: { ...role } });
+}
+function unequipFixtureRole() { applyRoleReply({ role: null }); }
+const roleRerender = () => openDrawer('profile', true);
+const unequipButton = () => h('button', { class: 'btn danger', type: 'button', 'data-action': 'unequip', onclick: () => { unequipFixtureRole(); roleRerender(); } }, 'Unequip');
+function equippedCard(e) {
+  if (e.kind === 'none') return h('div', { 'data-equipped': 'none', style: 'margin:0 0 10px;color:var(--muted);font-size:12px' }, 'No role equipped. The agent uses agent.md only.');
+  if (e.kind === 'valid') return h('div', { 'data-equipped': 'valid', style: 'margin:0 0 10px' },
+    h('p', { style: 'margin:0 0 4px' }, h('b', {}, e.role.name), h('span', { style: 'color:var(--muted);font-size:12px' }, ' · ' + e.id)),
+    h('p', { style: 'margin:0 0 10px;color:var(--muted);font-size:12px;overflow-wrap:anywhere' }, e.role.summary),
+    h('div', { class: 'actions', style: 'margin:0' }, unequipButton()));
+  const problem = e.kind === 'missing' ? 'is missing from roles/.' : 'is invalid: ' + e.role.reason + '.';
+  return h('div', { class: 'confirm', 'data-equipped': e.kind },
+    h('b', {}, e.id), ' is equipped but ' + problem + ' Turns and Task Runs fail until you fix roles/' + e.id + '.md or unequip it.',
+    h('div', { class: 'actions' }, unequipButton()));
+}
+function roleItem(role) {
+  const equipped = roleState.equipped === role.id;
+  return h('div', { class: 'item', 'data-role': role.id, style: 'display:flex;align-items:center;gap:10px' },
+    h('div', { style: 'flex:1;min-width:0' },
+      h('div', { class: 'meta' }, h('span', { style: 'color:var(--text)' }, role.id),
+        role.valid ? pill(equipped ? 'active' : 'valid', equipped ? 'equipped' : 'valid') : pill('failed', equipped ? 'equipped · invalid' : 'invalid')),
+      role.valid ? h('p', { style: 'font-size:12px' }, h('b', {}, role.name), h('span', { style: 'color:var(--muted)' }, ' · ' + role.summary))
+        : h('p', { style: 'color:var(--coral);font-size:12px' }, 'Invalid: ' + role.reason)),
+    role.valid && !equipped ? h('button', { class: 'btn primary', type: 'button', 'data-action': 'equip', onclick: () => { equipFixtureRole(role.id); roleRerender(); } }, 'Equip') : null);
+}
+// The Role block in the agent profile.
+function roleBlock() {
+  return h('div', { class: 'setting', 'data-role-block': equippedRole().kind, style: 'margin:0 0 16px' },
+    h('div', { class: 'setting-head' }, h('span', {}, 'Role'), h('small', {}, 'fixture prototype')),
+    h('div', { class: 'seg', role: 'group', 'aria-label': 'Fixture scenario' }, Object.keys(ROLE_FIXTURES).map((key) =>
+      h('button', { type: 'button', 'data-scenario': key, 'aria-pressed': String(key === roleScenario), onclick: () => { setRoleScenario(key); roleRerender(); } }, key))),
+    equippedCard(equippedRole()),
+    roleNote ? h('div', { class: roleNote.error ? 'form-error' : 'done' }, roleNote.text) : null,
+    roleState.list.length ? searchable({ state: roleSearch, items: roleState.list, noun: 'roles', options: ['all', 'valid', 'invalid'],
+      key: (role) => role.valid ? 'valid' : 'invalid', text: roleSearchText, render: roleItem, placeholder: 'Search roles by id, name or summary' })
+      : empty('No role files in roles/'),
+    h('div', { class: 'note' }, 'Equip and Unequip change only this page; nothing is saved.'));
+}
+// ---------- end roles ----------
 const SECTIONS = {
   profile: (v) => ({ kicker: 'agent', title: v.data.profile.agentInstanceId, body: [
     h('dl', { class: 'kv' },
@@ -800,6 +883,7 @@ const SECTIONS = {
       h('dt', {}, 'Transport'), h('dd', {}, v.data.profile.transport),
       h('dt', {}, 'Workspaces'), h('dd', {}, v.data.profile.workspaceIds.join(', ') || '—'),
       h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · read-only')),
+    ROLE_FIXTURES ? roleBlock() : null,
     markdown(v.data.agentMarkdown)] }),
   health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [
     h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
@@ -1393,4 +1477,9 @@ function startScene() {
 </body>
 </html>
 `;
+}
+
+// JSON that is safe inside an inline <script>: no "<" (so no "</script>" or "<!--") and no line separators.
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
