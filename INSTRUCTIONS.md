@@ -294,6 +294,8 @@ At `npm start`, inoai runs `opencode --version` and refuses to start with `OpenC
 
 The `anthropic-api` provider calls the Anthropic Messages API directly with an Anthropic Console API key ([ADR 0030](docs/adr/0030-anthropic-api-runtime.md)). It needs no agent CLI. It is a separate provider: the Claude CLI and Codex runtimes never use an API key, and the Claude credential guard above still refuses one.
 
+The headless CLIs stay the default. `anthropic-api` is off unless you turn it on for a runtime home: set `AGENT_PROVIDER=anthropic-api` and `ANTHROPIC_API_KEY` in that home's `.env`, or choose `anthropic-api` in `inoai setup`. Other homes are not affected.
+
 ```bash
 npm run validate -- --connect-dir .inoai-connect-api
 cp .env.sample .inoai-connect-api/.env

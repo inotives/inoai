@@ -6,6 +6,8 @@ status: accepted
 
 inoai drove only locally signed-in CLIs: Codex, Claude CLI, and OpenCode. The owner asked for an API key as another choice (IP-0007). inoai now has a fourth Agent Runtime, `anthropic-api`. It calls the Anthropic Messages API directly with the official `@anthropic-ai/sdk` and a Console API key. The Codex and Claude CLI runtimes are unchanged and still refuse API keys.
 
+The headless CLIs stay the default. `anthropic-api` is an opt-in: a runtime home uses it only when its owner sets `AGENT_PROVIDER=anthropic-api` and `ANTHROPIC_API_KEY` in that home's `.env`. `.env.sample` keeps a CLI provider and leaves the `ANTHROPIC_API_*` lines commented out, and `inoai setup` lists `anthropic-api` last.
+
 This was chosen over two alternatives:
 
 - **API-key login for the existing CLIs.** The Claude CLI and Codex guards exist to keep those runtimes on the owner's subscription (ADR 0008, Phase 4, Phase 5a). Weakening them would mix two billing models in one provider. A separate provider keeps each runtime's billing obvious.
