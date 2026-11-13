@@ -153,6 +153,28 @@ Holds. Run B (`reviewArgs()` flags, with `--strict-mcp-config` and no `--mcp-con
 {"type":"result","subtype":"success","is_error":false,"permission_denials":[],"result":"ok"}
 ```
 
+## Bare $VAR (IP-0009 T-0003)
+
+Date: 2026-11-13 (UTC). Claude CLI `2.1.325`. This check answers the T-0002 review question: does Claude expand a bare `$VAR` (no braces) in an `--mcp-config` file?
+
+- Setup: a throwaway stdio MCP server (Node built-ins only) wrote what it received to a report file at startup. The config set `env.PROBE_ENV` to the literal text `$PROBE_VAR`, `env.PROBE_BRACED` to `${PROBE_VAR}` (the control), and one `args` element to `$PROBE_VAR`. The file was `0600` in a `0700` directory.
+- Run, from a scratch cwd with no `.mcp.json` or `.claude/` folder:
+
+  ```sh
+  PROBE_VAR=x claude -p --output-format stream-json --verbose --permission-prompts none \
+    --no-session-persistence --model=haiku "--mcp-config=<private dir>/mcp.json" "Say ok" < /dev/null
+  ```
+
+- Result: the run exited `0`, and `init` reported `{"name":"probe-var","status":"connected","source":"dynamic"}`. The server received:
+
+  ```json
+  {"env":"$PROBE_VAR","braced":"x","arg3":"$PROBE_VAR"}
+  ```
+
+- Verdict: Claude does **not** expand bare `$VAR`, in `env` or in `args`. It expands only `${VAR}`. The existing check (no `${` may remain in the filled-in config) is enough, and `connections-file.ts` needs no change.
+- The joined form `--mcp-config=<path>` (one argv element) works. inoai uses it, because the option is variadic, like `--allowedTools`.
+- Side effects: `~/.claude/settings.json` was unchanged. The run created an empty `~/.claude/projects/<encoded scratch cwd>/memory/` folder; it and the scratch files were removed afterwards.
+
 ## Side effects
 
 - `~/.claude/settings.json` modification time: `2026-11-10 09:42:37` local before and after. Unchanged.

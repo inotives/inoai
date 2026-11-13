@@ -82,7 +82,7 @@ export async function runRuntimeTurn(
           if (!session) throw new RuntimeFailure("uncertain");
           await database.rebindAgentSession(sessionId, agentSessionId, event.id, `runtime:${session.agent_provider}`);
         } else if (event.type === "usage") addUsage(usage, event);
-        else answer = event.text;
+        else if (event.type === "answer") answer = event.text;
       }
       if (answer === undefined) throw new RuntimeFailure("uncertain");
       await database.createEvent({ session_id: sessionId, message_id: messageId, event_type: "runtime_completed", detail: `attempt=${attempt}` }, "runtime");
