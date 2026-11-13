@@ -897,7 +897,7 @@ const SECTIONS = {
       h('dt', {}, 'Provider'), h('dd', {}, v.data.profile.provider),
       h('dt', {}, 'Transport'), h('dd', {}, v.data.profile.transport),
       h('dt', {}, 'Workspaces'), h('dd', {}, v.data.profile.workspaceIds.join(', ') || '—'),
-      h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · read-only')),
+      h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · Tasks and role writes')),
     roleBlock(v),
     markdown(v.data.agentMarkdown)] }),
   health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [

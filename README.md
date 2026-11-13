@@ -40,9 +40,10 @@ By default it drives the CLI you already use instead of calling a model API. Cod
 - A complete, safe Codex command request can show owner-only Discord **Approve** / **Reject** buttons for that one live request. File changes, network or extra permission requests, malformed previews, and Claude/OpenCode prompts still fail closed.
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
 - Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
-- A UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks. It binds to loopback by default or one selected private LAN address with `--host`; SQLite is the core runtime's source of truth.
+- The owner can equip one Role per Agent Instance, a switchable working mode such as a planner or a reviewer, from Discord, the CLI, or the UI. New runtime homes get a catalog of 202 roles converted from [github/awesome-copilot](https://github.com/github/awesome-copilot) ([Credits](#credits)).
+- A UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks and the equipped Role. It binds to loopback by default or one selected private LAN address with `--host`; SQLite is the core runtime's source of truth.
 
-Status: Conversation workers, Codex, Claude CLI, OpenCode, the Anthropic API runtime, Daily Memory Review (Claude and Anthropic API homes in V1), Tasks, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
+Status: Conversation workers, Codex, Claude CLI, OpenCode, the Anthropic API runtime, Daily Memory Review (Claude and Anthropic API homes in V1), Tasks, Roles, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
 
 ## Quick Start (Codex)
 
@@ -62,13 +63,13 @@ npm run validate
 npm start
 ```
 
-For Claude, OpenCode, the Anthropic API, skills, Tasks, the local UI, the Heartbeat Supervisor, and all commands, see [INSTRUCTIONS.md](INSTRUCTIONS.md).
+For Claude, OpenCode, the Anthropic API, skills, Roles, Tasks, the local UI, the Heartbeat Supervisor, and all commands, see [INSTRUCTIONS.md](INSTRUCTIONS.md).
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
-| [INSTRUCTIONS.md](INSTRUCTIONS.md) | Setup per provider, commands, Tasks, Heartbeat Supervisor, Daily Memory Review, upgrading agent CLIs, development. |
+| [INSTRUCTIONS.md](INSTRUCTIONS.md) | Setup per provider, commands, Roles, Tasks, Heartbeat Supervisor, Daily Memory Review, upgrading agent CLIs, development. |
 | [docs/repository-structure.md](docs/repository-structure.md) | Core model, runtime home and lock, Discord rules, source layout, module boundaries. |
 | [CONTEXT.md](CONTEXT.md) | Domain language. |
 | [docs/discord-codex-cli-harness-proposal.md](docs/discord-codex-cli-harness-proposal.md) | V1 behavior and boundaries. |
@@ -79,3 +80,7 @@ For Claude, OpenCode, the Anthropic API, skills, Tasks, the local UI, the Heartb
 | [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines. |
 
 Deferred after V1: Slack and Telegram adapters; Internet UI access and cross-instance Memory sharing; multi-step Task loops and calendar schedules; cross-machine backups and Windows/Linux release packages.
+
+## Credits
+
+The role catalog in `src/inoai/roles/catalog/` is converted from the agents in [github/awesome-copilot](https://github.com/github/awesome-copilot) at commit `222eba62d518c27317e917c92e3ec1a7e6729455`. awesome-copilot is licensed under the MIT License, Copyright GitHub, Inc. See [licenses/awesome-copilot-LICENSE.md](licenses/awesome-copilot-LICENSE.md) for the license and [src/inoai/roles/catalog-vendoring.md](src/inoai/roles/catalog-vendoring.md) for the vendoring report. The conversion is described in [ADR 0031](docs/adr/0031-equippable-roles.md).

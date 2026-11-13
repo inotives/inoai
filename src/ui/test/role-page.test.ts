@@ -75,7 +75,7 @@ test("the live page shows the Role block in the profile, with no fixture, previe
   const html = renderAppShell(token);
   const script = pageScript(html);
   assert.doesNotThrow(() => new Function(`return async () => {${script}}`), "page script must parse");
-  assert.match(script, /h\('dt', \{\}, 'Storage'\), h\('dd', \{\}, 'SQLite · read-only'\)\),\n {4}roleBlock\(v\),/, "the profile renders the Role block");
+  assert.match(script, /h\('dt', \{\}, 'Storage'\), h\('dd', \{\}, 'SQLite · Tasks and role writes'\)\),\n {4}roleBlock\(v\),/, "the profile renders the Role block");
   assert.match(script, /roles: \{ equipped: null, list: \[\] \}/, "an older server without roles reads as an empty list");
   assert.equal(/ROLE_FIXTURES|fixture|prototype|Fixture scenario/i.test(script), false, "no fixture or prototype paths remain");
   assert.equal(/roles: '|openDrawer\('roles'/.test(script), false, "there is no Roles drawer section or rail icon");
