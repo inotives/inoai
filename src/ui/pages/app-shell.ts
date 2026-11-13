@@ -102,6 +102,10 @@ export function renderAppShell(token: string): string {
   .setting{border:1px solid var(--line);border-radius:14px;padding:14px;background:#ffffff05}
   .setting-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px}
   .setting-head small{color:var(--muted);font-size:11px}
+  button.setting-head{width:100%;background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left}
+  button.setting-head[aria-expanded=false]{margin-bottom:0}
+  button.setting-head .chev{display:inline-block;margin-right:6px;color:var(--muted);transition:transform .15s}
+  button.setting-head[aria-expanded=true] .chev{transform:rotate(90deg)}
   .swatches{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
   .swatch{width:34px;height:34px;border-radius:50%;border:2px solid transparent;cursor:pointer;box-shadow:inset 0 0 0 3px var(--ink)}
   .swatch[aria-pressed=true]{border-color:var(--text);box-shadow:inset 0 0 0 3px var(--ink),0 0 12px currentColor}
@@ -797,6 +801,8 @@ function insightCharts(w) {
 // token-checked role routes (ADR 0031). All values reach the page as text nodes.
 const roleSearch = { query: '', option: 'all' };
 let roleNote = null, roleBusy = false;
+// The Role block starts collapsed; a missing or invalid equipped role always shows it open.
+let roleOpen = false;
 // The equipped role is none, missing from the list, invalid, or valid.
 function equippedRole(roles) {
   if (roles.equipped === null) return { kind: 'none' };
@@ -881,13 +887,22 @@ function roleNoteView() {
 // The Role block in the agent profile.
 function roleBlock(v) {
   const roles = v.data.roles, e = equippedRole(roles);
+  const open = roleOpen || e.kind === 'missing' || e.kind === 'invalid';
+  const count = roles.list.length + (roles.list.length === 1 ? ' role' : ' roles');
   return h('div', { class: 'setting', 'data-role-block': e.kind, style: 'margin:0 0 16px' },
-    h('div', { class: 'setting-head' }, h('span', {}, 'Role'), h('small', {}, roles.list.length + (roles.list.length === 1 ? ' role' : ' roles'))),
+    h('button', { class: 'setting-head', type: 'button', 'aria-expanded': String(open), 'data-action': 'toggle-roles', onclick: () => { roleOpen = !open; redrawRole(); } },
+      h('span', {}, h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'), 'Role'),
+      h('small', {}, count)),
+    open ? null : h('div', { 'data-role-summary': e.kind, style: 'margin-top:8px;font-size:13px;overflow-wrap:anywhere' },
+      // Collapsed means none or valid: a missing or invalid role keeps the block open.
+      e.kind === 'none' ? h('span', { style: 'color:var(--muted)' }, 'None')
+        : [h('b', {}, e.role.name), h('span', { style: 'color:var(--muted);font-size:12px' }, ' · ' + e.id)]),
+    h('div', { 'data-role-body': '', ...(open ? {} : { hidden: '' }) },
     equippedCard(e),
     roleNoteView(),
     roles.list.length ? searchable({ state: roleSearch, items: roles.list, noun: 'roles', options: ['all', 'valid', 'invalid'],
       key: (role) => role.valid ? 'valid' : 'invalid', text: roleSearchText, render: (role) => roleItem(role, roles.equipped), placeholder: 'Search roles by id, name or summary' })
-      : empty('No role files in roles/'));
+      : empty('No role files in roles/')));
 }
 // ---------- end roles ----------
 const SECTIONS = {
