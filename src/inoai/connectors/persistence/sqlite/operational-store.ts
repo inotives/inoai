@@ -17,7 +17,7 @@ import {
   createMemoryProposal, getMemoryProposal, listPendingMemoryProposals, setMemoryProposalCardMessage, confirmMemoryProposal,
   rejectMemoryProposal, expireDueMemoryProposals, wasMemoryProposalRejected, recordMemoryUses, storeReviewProposals,
   readOrCreateHistorySession, listHistory, appendHistory,
-  getEquippedRole, equipRole, unequipRole, lastAppliedRole, recordRoleApplied,
+  getEquippedRole, equipRole, unequipRole, lastAppliedRole, recordRoleApplied, latestConnectionStatuses,
 } from "./legacy-database.js";
 import type { OperationalStore, MemoryReviewCommit, MemoryReviewSnapshot } from "../../../persistence/operational-store.js";
 import type { MemoryOperationsStore } from "../../../memory/ports.js";
@@ -158,6 +158,7 @@ export function createSqliteOperationalStore(database: DatabaseSync): Operationa
     async unequipRole(actor) { return unequipRole(database, actor); },
     async lastAppliedRole(sessionId) { return lastAppliedRole(database, sessionId); },
     async recordRoleApplied(sessionId, roleId, actor) { return recordRoleApplied(database, sessionId, roleId, actor); },
+    async latestConnectionStatuses(names) { return latestConnectionStatuses(database, names); },
     async createMemoryReview(review: NewMemoryReview, actor) { return createMemoryReview(database, review, actor); },
     async completeMemoryReview(id, recap, actor) { return completeMemoryReview(database, id, recap, actor); },
     async messagesForMemoryReview(sessionId) { return messagesForMemoryReview(database, sessionId); },

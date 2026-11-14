@@ -77,7 +77,9 @@ test("the live page shows the Role block in the profile, with no fixture, previe
   assert.doesNotThrow(() => new Function(`return async () => {${script}}`), "page script must parse");
   assert.match(script, /h\('dt', \{\}, 'Storage'\), h\('dd', \{\}, 'SQLite · Tasks and role writes'\)\),\n {4}roleBlock\(v\),/, "the profile renders the Role block");
   assert.match(script, /roles: \{ equipped: null, list: \[\] \}/, "an older server without roles reads as an empty list");
-  assert.equal(/ROLE_FIXTURES|fixture|prototype|Fixture scenario/i.test(script), false, "no fixture or prototype paths remain");
+  // The IP-0009 T-0005 Connections prototype is the only fixture code on the page; the Role block has none.
+  assert.equal(/ROLE_FIXTURES/.test(script), false, "no role fixtures remain");
+  assert.equal(/fixture|prototype|Fixture scenario/i.test(roleSectionSource()), false, "no role fixture or prototype paths remain");
   assert.equal(/roles: '|openDrawer\('roles'/.test(script), false, "there is no Roles drawer section or rail icon");
   assert.equal(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(script), false, "the page never parses HTML from data");
   assert.equal(/\.text\b/.test(roleSectionSource().replace(/args\.text|text: roleSearchText|roleNote\.text|result\.text/g, "")), false, "the Role block reads no role text");

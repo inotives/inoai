@@ -197,6 +197,9 @@ export interface OperationalStore {
   /** Undefined when the Session has no `role_applied` record; `{ roleId: null }` when it last applied no role. */
   lastAppliedRole?(sessionId: number): Promise<AppliedRole | undefined>;
   recordRoleApplied?(sessionId: number, roleId: string | null, actor?: string): Promise<EventRecord>;
+  // Connection status reads are SQLite only; the PostgreSQL store has none.
+  /** The status from each named connection's newest `connection_status` event. A name with no event is absent. */
+  latestConnectionStatuses?(names: string[]): Promise<Record<string, string>>;
   createMemoryReview(review: NewMemoryReview, actor?: string): Promise<MemoryReviewRecord>;
   completeMemoryReview(id: number, recap: string, actor?: string): Promise<MemoryReviewRecord | undefined>;
   messagesForMemoryReview(sessionId: number): Promise<MessageRecord[]>;

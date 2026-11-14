@@ -40,6 +40,7 @@ import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } fro
 import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
 import { inspectConnections, loadResolvedConnections } from "./connections/connections-file.js";
 import { connectionsIgnoredWarning } from "./connections/turn-connections.js";
+import { connectionsStatusLine } from "./connections/connections-status.js";
 import { enabledSkillsSectionWarning, hasEnabledSkillsSection, loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
@@ -445,7 +446,8 @@ export async function startTransport(
       };
       await request.respond(`Project: ${session.project_path}\nSession: ${session.agent_session_id.startsWith("pending:") ? "pending" : "active"}`
         + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`
-        + `\n${await roleStatusLine(store, instance.runtimeHome.rolesDirectory)}`);
+        + `\n${await roleStatusLine(store, instance.runtimeHome.rolesDirectory)}`
+        + `\n${await connectionsStatusLine(store, instance.runtimeHome.connectionsFile, instance.configuration.agentProvider)}`);
       return;
     }
     if (!worker) { await request.respond("Control unavailable. Please try again."); return; }

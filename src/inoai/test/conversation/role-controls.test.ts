@@ -145,9 +145,9 @@ test("status shows the equipped role, and a store without role methods reports r
     const transport = new ControlTransport();
     await startTransport(instance, undefined, transport);
     const status = () => transport.control("status", { conversationId: "thread-1", parentConversationId: "channel", guildTextChannelId: "channel" });
-    assert.match(await status(), /\nRole: none$/);
+    assert.match(await status(), /\nRole: none\n/);
     await transport.control("role-equip", { roleId: "designer" });
-    assert.match(await status(), /\nRole: Designer \(designer\)$/);
+    assert.match(await status(), /\nRole: Designer \(designer\)\n/);
 
     const store = new Proxy(instance.store, { get(target, property, receiver) {
       if (property === "getEquippedRole" || property === "equipRole" || property === "unequipRole") return undefined;
@@ -159,6 +159,6 @@ test("status shows the equipped role, and a store without role methods reports r
     for (const command of ["role-list", "role-show", "role-equip", "role-unequip"] as const) {
       assert.equal(await plain.control(command, { roleId: "planner" }), "Roles are not supported with this store.");
     }
-    assert.match(await plain.control("status", { conversationId: "thread-1", parentConversationId: "channel", guildTextChannelId: "channel" }), /\nRole: none$/);
+    assert.match(await plain.control("status", { conversationId: "thread-1", parentConversationId: "channel", guildTextChannelId: "channel" }), /\nRole: none\n/);
   });
 });
