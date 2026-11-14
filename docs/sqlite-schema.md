@@ -621,6 +621,15 @@ An equip or unequip sets `equipped_by` or `unequipped_by`, plus the matching `cr
 
 A `role_applied` Event records the role a Session last applied. Its `session_id` is the Session, `message_id` is NULL, and `detail` is `role=<role id>` or `role=none` for no role. The latest such Event for the Session is the Session's applied role. The conversation worker writes it with actor `conversation-worker`, and the Task Run executor with actor `task-runtime`.
 
+## Connection status events
+
+Connections (IP-0009, [ADR 0032](adr/0032-external-app-connections.md)) add no table. They use the `events` table:
+
+- `connection_status`: one Event per connection per Turn that called the runtime with connections. `detail` is `name=<connection name> status=<connected|failed|needs_auth|unknown>` and nothing else. `message_id` is the chat message, or NULL for a Task Run. Actors: `conversation-worker` and `task-runtime`. The write is best effort.
+- `turn_failed` with `detail` `reason=connections_invalid`: a Turn or Task Run that failed before the runtime started because `connections.json` could not be used.
+
+The SQLite store method `latestConnectionStatuses(names)` returns the newest `connection_status` value for each name; a name with no Event is left out. `/inoai status` and the UI read model use it. The PostgreSQL store writes the same Events but has no such method, so `/inoai status` shows `status unknown` there.
+
 ## Agent history
 
 The `anthropic-api` runtime keeps its conversation in SQLite, because the Messages API has no server-side session. Both tables are keyed by (`session_id`, `agent_session_id`). They are not part of `/api/ui-data`.

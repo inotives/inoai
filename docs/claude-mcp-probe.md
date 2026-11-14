@@ -201,3 +201,5 @@ Details the later tasks must handle (no plan change is needed, but T-0002–T-00
 3. **Name clash.** The connection hides the owner's global server of the same name for that Turn. The docs already tell owners to use distinct names; they should also say which one wins.
 4. **`${...}` in filled-in values.** Claude expands `${VAR}` in the file it reads from its own process environment. If a `.env` value contains `${...}` text, Claude could expand it after inoai fills it in, and pull in a variable from Claude's environment. T-0002 or T-0003 should reject `.env` values that contain `${`, or otherwise make sure no `${` reaches the per-Turn file.
 5. **Optional name rule.** Consider rejecting `__` in connection names so tool ids stay unambiguous.
+
+Status: all five items are closed. Items 1, 4, and 5 are in the code (T-0002 to T-0004). Items 2 and 3 are documented in [ADR 0032](adr/0032-external-app-connections.md#permissions) and in [INSTRUCTIONS.md](../INSTRUCTIONS.md#how-connections-apply).

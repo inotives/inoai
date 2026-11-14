@@ -346,9 +346,11 @@ controls.
 
 - `inoai ui --connect-dir <runtime-home> [--port 8989]` serves the UI on
   `127.0.0.1`; port `8989` is the default.
-- The UI reads only the selected runtime home's SQLite database. It does not
+- The UI reads the selected runtime home's SQLite database. It does not
   read `.env`. Since ADR 0026, its only writes are Tasks; since ADR 0031,
-  also the equipped role.
+  also the equipped role. It also reads Task `result.md` files, `roles/`,
+  and, since ADR 0032, `connections.json` (names, types, allow lists, and
+  status only).
 - Every request needs a `Host` of `127.0.0.1:<port>` or `localhost:<port>`;
   any other Host gets 403 on every path. `/` accepts GET and HEAD,
   `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404.
