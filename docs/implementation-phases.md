@@ -417,3 +417,17 @@ Delivered:
 - `inoai setup` support, with a hidden key prompt and no `PATH` check.
 
 No local tools, MCP servers, compaction, cost recording, or UI view of the stored history. The live check runs at feature acceptance with owner approval.
+
+## External app connections (IP-0009)
+
+**Purpose:** let the owner connect an Agent Instance to external apps through MCP servers listed in the runtime home's `connections.json`. See [ADR 0032](adr/0032-external-app-connections.md) and [Connections in INSTRUCTIONS.md](../INSTRUCTIONS.md#connections).
+
+Delivered:
+
+- `connections.json` (version 1) with `stdio` and `http` connections, a per-connection `allow` list, and `${NAME}` references to `.env`. inoai's own keys are refused, and literal secrets are rejected.
+- `inoai connections validate|list`. Both read only the file and `.env` key names, and never open SQLite.
+- A short-lived per-Turn `--mcp-config` file (`0600` in a `0700` folder) for Claude chat Turns and Task Runs. It is added on top of the owner's global MCP servers, and is removed on every exit path and at startup.
+- Fail-closed handling: startup refuses an invalid file on Claude homes, and a Turn fails with `turn_failed reason=connections_invalid`.
+- `connection_status` events, failure notes in replies and `result.md`, a `/inoai status` Connections line, and a read-only Connections block in the UI profile view.
+
+Claude homes only. Other providers ignore the file with a startup warning. Memory Reviews stay tool-free. No REST connections, OAuth, or UI and Discord management.
