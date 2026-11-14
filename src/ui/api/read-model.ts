@@ -3,6 +3,8 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { inspectRuntimeHomeLock, type RuntimeHome } from "../../inoai/agent-instance/runtime-home.js";
+import { loadConnections, type ConnectionAllow } from "../../inoai/connections/connections-file.js";
+import { latestConnectionStatuses } from "../../inoai/connectors/persistence/sqlite/legacy-database.js";
 import { InvalidRoleError, listRoles, loadRole } from "../../inoai/roles/role-file.js";
 import { validateEnabledSkills, type EnabledSkillsDocument } from "../../inoai/skills/skill-manifest.js";
 import { describeSchedule, taskSpecFromRow } from "../../inoai/tasks/schedule.js";
@@ -27,6 +29,15 @@ type UiSkill = { id: string; version: string; approvedAt: string; capabilities: 
 export type UiRole = { id: string; name: string | null; summary: string | null; valid: boolean; reason: string | null };
 /** `equipped` is the equipped role id, or null for no role. It may name a file that is now missing or invalid. */
 export type UiRoles = { equipped: string | null; list: UiRole[] };
+/** The newest `connection_status` value, or null when the connection has not been used yet. */
+export type UiConnectionStatus = "connected" | "failed" | "needs_auth" | "unknown" | null;
+/** One connection. UI data carries only these four fields; never command, args, url, headers, or env (IP-0009). */
+export type UiConnection = { name: string; type: "stdio" | "http"; allow: ConnectionAllow; status: UiConnectionStatus };
+/**
+ * `state` is `absent` (no connections.json), `valid`, `invalid` (no list and no error text), or `ignored`
+ * (a file on a non-Claude home, which is never parsed).
+ */
+export type UiConnections = { state: "absent" | "valid" | "invalid" | "ignored"; list: UiConnection[] };
 type UiMemory = { id: number; origin: string; state: string; body: string; review: { id: number; state: string; recap: string | null } | null; createdAt: string; updatedAt: string };
 
 export type UiData = {
@@ -42,6 +53,7 @@ export type UiData = {
   messages: UiMessage[];
   memories: UiMemory[];
   roles: UiRoles;
+  connections: UiConnections;
   insights: { "24h": InsightWindow; "7d": InsightWindow; "30d": InsightWindow };
 };
 
@@ -407,6 +419,33 @@ async function readRoleList(rolesDirectory: string): Promise<UiRole[]> {
   return Promise.all(entries.map((entry) => entry.valid ? readUiRole(rolesDirectory, entry.id) : invalidRole(entry.id, entry.reason ?? "invalid role")));
 }
 
+const NON_CLAUDE_PROVIDERS = new Set(["codex", "opencode", "anthropic-api"]);
+const CONNECTION_STATUSES = new Set(["connected", "failed", "needs_auth", "unknown"]);
+
+/**
+ * Reads `connections.json` with the schema-only loader. It never reads `.env` and never fills in references.
+ * It copies only name, type, and allow, and adds the newest `connection_status` value per name.
+ * A non-Claude home only checks that the file exists. The provider comes from the newest Session, because the UI
+ * cannot read `.env`; a home with no Session yet ("unknown") is read like a Claude home.
+ */
+export async function readUiConnections(database: DatabaseSync, connectionsFile: string, provider: string): Promise<UiConnections> {
+  const present = await lstat(connectionsFile).then(() => true, (error: NodeJS.ErrnoException) => error.code !== "ENOENT");
+  if (!present) return { state: "absent", list: [] };
+  if (NON_CLAUDE_PROVIDERS.has(provider)) return { state: "ignored", list: [] };
+  let connections;
+  try {
+    connections = await loadConnections(connectionsFile);
+  } catch {
+    return { state: "invalid", list: [] };
+  }
+  const statuses = connections.length ? latestConnectionStatuses(database, connections.map(({ name }) => name)) : {};
+  const list = connections.map(({ name, type, allow }): UiConnection => {
+    const status = statuses[name];
+    return { name, type, allow: allow === "all" ? "all" : [...allow], status: status === undefined ? null : CONNECTION_STATUSES.has(status) ? status as UiConnectionStatus : "unknown" };
+  });
+  return { state: "valid", list };
+}
+
 export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<UiData> {
   const [agentMarkdown, skillDetails, lockState, roleList] = await Promise.all([
     readFile(home.agentFile, "utf8").then(redact),
@@ -433,7 +472,9 @@ export async function loadUiData(home: RuntimeHome, now = new Date()): Promise<U
     const status = lockState === "live" ? "running" : lockState === "missing" || lockState === "stale" ? "stopped" : "unknown";
     const taskRuns = await loadTaskRuns(home, runRows);
     const roles = { equipped: readEquippedRoleId(database), list: roleList };
-    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider: session?.provider ?? "unknown", transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, taskRuns, tools: [], health, messages, memories, roles, insights };
+    const provider = session?.provider ?? "unknown";
+    const connections = await readUiConnections(database, home.connectionsFile, provider);
+    return { profile: { agentInstanceId: home.directory.split("/").pop()?.replace(/^\./, "") ?? "unknown", provider, transport: session?.transport ?? "unknown", workspaceIds, status }, metrics, agentMarkdown, skills: skillDetails.map((skill) => skill.id), skillDetails, tasks, taskRuns, tools: [], health, messages, memories, roles, connections, insights };
   } finally {
     database.close();
   }

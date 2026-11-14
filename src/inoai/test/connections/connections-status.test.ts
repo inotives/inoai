@@ -45,6 +45,18 @@ test("a Claude home shows each connection's newest status, or not used yet", asy
   });
 });
 
+test("the line shows the first 20 names, asks only for their statuses, and counts the rest", async () => {
+  const names = Array.from({ length: 23 }, (_, index) => `c${index}`);
+  const text = JSON.stringify({ version: 1, connections: Object.fromEntries(names.map((name) => [name, { type: "stdio", command: "npx", allow: [] }])) });
+  await withFile(text, async (file) => {
+    let asked: string[] = [];
+    const store = { async latestConnectionStatuses(requested: string[]) { asked = requested; return { c0: "connected" }; } };
+    const line = await connectionsStatusLine(store, file, "claude");
+    assert.deepEqual(asked, names.slice(0, 20));
+    assert.equal(line, `Connections: c0 (connected), ${names.slice(1, 20).map((name) => `${name} (not used yet)`).join(", ")}, and 3 more`);
+  });
+});
+
 test("a store without the status read shows status unknown", async () => {
   await withFile(twoConnections, async (file) =>
     assert.equal(await connectionsStatusLine({}, file, "claude"), "Connections: github (status unknown), docs (status unknown)"));

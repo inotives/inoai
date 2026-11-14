@@ -23,8 +23,9 @@ export async function connectionsStatusLine(store: ConnectionStatusStore, connec
     return "Connections: invalid (run inoai connections validate)";
   }
   if (names.length === 0) return "Connections: none";
-  const statuses = store.latestConnectionStatuses ? await store.latestConnectionStatuses(names) : undefined;
-  const entries = names.slice(0, shownLimit).map((name) => {
+  const shown = names.slice(0, shownLimit);
+  const statuses = store.latestConnectionStatuses ? await store.latestConnectionStatuses(shown) : undefined;
+  const entries = shown.map((name) => {
     if (!statuses) return `${name} (status unknown)`;
     const status = statuses[name];
     if (status === undefined) return `${name} (not used yet)`;

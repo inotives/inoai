@@ -1,5 +1,3 @@
-import { connectionFixtures } from "./connection-fixtures.js";
-
 // The ring console: one self-contained page that reads /api/ui-data and draws it with three.js.
 // `token` is the per-launch write token. It is hex, so it is safe in an attribute.
 export function renderAppShell(token: string): string {
@@ -220,10 +218,7 @@ export function renderAppShell(token: string): string {
 
 <script type="module">
 // ---------- data ----------
-const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], roles: { equipped: null, list: [] }, insights: null };
-// FIXTURE PROTOTYPE (IP-0009 T-0005): the Connections block shows fixture scenarios only when the
-// page URL has the ?connections-fixture switch. Without it, the page has no Connections block. T-0006 removes this.
-const CONNECTION_FIXTURES = new URLSearchParams(location.search).has('connections-fixture') ? ${scriptJson(connectionFixtures)} : null;
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], roles: { equipped: null, list: [] }, connections: { state: 'absent', list: [] }, insights: null };
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -910,22 +905,21 @@ function roleBlock(v) {
       : empty('No role files in roles/')));
 }
 // ---------- end roles ----------
-// ---------- connections (fixture prototype) ----------
-// IP-0009 T-0005: a read-only Connections block in the agent profile, drawn from fixture data only.
-// It shows only each connection's name, type, allow list, and last status. It makes no network calls
-// and has no write controls. All values reach the page as text nodes.
+// ---------- connections ----------
+// The read-only Connections block in the agent profile reads view.data.connections (IP-0009).
+// It shows only each connection's name, type, allow list, and last status. It has no write
+// controls. All values reach the page as text nodes.
 const CONNECTION_PILLS = { connected: ['active', 'connected'], failed: ['failed', 'failed'], needs_auth: ['pending', 'needs auth'], unknown: ['unknown', 'unknown'] };
 const NOT_USED_PILL = ['not-used', 'not used yet'];
 const CONNECTION_ORDER = ['connected', 'failed', 'needs auth', 'unknown', 'not used yet'];
-let connectionScenario = CONNECTION_FIXTURES ? Object.keys(CONNECTION_FIXTURES)[0] : null;
 // The Connections block starts collapsed, like the Role block.
 let connectionsOpen = false;
 const connectionPill = (c) => c.status === null ? NOT_USED_PILL : CONNECTION_PILLS[c.status] ?? CONNECTION_PILLS.unknown;
 const allowText = (allow) => allow === 'all' ? 'all tools' : allow.length ? allow.join(', ') : 'no tools';
 // The collapsed summary: status counts such as "2 connected, 1 failed", or a file state.
 function connectionSummary(c) {
-  if (c.file === 'invalid') return 'Invalid connections.json';
-  if (c.file === 'ignored') return 'Ignored (Claude only)';
+  if (c.state === 'invalid') return 'Invalid connections.json';
+  if (c.state === 'ignored') return 'Ignored (Claude only)';
   if (!c.list.length) return 'None';
   const counts = {};
   for (const x of c.list) { const label = connectionPill(x)[1]; counts[label] = (counts[label] ?? 0) + 1; }
@@ -938,9 +932,9 @@ function connectionRow(x) {
     h('p', { style: 'font-size:12px', 'data-allow': '' }, h('span', { style: 'color:var(--muted)' }, 'Tools: '), allowText(x.allow)));
 }
 function connectionsEmpty(c) {
-  if (c.file === 'invalid') return h('div', { class: 'form-error', 'data-connections-empty': 'invalid' }, 'connections.json is invalid. Turns fail until you fix it. Run inoai connections validate.');
-  if (c.file === 'ignored') return h('div', { class: 'note', style: 'margin:0', 'data-connections-empty': 'ignored' }, 'connections.json is ignored. Connections work only on Claude homes in this version.');
-  return h('div', { 'data-connections-empty': c.file }, empty(c.file === 'absent' ? 'No connections.json in this runtime home' : 'connections.json has no connections'));
+  if (c.state === 'invalid') return h('div', { class: 'form-error', 'data-connections-empty': 'invalid' }, 'connections.json is invalid. Turns fail until you fix it. Run inoai connections validate.');
+  if (c.state === 'ignored') return h('div', { class: 'note', style: 'margin:0', 'data-connections-empty': 'ignored' }, 'connections.json is ignored. Connections work only on Claude homes in this version.');
+  return h('div', { 'data-connections-empty': c.state }, empty(c.state === 'absent' ? 'No connections.json in this runtime home' : 'connections.json has no connections'));
 }
 function redrawConnections() {
   if (openSection !== 'profile') return;
@@ -949,19 +943,15 @@ function redrawConnections() {
   body.scrollTop = scroll;
 }
 // The Connections block in the agent profile, below the Role block.
-function connectionsBlock() {
-  const c = CONNECTION_FIXTURES[connectionScenario], open = connectionsOpen;
+function connectionsBlock(v) {
+  const c = v.data.connections, open = connectionsOpen;
   const count = c.list.length + (c.list.length === 1 ? ' connection' : ' connections');
-  return h('div', { class: 'setting', 'data-connections-block': c.file, style: 'margin:0 0 16px' },
+  return h('div', { class: 'setting', 'data-connections-block': c.state, style: 'margin:0 0 16px' },
     h('button', { class: 'setting-head', type: 'button', 'aria-expanded': String(open), 'data-action': 'toggle-connections', onclick: () => { connectionsOpen = !open; redrawConnections(); } },
       h('span', {}, h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'), 'Connections'),
       h('small', {}, count)),
-    h('div', { class: 'seg', role: 'group', 'aria-label': 'Fixture scenario', style: 'margin:10px 0 0' },
-      h('span', { style: 'color:var(--amber);font-size:11px;align-self:center' }, 'Fixture prototype:'),
-      Object.keys(CONNECTION_FIXTURES).map((key) =>
-        h('button', { type: 'button', 'data-scenario': key, 'aria-pressed': String(key === connectionScenario), onclick: () => { connectionScenario = key; redrawConnections(); } }, key))),
-    open ? null : h('div', { 'data-connections-summary': c.file, style: 'margin-top:8px;font-size:13px;overflow-wrap:anywhere' },
-      h('span', { style: c.file === 'invalid' ? 'color:var(--coral)' : c.list.length ? '' : 'color:var(--muted)' }, connectionSummary(c))),
+    open ? null : h('div', { 'data-connections-summary': c.state, style: 'margin-top:8px;font-size:13px;overflow-wrap:anywhere' },
+      h('span', { style: c.state === 'invalid' ? 'color:var(--coral)' : c.list.length ? '' : 'color:var(--muted)' }, connectionSummary(c))),
     h('div', { 'data-connections-body': '', style: 'margin-top:10px', ...(open ? {} : { hidden: '' }) },
       c.list.length ? h('div', { class: 'list' }, c.list.map(connectionRow)) : connectionsEmpty(c),
       h('div', { class: 'note' }, 'Read-only. Edit connections.json by hand.')));
@@ -976,7 +966,7 @@ const SECTIONS = {
       h('dt', {}, 'Workspaces'), h('dd', {}, v.data.profile.workspaceIds.join(', ') || '—'),
       h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · Tasks and role writes')),
     roleBlock(v),
-    CONNECTION_FIXTURES ? connectionsBlock() : null,
+    connectionsBlock(v),
     markdown(v.data.agentMarkdown)] }),
   health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [
     h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
@@ -1570,9 +1560,4 @@ function startScene() {
 </body>
 </html>
 `;
-}
-
-// JSON that is safe inside an inline <script>: no "<" (so no "</script>" or "<!--") and no line separators.
-function scriptJson(value: unknown): string {
-  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
