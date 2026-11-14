@@ -25,6 +25,15 @@ see [README.md](README.md). For the architecture and folder layout, see
   - [Roles in the UI](#roles-in-the-ui)
   - [How a role applies](#how-a-role-applies)
   - [Role live check](#role-live-check)
+- [Connections](#connections)
+  - [Connections file](#connections-file)
+  - [Secrets in .env](#secrets-in-env)
+  - [Connections commands](#connections-commands)
+  - [How connections apply](#how-connections-apply)
+  - [Connection status](#connection-status)
+  - [Connection failures](#connection-failures)
+  - [Connections limits](#connections-limits)
+  - [Connections live check](#connections-live-check)
 - [Tasks](#tasks)
   - [Tasks from chat](#tasks-from-chat)
   - [Tasks in the UI](#tasks-in-the-ui)
@@ -427,6 +436,7 @@ The refusal and `max_tokens` replies write no history, so the thread continues a
 | `/inoai memory review` | Run a Memory Review cycle now ([Memory commands](#memory-commands)). |
 | `npm start -- role list`, `show`, `equip <id>`, `unequip` | List, show, equip, or unequip the role, also while the agent runs ([Role commands](#role-commands)). |
 | `/inoai role list`, `show`, `equip id:<id>`, `unequip` | The same from Discord. |
+| `npm start -- connections validate`, `list` | Check or list the runtime home's `connections.json` offline, also while the agent runs ([Connections commands](#connections-commands)). |
 
 The `/inoai` slash commands are owner-only and reply privately. Conversation controls work in a thread the bot owns. Task controls work in an accessible guild text channel or an existing Task thread. Creating from a Task thread places the new thread in its parent channel. Memory and role controls work in any channel of the configured guild.
 
@@ -550,6 +560,206 @@ Run this check by hand with a real Discord bot, once on a Codex home and once on
 8. Optional failure check: equip a role, then rename its file in `roles/`. Send a message and expect the notice `Equipped role <id> is missing or invalid; fix roles/<id>.md or unequip it.` Rename the file back and send the message again.
 
 Record, for each provider: the agent version, the replies from steps 3 and 5 (and step 7), whether each reply followed its role, and any deviation.
+
+## Connections
+
+A Connection is an MCP server that one runtime home adds for its agent ([ADR 0032](docs/adr/0032-external-app-connections.md)). The agent can then call the server's allowed tools in chat Turns and Task Runs. Connections work only on Claude homes in this version. They are added on top of your own Claude MCP servers; inoai never changes your global Claude configuration.
+
+To connect a REST API, put an MCP server in front of it. OAuth sign-in for remote servers is not supported; use a header or env secret.
+
+### Connections file
+
+Each runtime home can have a `connections.json`, next to its `.env`. inoai never creates it. With no file, the home has no connections. Keep it owner-only, like `.env`.
+
+```json
+{
+  "version": 1,
+  "connections": {
+    "github": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" },
+      "allow": ["search_issues", "get_issue"]
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_API_KEY}" },
+      "allow": ["search"]
+    }
+  }
+}
+```
+
+- `version` is `1`. The top level has only `version` and `connections`.
+- A connection name uses 1 to 32 of `a-z`, `0-9`, `-`, and `_`. It starts with a letter or digit and has no `__`. Use names that differ from your global MCP servers (see [How connections apply](#how-connections-apply)).
+- `type` is `stdio` or `http`.
+  - `stdio`: `command` (required), `args` (a list of strings), and `env` (an object of strings).
+  - `http`: `url` (required) and `headers` (an object of strings).
+- `allow` is optional. It is a list of tool names, or `"all"`. A tool name uses 1 to 64 of letters, digits, `_`, and `-`. With no `allow`, the server starts, but its tool calls are denied.
+- Unknown keys are rejected.
+- A symlink, a non-regular file, a file over 262,144 bytes, and bad JSON are invalid.
+
+### Secrets in .env
+
+Put every secret in the runtime home's `.env` and refer to it by name as `${NAME}`, in `env`, `headers`, `url`, or `args`. For the example above, `.env` holds `GITHUB_TOKEN=…` and `DOCS_API_KEY=…`.
+
+- `${NAME}` is the only reference form. `NAME` starts with a letter or `_` and has only letters, digits, and `_`. A bare `$NAME` stays literal text.
+- Every referenced name needs a non-empty value in `.env`. An empty value counts as missing. A value that contains `${` is refused.
+- inoai's own keys cannot be referenced: `DISCORD_*`, `ANTHROPIC_API_KEY`, and `POSTGRES_*`.
+- A literal value that looks like a secret is refused, for example `--token=abc123`, `Bearer abc…`, or a `ghp_…` token. A key name or a reference name that itself looks like a secret is also refused.
+- Under an `env` or `headers` key whose name contains `password`, `passwd`, `secret`, `token`, `api_key`, `api-key`, `apikey`, or `authorization` (any case), the value must be exactly one `${NAME}`. It may follow one scheme word: `Bearer `, `Basic `, or `token `. The words are case-sensitive and take exactly one space. So `"Authorization": "Bearer ${DOCS_API_KEY}"` is accepted, and a plain value such as `"TOKEN_TYPE": "bearer"` is rejected. Rename the key, or move the value to `.env`.
+
+At each Turn, inoai fills in the values and writes a private Claude MCP config file (`0600`, in a new `0700` temporary folder). It passes the file with `--mcp-config` and deletes the folder when the Turn ends. Each secret reaches only its own server. Secret values never go in argv, Claude's own environment, SQLite, logs, Discord, or the UI. The filled-in secret is on local disk, owner-only, for the length of one Turn.
+
+### Connections commands
+
+The commands read only `connections.json` and the names and values in `.env`. They never open SQLite and never print a value, so they are safe while the agent runs.
+
+| Command | Purpose |
+| --- | --- |
+| `npm start -- connections validate [--connect-dir <home>]` | Check the schema, the names, the references against `.env`, the refused keys, and literal secrets. |
+| `npm start -- connections list [--connect-dir <home>]` | Print one JSON array with each connection's `name`, `type`, and `allow`. |
+
+The standalone CLI uses `inoai connections validate` and `inoai connections list`, with `--dir /path/to/agent` instead of `--connect-dir`.
+
+`validate` prints one of:
+
+```text
+inoai connections file is valid: <home>/connections.json (2 connections)
+inoai connections: none (no connections.json in <home>)
+Invalid connections file <home>/connections.json: <reason>
+```
+
+The last one exits with status 1. Example reasons:
+
+- `connection "docs" has unknown key "extra"`
+- `connection "docs" headers Authorization refers to DOCS_API_KEY, which is missing or empty in .env`
+- `connection "github" env GITHUB_PERSONAL_ACCESS_TOKEN refers to DISCORD_BOT_TOKEN, an inoai key that cannot be shared`
+- `connection "github" args[0] has a secret-like literal value; use a ${NAME} reference to .env`
+
+A valid file can also print warnings before the result line:
+
+```text
+Warning: connection "docs" allows all of its tools; prefer a list of tool names
+Warning: connection "notes" allows no tools; its tool calls will be denied
+```
+
+`list` prints, for the example above:
+
+```json
+[{"name":"github","type":"stdio","allow":["search_issues","get_issue"]},{"name":"docs","type":"http","allow":["search"]}]
+```
+
+It never prints `command`, `args`, `url`, `headers`, `env`, or `.env` values. With no file it prints `[]`. An invalid file fails like `validate`.
+
+### How connections apply
+
+- **Claude only.** On Codex, OpenCode, and `anthropic-api` homes, a `connections.json` only prints this warning at startup: `Warning: connections.json is ignored; connections are supported only on Claude homes in this version.` Those homes still start and run Turns, even with an invalid file.
+- **Next Turn.** Each chat Turn and Task Run reads the file when it starts. An edit applies from the next Turn, without a restart. A Turn in progress keeps its servers.
+- **Task Runs** use connections the same way chat Turns do. Memory Reviews never use them.
+- **Permissions.** Each `allow` entry becomes a Claude `--allowedTools` entry: `mcp__<name>__<tool>`, or `mcp__<name>` for `"all"`. They are added to `CLAUDE_ALLOWED_TOOLS`. Other tools of the server are denied, and the agent answers without them. Prefer a list of read-only tools to `"all"`.
+- **Your own allow rules still apply.** Claude applies the `permissions.allow` rules in your global and project Claude settings to connection tools by name, including broad patterns. A tool that `allow` leaves out can still run when one of your rules matches it. inoai does not read or change those rules.
+- **Name clashes.** A connection with the same name as one of your global MCP servers hides that server for the Turn, and your allow rules for that name apply to the connection. Use distinct names.
+
+### Connection status
+
+Claude reports each server's status when it starts a Turn. inoai records one `connection_status` Event per connection per Turn, with `detail` `name=<name> status=<status>`. The status is `connected`, `failed`, `needs_auth`, or `unknown`. A connection that Claude does not list counts as `failed`. If the Turn ends before Claude reports, each connection is recorded as `unknown`. A Turn that never reaches the runtime records nothing.
+
+`/inoai status` shows a `Connections:` line:
+
+| Line | Meaning |
+| --- | --- |
+| `Connections: none` | No `connections.json`, or a file with no connections. |
+| `Connections: github (connected), docs (failed)` | Each connection with the status from its newest Turn. |
+| `Connections: docs (not used yet)` | The connection has no recorded status yet. |
+| `Connections: docs (status unknown)` | The store cannot read statuses (the PostgreSQL store). |
+| `Connections: invalid (run inoai connections validate)` | The file fails the schema check. |
+| `Connections: ignored (Claude only)` | A non-Claude home has a file. |
+
+The line shows at most 20 names, then `and <n> more`.
+
+In the UI, open the agent profile view. The read-only Connections block is below the Role block and starts collapsed. Its summary shows status counts such as `1 connected, 1 failed`, or a state:
+
+- no file: `None`, and `No connections.json in this runtime home` when expanded;
+- a valid file with no connections: `None`, and `connections.json has no connections` when expanded;
+- a valid file: one row per connection with its name, type, `Tools:` list (`all tools` or `no tools` when it applies), and a `connected`, `failed`, `needs auth`, `unknown`, or `not used yet` status;
+- an invalid file: `Invalid connections.json`, and `connections.json is invalid. Turns fail until you fix it. Run inoai connections validate.` when expanded;
+- a non-Claude home: `Ignored (Claude only)`, and `connections.json is ignored. Connections work only on Claude homes in this version.` when expanded.
+
+The UI shows only names, types, allowed tools, and status. It never shows commands, URLs, headers, or env values, never reads `.env`, and never writes `connections.json`. The UI and the status line check the schema only. A missing `.env` reference, a refused key, or a literal secret shows as valid there; run `inoai connections validate` for the full check. The UI takes the provider from the newest Session. A home with no Session yet is shown like a Claude home.
+
+### Connection failures
+
+- **Invalid file at startup.** A Claude home refuses to start and prints `Invalid connections file <home>/connections.json: <reason>`.
+- **Invalid file while running.** The Turn or Task Run fails before Claude starts. inoai posts `The connections file connections.json is invalid: <reason>. Fix it, then send a fresh request.` and records a `turn_failed` Event with `reason=connections_invalid`. The message is not replayed; send it again after you fix the file. A failed Task Run writes the notice to its `result.md`, and a recurring Task tries again at its next run.
+- **A server that does not start.** The Turn still runs and answers without that server. The reply ends with one note per connection that is not connected:
+  - `Connection <name> failed to start.`
+  - `Connection <name> needs authentication; check its credentials in .env.`
+  - `Connection <name> reported an unknown status.`
+
+  A completed Task Run's `result.md` gets the same notes in a `## Connections` section, after `## Files`.
+- **A tool that is not allowed.** Claude denies the call. When the Turn still answers, inoai posts `Claude skipped some tool calls that need approval and answered without them. To allow a tool, add it to CLAUDE_ALLOWED_TOOLS in this runtime home's .env.` For a connection tool, add it to the connection's `allow` list instead.
+
+### Connections limits
+
+- inoai cannot detect every secret. These pass the checks:
+  - a raw secret under a neutral key, such as `X-Auth` or `GH_PAT`;
+  - user info in a URL, such as `https://user:pass@host/`;
+  - literal text after a reference in `args`, such as `--token=${X}abc`.
+
+  Put every secret in `.env` and use a `${NAME}` reference.
+- inoai does not check URLs or commands beyond the schema. You are responsible for trusting each server. A `stdio` server runs as you, with your file access. Tool results can contain prompt injection, especially from remote servers. Allow only the tools you need.
+- The status is the one Claude reported when the Turn started. A server that fails later in the Turn is not tracked.
+- No OAuth, no Codex, OpenCode, or `anthropic-api` support, and no management from Discord or the UI in this version.
+
+### Connections live check
+
+Run this check by hand on a Claude home with a real Discord bot, against a local Knowledge Grid. Use your normal development Claude home, not the test suite.
+
+Before you start:
+
+- The home has `AGENT_PROVIDER=claude`, and `claude` is signed in.
+- Knowledge Grid runs locally: the local dev stack at `http://127.0.0.1:3000/mcp`, or the demo (`npm run demo:up` in the Knowledge Grid repository) at `http://localhost:3000/mcp`.
+- You have a per-agent token for it (Knowledge Grid UI, Settings > Account, or the `Authorization` value of your own local `kg-local-dev` MCP entry; copy only the token after `Bearer `). Copy it yourself into the home's `.env` as `KNOWLEDGE_GRID_AGENT_TOKEN=<token>`. Do not paste it into chat or into `connections.json`.
+- **Precondition:** no allow rule of yours matches `mcp__kg-demo`. Check `permissions.allow` in `~/.claude/settings.json` and in the project folder's `.claude/settings.json` and `.claude/settings.local.json`. Entries such as `mcp__kg-demo`, `mcp__kg-demo__*`, or a broad `mcp__*` would allow `create_page` and break step 5. Also check that `claude mcp list` has no server named `kg-demo`.
+
+Steps:
+
+1. Write `<home>/connections.json`. Use the URL your Knowledge Grid serves:
+
+   ```json
+   {
+     "version": 1,
+     "connections": {
+       "kg-demo": {
+         "type": "http",
+         "url": "http://localhost:3000/mcp",
+         "headers": { "Authorization": "Bearer ${KNOWLEDGE_GRID_AGENT_TOKEN}" },
+         "allow": ["search_grid", "get_page", "list_pages"]
+       }
+     }
+   }
+   ```
+
+2. Validate: `npm start -- connections validate --connect-dir <home>`. Expect `inoai connections file is valid: <home>/connections.json (1 connection)` and no warning. Run `npm start -- connections list --connect-dir <home>`. Expect `[{"name":"kg-demo","type":"http","allow":["search_grid","get_page","list_pages"]}]`.
+3. Start the agent: `npm start -- --connect-dir <home>`. If it already runs, keep it running. Run `/inoai status`. Expect `Connections: kg-demo (not used yet)`, or the status from an earlier Turn.
+4. **Allowed call.** Mention the bot, for example "@inoai use the kg-demo search_grid tool to search the grid for onboarding, and list the page titles you find." Expect a reply with results from Knowledge Grid and no connection note. Run `/inoai status`. Expect `Connections: kg-demo (connected)`.
+5. **Denied call.** In the same thread, send "Call the kg-demo create_page tool now to create a page titled inoai live check. Do not use any other tool." Expect a reply that says the page could not be created, and the note `Claude skipped some tool calls that need approval and answered without them. To allow a tool, add it to CLAUDE_ALLOWED_TOOLS in this runtime home's .env.` Check in Knowledge Grid that no page or submission was created. If no note appears, the model did not try the call; ask again and name the tool.
+6. **Server down.** Stop Knowledge Grid (for the demo, `npm run demo:down`, or stop the dev stack). Send another message in the thread, for example "Search the grid for onboarding again." Expect a reply that ends with `Connection kg-demo failed to start.` Run `/inoai status`. Expect `Connections: kg-demo (failed)`.
+7. **UI.** Start the UI: `npm start -- ui --connect-dir <home>`. Open the agent profile view. Expect the collapsed Connections block to show `1 failed`. Expand it. Expect one row: `kg-demo`, `http`, `Tools: search_grid, get_page, list_pages`, and a `failed` status. Expect no URL and no token anywhere on the page. Start Knowledge Grid again.
+8. **Invalid file.** Copy the file aside: `cp <home>/connections.json <home>/connections.json.bak`. Edit `connections.json` and add `"extra": 1` inside `kg-demo`. Run `npm start -- connections validate --connect-dir <home>`. Expect `Invalid connections file <home>/connections.json: connection "kg-demo" has unknown key "extra"` and exit status 1. Without restarting the agent, send a message in the thread. Expect the notice `The connections file connections.json is invalid: connection "kg-demo" has unknown key "extra". Fix it, then send a fresh request.` Run `/inoai status`. Expect `Connections: invalid (run inoai connections validate)`. Reload the UI. Expect `Invalid connections.json`.
+9. **Restore.** Run `mv <home>/connections.json.bak <home>/connections.json`. Validate again and expect the valid line. Send the message from step 8 again. Expect a normal reply with no connection note, and `Connections: kg-demo (connected)` in `/inoai status`.
+10. **SQLite (read-only).** Open the database with `sqlite3 -readonly <home>/inoai.sqlite`. A development home may already have older rows, so check the newest rows.
+    - `SELECT session_id, message_id, detail, created_by FROM events WHERE event_type='connection_status' ORDER BY id DESC LIMIT 4;` Expect four rows for the thread's Session, newest first: `name=kg-demo status=connected` (step 9), `name=kg-demo status=failed` (step 6), `name=kg-demo status=connected` (step 5), and `name=kg-demo status=connected` (step 4). All have actor `conversation-worker`. The step 8 Turn has no row. If you repeated step 5, it added one more `connected` row; raise the limit by one.
+    - `SELECT detail, created_by FROM events WHERE event_type='turn_failed' ORDER BY id DESC LIMIT 1;` Expect `reason=connections_invalid` with actor `conversation-worker`.
+    - `SELECT detail FROM events WHERE event_type='approval_unsupported' ORDER BY id DESC LIMIT 1;` Expect `declined: no safe action preview; turn=completed; denials=<n>` from step 5, with `<n>` at least 1.
+    - `SELECT COUNT(*) FROM events WHERE detail LIKE '%Bearer%';` Expect `0`.
+
+Optional: stop the agent, add `"extra": 1` again, and start it. Expect startup to refuse with `Invalid connections file <home>/connections.json: connection "kg-demo" has unknown key "extra"`. Restore the file and start again.
+
+Record: the Claude CLI version, which Knowledge Grid URL you used, the replies from steps 4, 5, and 6, the SQLite rows from step 10, and any deviation.
 
 ## Tasks
 
@@ -846,7 +1056,7 @@ All four runtimes share the same queue, archive, and safety rules. The [Anthropi
 - Turns run FIFO per Agent Session. When a runtime proves cross-session concurrency at startup (Codex and Claude probes), different threads run in parallel; otherwise, and always for OpenCode, all Turns share one global FIFO queue. `anthropic-api` homes start in parallel mode without a probe.
 - Only Turns proven never to have started are retried (at most three attempts in total). An uncertain outcome is recorded and you are asked for a fresh request ([ADR 0002](docs/adr/0002-retry-only-proven-safe-runtime-turns.md)).
 - A supported Codex command request shows its complete command and working directory in an owner-only Discord card. **Approve** accepts that one live request; **Reject** declines it. The card expires after 15 minutes. Missing, unsafe, network-specific, or broader permission requests still fail closed with a fixed notice to use local Codex ([ADR 0003](docs/adr/0003-fail-closed-on-unsafe-approval-previews.md)). SQLite stores a fixed summary and outcome, not the command or working directory. Claude and OpenCode prompts still fail closed and record only a denial count ([ADR 0007](docs/adr/0007-claude-matches-codex-fail-closed-approvals.md)). When the Turn still answers, inoai posts a short note that the agent skipped some tool calls that need approval and answered without them; for Claude, the note points to `CLAUDE_ALLOWED_TOOLS`. When the Turn does not answer, inoai posts the fixed notice to use local Claude or OpenCode for the blocked action. Neither message names the tools. The `approval_unsupported` Event detail records `turn=completed` or `turn=failed` and the denial count.
-- Each CLI's own settings, MCP servers, skills, sandbox, and permission rules apply unchanged to Turns; Memory Reviews run without them. For Claude, the CLI denies any action your settings do not already allow.
+- Each CLI's own settings, MCP servers, skills, sandbox, and permission rules apply unchanged to Turns; Memory Reviews run without them. For Claude, the CLI denies any action your settings do not already allow. A Claude home can add its own MCP servers on top, for chat Turns and Task Runs only ([Connections](#connections)).
 - At startup, Codex and Claude run a concurrency probe; the Claude probe makes two short, tool-free `haiku` calls that count against your subscription usage. Startup logs which mode is active.
 - Sign-in and usage failures post the runtime's own fixed notice, for example to run `codex login` or `claude /login`.
 - `agent.md` is sent with every Turn, so edits apply from the next Turn, including in existing threads. On `anthropic-api` homes the edit arrives as a system message; see the Claude Sonnet 5 limitation in [Anthropic API](#anthropic-api).

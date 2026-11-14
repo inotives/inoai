@@ -41,9 +41,10 @@ By default it drives the CLI you already use instead of calling a model API. Cod
 - A silent Daily Memory Review turns each Agent Session's new Messages into a Recap and, when warranted, shared Memory.
 - Owner-only Tasks run once on command or recur on a whole-hour or whole-day interval. Each Task has its own Discord thread and Agent Session.
 - The owner can equip one Role per Agent Instance, a switchable working mode such as a planner or a reviewer, from Discord, the CLI, or the UI. New runtime homes get a catalog of 202 roles converted from [github/awesome-copilot](https://github.com/github/awesome-copilot) ([Credits](#credits)).
-- A UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database and can manage Tasks and the equipped Role. It binds to loopback by default or one selected private LAN address with `--host`; SQLite is the core runtime's source of truth.
+- A Claude home can connect the agent to external apps through MCP servers listed in its own `connections.json`, with a tool allow list per connection and secrets referenced from `.env` ([ADR 0032](docs/adr/0032-external-app-connections.md)).
+- A UI page, started with `npm start -- ui`, reads the selected runtime home's SQLite database, shows its connections read-only, and can manage Tasks and the equipped Role. It binds to loopback by default or one selected private LAN address with `--host`; SQLite is the core runtime's source of truth.
 
-Status: Conversation workers, Codex, Claude CLI, OpenCode, the Anthropic API runtime, Daily Memory Review (Claude and Anthropic API homes in V1), Tasks, Roles, and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
+Status: Conversation workers, Codex, Claude CLI, OpenCode, the Anthropic API runtime, Daily Memory Review (Claude and Anthropic API homes in V1), Tasks, Roles, Connections (Claude homes), and the local UI are implemented. The runtime uses SQLite. PostgreSQL tools remain available for advanced testing; the later central reporting sink and V1 hardening remain.
 
 ## Quick Start (Codex)
 
@@ -63,13 +64,13 @@ npm run validate
 npm start
 ```
 
-For Claude, OpenCode, the Anthropic API, skills, Roles, Tasks, the local UI, the Heartbeat Supervisor, and all commands, see [INSTRUCTIONS.md](INSTRUCTIONS.md).
+For Claude, OpenCode, the Anthropic API, skills, Roles, Connections, Tasks, the local UI, the Heartbeat Supervisor, and all commands, see [INSTRUCTIONS.md](INSTRUCTIONS.md).
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
-| [INSTRUCTIONS.md](INSTRUCTIONS.md) | Setup per provider, commands, Roles, Tasks, Heartbeat Supervisor, Daily Memory Review, upgrading agent CLIs, development. |
+| [INSTRUCTIONS.md](INSTRUCTIONS.md) | Setup per provider, commands, Roles, Connections, Tasks, Heartbeat Supervisor, Daily Memory Review, upgrading agent CLIs, development. |
 | [docs/repository-structure.md](docs/repository-structure.md) | Core model, runtime home and lock, Discord rules, source layout, module boundaries. |
 | [CONTEXT.md](CONTEXT.md) | Domain language. |
 | [docs/discord-codex-cli-harness-proposal.md](docs/discord-codex-cli-harness-proposal.md) | V1 behavior and boundaries. |

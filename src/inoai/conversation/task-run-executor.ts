@@ -13,6 +13,9 @@ import { composeTaskMemorySection } from "./prompt-context.js";
 import type { ConversationWorker } from "./conversation-worker.js";
 import { InvalidRoleError } from "../roles/role-file.js";
 import { invalidRoleNotice, prepareTurnRole, recordTurnRole, withRoleNote } from "../roles/equipped-role.js";
+import { InvalidConnectionsError } from "../connections/connections-file.js";
+import { connectionFailureNote, invalidConnectionsNotice, prepareTurnConnections, recordConnectionStatuses } from "../connections/turn-connections.js";
+import type { ConnectionStatusReport } from "../connections/turn-connections.js";
 
 type Store = OperationalStore & TaskOperationsStore;
 type RunFolder = { task: TaskRecord; output: string; relativeOutput: string };
@@ -127,6 +130,8 @@ export class TaskRunExecutor {
       conversationId ??= await this.openTaskThread(task, runId);
       // The run uses the role equipped when it starts; a later switch applies from the next run.
       const role = await prepareTurnRole(this.store, this.home.rolesDirectory, session.id);
+      // Connections are read once per run, like the role. Only Claude homes use them.
+      const connections = await prepareTurnConnections(this.home, this.agentProvider);
       active.sessionId = session.agent_session_id.startsWith("pending:")
         ? await startAgentSession(this.store, this.runtime, session.id, this.home, role.block)
         : await resumeAgentSession(this.store, this.runtime, session.id, this.home, role.block);
@@ -147,10 +152,13 @@ export class TaskRunExecutor {
       await this.recordMemoryUses(session.id, runId, memory.memoryIds);
       await recordTurnRole(this.store, session.id, role, "task-runtime");
       let answer: string | undefined;
+      let connectionReport: ConnectionStatusReport | undefined;
       const usage: Usage = {};
       try {
-        for await (const event of this.runtime.runTurn(active.sessionId, prompt)) {
+        const events = connections ? this.runtime.runTurn(active.sessionId, prompt, { connections: connections.turn }) : this.runtime.runTurn(active.sessionId, prompt);
+        for await (const event of events) {
           if (event.type === "answer") answer = event.text;
+          if (event.type === "connection_status") connectionReport = event.connections;
           if (event.type === "usage") addUsage(usage, event);
           if (event.type === "session") {
             await this.store.rebindAgentSession(session.id, active.sessionId, event.id, `runtime:${session.agent_provider}`);
@@ -159,12 +167,13 @@ export class TaskRunExecutor {
         }
       } finally {
         await recordUsage(this.store, session.id, null, usage);
+        if (connections) await recordConnectionStatuses(this.store, session.id, null, connections, connectionReport, "task-runtime");
       }
       if (active.cancelled) return;
       if (answer === undefined) throw new TaskRunError("Task Run returned no answer");
       const endedAt = this.now();
       const files = await writeTaskRunResult(this.home.directory, task, { id: runId, startedAt: active.startedAt },
-        { state: "completed", endedAt, answer });
+        { state: "completed", endedAt, answer, connectionNote: connectionFailureNote(connectionReport) });
       const paths = [...files, `${relativeOutput}/result.md`].sort();
       await this.store.completeTaskRun(runId, cursor, paths, endedAt, "task-runtime");
       ended = true;
@@ -190,6 +199,20 @@ export class TaskRunExecutor {
           const sessionId = active.folder?.task.session_id;
           if (sessionId !== undefined) await this.store.createEvent({ session_id: sessionId, message_id: null, event_type: "turn_failed",
             detail: "reason=role_invalid" }, "task-runtime").catch(() => undefined);
+          if (active.folder) await writeTaskRunResult(this.home.directory, active.folder.task, { id: runId, startedAt: active.startedAt },
+            { state: "failed", endedAt, failure: notice }).catch(() => undefined);
+          if (conversationId) await this.transport.sendMessage(conversationId, notice).catch(() => undefined);
+        }
+        return;
+      }
+      if (error instanceof InvalidConnectionsError) {
+        // Same replay rule as role_invalid: nothing reached the runtime. The schedule stays; the next run reads the file again.
+        if (!active.cancelled && await this.store.failTaskRun(runId, "Connections file invalid; replay_safe=false", endedAt, "task-runtime")) {
+          ended = true;
+          const notice = invalidConnectionsNotice(error);
+          const sessionId = active.folder?.task.session_id;
+          if (sessionId !== undefined) await this.store.createEvent({ session_id: sessionId, message_id: null, event_type: "turn_failed",
+            detail: "reason=connections_invalid" }, "task-runtime").catch(() => undefined);
           if (active.folder) await writeTaskRunResult(this.home.directory, active.folder.task, { id: runId, startedAt: active.startedAt },
             { state: "failed", endedAt, failure: notice }).catch(() => undefined);
           if (conversationId) await this.transport.sendMessage(conversationId, notice).catch(() => undefined);
@@ -274,7 +297,8 @@ export class TaskRunExecutor {
   }
 }
 
-export type TaskRunOutcome = { state: "completed" | "failed" | "cancelled"; endedAt: number; answer?: string; failure?: string };
+/** `connectionNote` lists connections that were not connected; it is written after the Files section. */
+export type TaskRunOutcome = { state: "completed" | "failed" | "cancelled"; endedAt: number; answer?: string; failure?: string; connectionNote?: string };
 
 /**
  * Writes result.md inside `results/<task>/<run>` of a runtime home and returns the run's other file paths.
@@ -324,6 +348,7 @@ export async function writeTaskRunResult(homeDirectory: string, task: TaskRecord
     "",
     ...(files.length ? files.map((path) => `- \`${path}\``) : ["No other files."]),
     "",
+    ...(outcome.connectionNote ? ["## Connections", "", outcome.connectionNote, ""] : []),
   ].join("\n");
   // O_NOFOLLOW refuses a symlink planted at result.md. The file is opened without O_TRUNC and truncated only after
   // fstat shows a regular file with one link, so a hard link to a file outside results/ is never overwritten.

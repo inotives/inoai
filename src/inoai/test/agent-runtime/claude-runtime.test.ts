@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,10 +8,10 @@ import test from "node:test";
 import { sqliteStore } from "../../../test/sqlite-store.js";
 
 import { RuntimeFailure } from "../../agent-runtime/ports.js";
-import type { RuntimeEvent } from "../../agent-runtime/ports.js";
+import type { RuntimeEvent, TurnConnections } from "../../agent-runtime/ports.js";
 import { resumeAgentSession, startAgentSession } from "../../conversation/agent-session.js";
 import { claudePermissionDenialNotifier } from "../../transport/approval-relay.js";
-import { ClaudeRuntime } from "../../connectors/agent-runtime/claude-runtime.js";
+import { ClaudeRuntime, connectionStatuses, removeLeftoverMcpConfigDirs } from "../../connectors/agent-runtime/claude-runtime.js";
 import { ConversationWorker } from "../../conversation/conversation-worker.js";
 import { archiveMessage, createSession, getSession, listMessages, openDatabase, upsertUser } from "../../connectors/persistence/sqlite/legacy-database.js";
 import { bootstrapRuntimeHome } from "../../agent-instance/runtime-home.js";
@@ -19,12 +20,14 @@ import { runRuntimeTurn } from "../../conversation/runtime-turn.js";
 
 type Scenario = { lines?: unknown[]; exit?: number; hang?: boolean; onSigint?: unknown[] };
 // `stdin` is undefined until the fake has read all of stdin and installed its SIGINT handler.
-type Call = { argv: string[]; cwd: string; stdin?: string; pid: number; cache: string | null };
+// `mcp` describes the --mcp-config file as the fake saw it; `envHash` is a hash of the child's whole environment.
+type Call = { argv: string[]; cwd: string; stdin?: string; pid: number; cache: string | null; envHash: string; mcp?: { dirMode: number; fileMode: number; contents: unknown } | null };
 
 // A fake `claude` that records its call (argv, cwd, pid) before anything else, so a short timeout cannot
 // kill it unrecorded. It then records stdin and replays recorded stream-json lines.
 const fakeScript = `
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const dir = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +35,12 @@ const argv = process.argv.slice(2);
 const calls = join(dir, "calls.jsonl");
 let index = 0;
 try { index = readFileSync(calls, "utf8").split("\\n").filter(Boolean).length; } catch {}
-appendFileSync(calls, JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid, cache: process.env.ENABLE_PROMPT_CACHING_1H ?? null }) + "\\n");
+const envHash = createHash("sha256").update(JSON.stringify(Object.entries(process.env).sort(([a], [b]) => a < b ? -1 : 1))).digest("hex");
+const config = argv.find((arg) => arg.startsWith("--mcp-config="))?.slice("--mcp-config=".length);
+let mcp;
+// A missing file is recorded as null, so the call itself is still recorded.
+try { mcp = config ? { dirMode: statSync(dirname(config)).mode & 0o777, fileMode: statSync(config).mode & 0o777, contents: JSON.parse(readFileSync(config, "utf8")) } : undefined; } catch { mcp = null; }
+appendFileSync(calls, JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid, cache: process.env.ENABLE_PROMPT_CACHING_1H ?? null, envHash, mcp }) + "\\n");
 const scenarios = JSON.parse(readFileSync(join(dir, "scenario.json"), "utf8"));
 const scenario = scenarios[Math.min(index, scenarios.length - 1)];
 const flag = argv.findIndex((arg) => arg === "--session-id" || arg === "--resume");
@@ -649,5 +657,210 @@ test("a throwing denial listener never changes the Turn outcome", async () => {
     const id = await runtime.createSession(fake.dir, "personality");
     assert.deepEqual(await collect(runtime.runTurn(id, "question")), [{ type: "answer", text: "ok" }]);
     assert.deepEqual(reported, [[id, 1, true]]);
+  } finally { await fake.cleanup(); }
+});
+
+// Fake secret values: they may appear only inside the per-Turn config file.
+const kgSecret = "kg-fake-secret-value-123";
+const docsSecret = "docs-fake-secret-value-456";
+const connections: TurnConnections = {
+  mcpServers: {
+    kg: { type: "stdio", command: "npx", args: ["-y", "kg-server"], env: { KG_TOKEN: kgSecret } },
+    docs: { type: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: `Bearer ${docsSecret}` } },
+  },
+  allowedTools: ["mcp__kg__search", "mcp__kg__get_page", "mcp__docs"],
+};
+const initWithServers = { ...init, mcp_servers: [
+  { name: "global-a", status: "connected", source: "user" },
+  { name: "kg", status: "connected", source: "dynamic" },
+  { name: "docs", status: "needs-auth", source: "dynamic" },
+] };
+const baseArgs = (id: string) => ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+  "--session-id", id, "--append-system-prompt=personality", "--system-prompt-snapshot", "off", "--permission-prompts", "none"];
+
+// Per-Turn config directories made by this test process. Tests in one file run one at a time.
+async function ownMcpConfigDirs(): Promise<string[]> {
+  return (await readdir(tmpdir())).filter((name) => name.startsWith(`inoai-mcp-${process.pid}-`));
+}
+
+function mcpConfigArg(call: Call): string {
+  const configs = call.argv.filter((arg) => arg.startsWith("--mcp-config"));
+  assert.equal(configs.length, 1);
+  return configs[0]!.slice("--mcp-config=".length);
+}
+
+async function exists(path: string): Promise<boolean> {
+  return stat(path).then(() => true, () => false);
+}
+
+test("a Turn with connections passes a private --mcp-config file and merged --allowedTools, then removes the file", async () => {
+  const fake = await fakeCli([{ lines: [initWithServers, success("ok")] }, { lines: [init, success("plain")] }]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, allowedTools: ["WebFetch", "mcp__kg__search"], model: "sonnet" });
+    const id = await runtime.createSession(fake.dir, "personality");
+    const events = await collect(runtime.runTurn(id, "question", { connections }));
+    assert.deepEqual(events, [
+      { type: "connection_status", connections: [{ name: "kg", status: "connected" }, { name: "docs", status: "needs_auth" }] },
+      { type: "answer", text: "ok" },
+    ]);
+    const other = await runtime.createSession(fake.dir, "personality");
+    await collect(runtime.runTurn(other, "question"));
+    const [withConnections, without] = await fake.calls();
+
+    const config = mcpConfigArg(withConnections!);
+    assert.match(config, new RegExp(`^${tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/inoai-mcp-${process.pid}-[^/]+/mcp\\.json$`));
+    assert.deepEqual(withConnections!.argv, [...baseArgs(id), `--mcp-config=${config}`,
+      "--allowedTools=WebFetch,mcp__kg__search,mcp__kg__get_page,mcp__docs", "--model=sonnet"]);
+    assert.deepEqual(without!.argv, [...baseArgs(other), "--allowedTools=WebFetch,mcp__kg__search", "--model=sonnet"]);
+    for (const arg of withConnections!.argv) {
+      assert.doesNotMatch(arg, /^--(strict-mcp-config|tools|disallowed-?tools)\b/i);
+      assert.equal(arg.includes(kgSecret) || arg.includes(docsSecret), false, "no secret value in argv");
+    }
+    assert.deepEqual(withConnections!.mcp, { dirMode: 0o700, fileMode: 0o600, contents: { mcpServers: connections.mcpServers } });
+    assert.equal(without!.mcp, undefined);
+    // The child's environment is the same with and without connections.
+    assert.equal(withConnections!.envHash, without!.envHash);
+    assert.equal(await exists(config), false);
+    assert.deepEqual(await ownMcpConfigDirs(), []);
+  } finally { await fake.cleanup(); }
+});
+
+test("a Turn with no connections keeps today's args", async () => {
+  const fake = await fakeCli([{ lines: [initWithServers, success("ok")] }]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable });
+    const ids: string[] = [];
+    for (const options of [undefined, {}, { connections: { mcpServers: {}, allowedTools: [] } }]) {
+      const id = await runtime.createSession(fake.dir, "personality");
+      ids.push(id);
+      assert.deepEqual(await collect(runtime.runTurn(id, "question", options)), [{ type: "answer", text: "ok" }]);
+    }
+    const calls = await fake.calls();
+    assert.deepEqual(calls.map((call) => call.argv), ids.map(baseArgs));
+    assert.deepEqual(await ownMcpConfigDirs(), []);
+  } finally { await fake.cleanup(); }
+});
+
+test("the per-Turn config directory is removed after failure, timeout, cancel, spawn failure, and close", async () => {
+  const fake = await fakeCli([
+    { lines: [initWithServers, aborted] },
+    { hang: true, lines: [initWithServers] },
+    { lines: [initWithServers, delta("partial")], onSigint: [aborted] },
+    { hang: true, lines: [initWithServers, delta("working")] },
+  ]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable, idleTimeoutMs: 1_000 });
+    const failed = await runtime.createSession(fake.dir, "personality");
+    assert.equal((await failure(runtime.runTurn(failed, "question", { connections }))).kind, "uncertain");
+    const timedOut = await runtime.createSession(fake.dir, "personality");
+    assert.equal((await failure(runtime.runTurn(timedOut, "question", { connections }))).kind, "timed_out");
+
+    const cancelled = await runtime.createSession(fake.dir, "personality");
+    const iterator = runtime.runTurn(cancelled, "question", { connections })[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).value?.type, "connection_status");
+    assert.equal((await iterator.next()).value?.type, "progress");
+    await runtime.cancel(cancelled);
+    await assert.rejects(iterator.next(), (error: unknown) => error instanceof RuntimeFailure && error.kind === "cancelled");
+
+    const closed = await runtime.createSession(fake.dir, "personality");
+    const open = runtime.runTurn(closed, "question", { connections })[Symbol.asyncIterator]();
+    assert.equal((await open.next()).value?.type, "connection_status");
+    assert.equal((await open.next()).value?.type, "progress");
+    const configs = (await fake.calls()).map(mcpConfigArg);
+    assert.equal(await exists(configs[3]!), true);
+    // close() removes the directory even while the paused Turn has not resumed.
+    await runtime.close();
+    assert.deepEqual(await ownMcpConfigDirs(), []);
+    await assert.rejects(open.next(), (error: unknown) => error instanceof RuntimeFailure && error.kind === "uncertain");
+
+    assert.equal(configs.length, 4);
+    for (const config of configs) assert.equal(await exists(config), false);
+
+    // A CLI that cannot be spawned fails before start; each retry attempt removes its own directory.
+    const missing = new ClaudeRuntime({ executable: join(fake.dir, "missing-claude") });
+    const id = await missing.createSession(fake.dir, "personality");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await failure(missing.runTurn(id, "question", { connections }));
+      assert.equal(error.kind, "pre_start");
+      assert.equal(error.replaySafe, true);
+    }
+    assert.deepEqual(await ownMcpConfigDirs(), []);
+  } finally { await fake.cleanup(); }
+});
+
+test("init mcp_servers statuses map to connection statuses for the Turn's connections only", () => {
+  const servers = [
+    { name: "global-a", status: "connected", source: "user" },
+    { name: "plugin:x", status: "needs-auth", source: "plugin" },
+    { name: "a", status: "connected", source: "dynamic" },
+    { name: "b", status: "failed", source: "dynamic" },
+    { name: "c", status: "needs-auth", source: "dynamic" },
+    { name: "d", status: "pending", source: "dynamic" },
+    { name: "e", status: "disabled", source: "dynamic" },
+    { name: "f", source: "dynamic" },
+    null, "g", { status: "connected" },
+  ];
+  assert.deepEqual(connectionStatuses(["a", "b", "c", "d", "e", "f", "g", "missing"], servers), [
+    { name: "a", status: "connected" }, { name: "b", status: "failed" }, { name: "c", status: "needs_auth" },
+    { name: "d", status: "unknown" }, { name: "e", status: "unknown" }, { name: "f", status: "unknown" },
+    { name: "g", status: "failed" }, { name: "missing", status: "failed" },
+  ]);
+  assert.deepEqual(connectionStatuses(["a"], undefined), [{ name: "a", status: "failed" }]);
+});
+
+test("startup cleanup removes leftover config directories of processes that are no longer running", async () => {
+  const root = await mkdtemp(join(tmpdir(), "inoai-mcp-cleanup-root-"));
+  try {
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    const dead = exited.pid;
+    assert.ok(dead > 0);
+    const leftover = join(root, `inoai-mcp-${dead}-abc123`);
+    await mkdir(join(leftover, "nested"), { recursive: true });
+    await writeFile(join(leftover, "mcp.json"), "{}", { mode: 0o600 });
+    const live = join(root, `inoai-mcp-${process.pid}-def456`);
+    await mkdir(live);
+    const unrelated = join(root, "other-dir");
+    await mkdir(unrelated);
+    const target = join(root, "target");
+    await mkdir(target);
+    const link = join(root, `inoai-mcp-${dead}-link`);
+    await symlink(target, link);
+    const file = join(root, `inoai-mcp-${dead}-file`);
+    await writeFile(file, "x");
+
+    await removeLeftoverMcpConfigDirs(root);
+    assert.equal(await exists(leftover), false);
+    assert.equal(await exists(live), true, "a running process keeps its directory");
+    assert.equal(await exists(unrelated), true);
+    assert.equal(await exists(link), true, "a symlink is never followed or removed");
+    assert.equal(await exists(target), true);
+    assert.equal(await exists(file), true);
+    // A missing root is not an error.
+    await removeLeftoverMcpConfigDirs(join(root, "missing"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("close while the config file is being written never spawns the CLI and removes the directory", async () => {
+  const fake = await fakeCli([{ lines: [initWithServers, success("ok")] }]);
+  try {
+    const runtime = new ClaudeRuntime({ executable: fake.executable });
+    const id = await runtime.createSession(fake.dir, "personality");
+    // A large payload keeps the write pending long enough to close during it.
+    const large: TurnConnections = { mcpServers: { kg: { type: "stdio", command: "npx", args: ["x".repeat(64 * 1024 * 1024)] } }, allowedTools: [] };
+    const pending = failure(runtime.runTurn(id, "question", { connections: large }));
+    // Close once the file is open and the write is in progress, not before it starts.
+    let opened = false;
+    for (let i = 0; i < 100_000 && !opened; i++) {
+      const [dir] = await ownMcpConfigDirs();
+      opened = dir !== undefined && await exists(join(tmpdir(), dir, "mcp.json"));
+      if (!opened) await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(opened, true, "the config file write started");
+    await runtime.close();
+    const error = await pending;
+    assert.equal(error.kind, "pre_start");
+    assert.equal(error.replaySafe, true);
+    assert.deepEqual(await fake.calls(), [], "the CLI was never spawned");
+    assert.deepEqual(await ownMcpConfigDirs(), []);
   } finally { await fake.cleanup(); }
 });

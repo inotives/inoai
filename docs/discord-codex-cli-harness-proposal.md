@@ -281,7 +281,7 @@ See [plan review](archived/plan-review.md), [domain language](../CONTEXT.md), an
 
 The local SPA provides an operational view for one deployed Agent Instance. Start it with `inoai ui --connect-dir <runtime-home>`; it listens on `127.0.0.1` at port `8989` by default. Use `--port` to select another local port.
 
-- The UI reads only the selected runtime home's SQLite database. Its only writes are Task create, edit, run now, pause, resume, and cancel ([ADR 0026](adr/0026-ui-writes-tasks-directly.md)), and role equip and unequip ([ADR 0031](adr/0031-equippable-roles.md)), through short-lived SQLite connections. It never reads `.env`.
+- The UI reads the selected runtime home's SQLite database, Task `result.md` files, role files in `roles/`, and `connections.json` (only each connection's name, type, allow list, and status; [ADR 0032](adr/0032-external-app-connections.md)). Its only writes are Task create, edit, run now, pause, resume, and cancel ([ADR 0026](adr/0026-ui-writes-tasks-directly.md)), and role equip and unequip ([ADR 0031](adr/0031-equippable-roles.md)), through short-lived SQLite connections. It never reads `.env`.
 - Keep the server bound to `127.0.0.1`. Every request needs a `Host` of `127.0.0.1:<port>` or `localhost:<port>`; any other Host gets 403 on every path. `/` accepts GET and HEAD, `/api/ui-data` accepts GET, other methods get 405, and unknown paths get 404. Remote access, tunneling, and multi-agent browsing are out of scope.
 - Show the selected agent profile and runtime status, heartbeat history, conversations, and Memory review data.
 - Keep credentials, tokens, raw environment variables, and sensitive Discord metadata out of UI responses.

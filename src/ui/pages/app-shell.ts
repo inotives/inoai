@@ -218,7 +218,7 @@ export function renderAppShell(token: string): string {
 
 <script type="module">
 // ---------- data ----------
-const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], roles: { equipped: null, list: [] }, insights: null };
+const EMPTY = { profile: { agentInstanceId: 'unknown', provider: 'unknown', transport: 'unknown', workspaceIds: [], status: 'unknown' }, metrics: { messages24h: 0, messages30d: 0, failedReplies24h: 0, failedReplies30d: 0, activeSessions: 0, messagesPerSession: 0 }, agentMarkdown: '', skills: [], skillDetails: [], tasks: [], taskRuns: [], tools: [], health: [], messages: [], memories: [], roles: { equipped: null, list: [] }, connections: { state: 'absent', list: [] }, insights: null };
 async function loadData() {
   try {
     const data = await (await fetch('/api/ui-data', { cache: 'no-store' })).json();
@@ -905,6 +905,58 @@ function roleBlock(v) {
       : empty('No role files in roles/')));
 }
 // ---------- end roles ----------
+// ---------- connections ----------
+// The read-only Connections block in the agent profile reads view.data.connections (IP-0009).
+// It shows only each connection's name, type, allow list, and last status. It has no write
+// controls. All values reach the page as text nodes.
+const CONNECTION_PILLS = { connected: ['active', 'connected'], failed: ['failed', 'failed'], needs_auth: ['pending', 'needs auth'], unknown: ['unknown', 'unknown'] };
+const NOT_USED_PILL = ['not-used', 'not used yet'];
+const CONNECTION_ORDER = ['connected', 'failed', 'needs auth', 'unknown', 'not used yet'];
+// The Connections block starts collapsed, like the Role block.
+let connectionsOpen = false;
+const connectionPill = (c) => c.status === null ? NOT_USED_PILL : CONNECTION_PILLS[c.status] ?? CONNECTION_PILLS.unknown;
+const allowText = (allow) => allow === 'all' ? 'all tools' : allow.length ? allow.join(', ') : 'no tools';
+// The collapsed summary: status counts such as "2 connected, 1 failed", or a file state.
+function connectionSummary(c) {
+  if (c.state === 'invalid') return 'Invalid connections.json';
+  if (c.state === 'ignored') return 'Ignored (Claude only)';
+  if (!c.list.length) return 'None';
+  const counts = {};
+  for (const x of c.list) { const label = connectionPill(x)[1]; counts[label] = (counts[label] ?? 0) + 1; }
+  return CONNECTION_ORDER.filter((label) => counts[label]).map((label) => counts[label] + ' ' + label).join(', ');
+}
+function connectionRow(x) {
+  const [state, label] = connectionPill(x);
+  return h('div', { class: 'item', 'data-connection': x.name },
+    h('div', { class: 'meta' }, h('span', { style: 'color:var(--text)' }, x.name), h('span', { 'data-type': x.type }, x.type), pill(state, label)),
+    h('p', { style: 'font-size:12px', 'data-allow': '' }, h('span', { style: 'color:var(--muted)' }, 'Tools: '), allowText(x.allow)));
+}
+function connectionsEmpty(c) {
+  if (c.state === 'invalid') return h('div', { class: 'form-error', 'data-connections-empty': 'invalid' }, 'connections.json is invalid. Turns fail until you fix it. Run inoai connections validate.');
+  if (c.state === 'ignored') return h('div', { class: 'note', style: 'margin:0', 'data-connections-empty': 'ignored' }, 'connections.json is ignored. Connections work only on Claude homes in this version.');
+  return h('div', { 'data-connections-empty': c.state }, empty(c.state === 'absent' ? 'No connections.json in this runtime home' : 'connections.json has no connections'));
+}
+function redrawConnections() {
+  if (openSection !== 'profile') return;
+  const body = document.getElementById('d-body'), scroll = body.scrollTop;
+  openDrawer('profile', true);
+  body.scrollTop = scroll;
+}
+// The Connections block in the agent profile, below the Role block.
+function connectionsBlock(v) {
+  const c = v.data.connections, open = connectionsOpen;
+  const count = c.list.length + (c.list.length === 1 ? ' connection' : ' connections');
+  return h('div', { class: 'setting', 'data-connections-block': c.state, style: 'margin:0 0 16px' },
+    h('button', { class: 'setting-head', type: 'button', 'aria-expanded': String(open), 'data-action': 'toggle-connections', onclick: () => { connectionsOpen = !open; redrawConnections(); } },
+      h('span', {}, h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'), 'Connections'),
+      h('small', {}, count)),
+    open ? null : h('div', { 'data-connections-summary': c.state, style: 'margin-top:8px;font-size:13px;overflow-wrap:anywhere' },
+      h('span', { style: c.state === 'invalid' ? 'color:var(--coral)' : c.list.length ? '' : 'color:var(--muted)' }, connectionSummary(c))),
+    h('div', { 'data-connections-body': '', style: 'margin-top:10px', ...(open ? {} : { hidden: '' }) },
+      c.list.length ? h('div', { class: 'list' }, c.list.map(connectionRow)) : connectionsEmpty(c),
+      h('div', { class: 'note' }, 'Read-only. Edit connections.json by hand.')));
+}
+// ---------- end connections ----------
 const SECTIONS = {
   profile: (v) => ({ kicker: 'agent', title: v.data.profile.agentInstanceId, body: [
     h('dl', { class: 'kv' },
@@ -914,6 +966,7 @@ const SECTIONS = {
       h('dt', {}, 'Workspaces'), h('dd', {}, v.data.profile.workspaceIds.join(', ') || '—'),
       h('dt', {}, 'Storage'), h('dd', {}, 'SQLite · Tasks and role writes')),
     roleBlock(v),
+    connectionsBlock(v),
     markdown(v.data.agentMarkdown)] }),
   health: (v) => ({ kicker: 'last 24 hours', title: v.healthPct === null ? 'No heartbeats yet' : v.healthPct + '% healthy', body: [
     h('div', { class: 'hours' }, [...v.hours].reverse().map((x) => h('div', { class: 'hour', title: x.state, style: 'color:' + STATE_CSS[x.state] }, h('i'), h('span', {}, clock(x.start))))),
@@ -1508,4 +1561,3 @@ function startScene() {
 </html>
 `;
 }
-

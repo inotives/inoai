@@ -190,6 +190,16 @@ SQLite records it in `role_equips`. A change applies from the next Turn and
 keeps the agent session.
 _Avoid_: active persona, session role
 
+**Connection**:
+An MCP server that one runtime home adds for its Agent Instance, listed by
+name in `connections.json` with a tool allow list. Its secrets are `${NAME}`
+references to the runtime home's `.env`. Claude chat Turns and Task Runs use
+it from the next Turn; Memory Reviews never do. It works only on Claude homes
+in this version
+([ADR 0032](docs/adr/0032-external-app-connections.md)). The owner's global
+MCP servers are not Connections, and neither are SQLite connections.
+_Avoid_: integration, connector, plugin
+
 **Agent Deployment**:
 The provisioning operation that creates or validates one Agent Instance's
 runtime home, selects its Chat Transport and Agent Runtime, and prepares its

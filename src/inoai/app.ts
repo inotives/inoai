@@ -1,10 +1,11 @@
 import { dirname } from "node:path";
+import { lstat } from "node:fs/promises";
 import { manageLaunchAgent, parseLaunchAgentCommand } from "./heartbeat/launchagent.js";
 import { runHeartbeat } from "./heartbeat/foreground.js";
 
 import type { AgentHistoryStore, AgentRuntime } from "./agent-runtime/ports.js";
 import { ApprovalRelay, legacyApprovalNotice, claudePermissionDenialNotifier, openCodePermissionDenialNotifier } from "./transport/approval-relay.js";
-import { ClaudeRuntime } from "./connectors/agent-runtime/claude-runtime.js";
+import { ClaudeRuntime, removeLeftoverMcpConfigDirs } from "./connectors/agent-runtime/claude-runtime.js";
 import { CodexAppServer } from "./connectors/agent-runtime/codex-app-server.js";
 import { CodexRuntime } from "./connectors/agent-runtime/codex-runtime.js";
 import { probeClaudeConcurrency, probeCodexConcurrency } from "./connectors/agent-runtime/concurrency-probe.js";
@@ -37,6 +38,9 @@ import type { TaskOperationsStore } from "./connectors/persistence/sqlite/operat
 import { manageMemoryWithStore } from "./memory/memory-operations.js";
 import { manageRoleWithStore, type RoleOperation, type RoleOperationOutput } from "./roles/role-operations.js";
 import { roleControlReply, roleStatusLine } from "./roles/role-controls.js";
+import { inspectConnections, loadResolvedConnections } from "./connections/connections-file.js";
+import { connectionsIgnoredWarning } from "./connections/turn-connections.js";
+import { connectionsStatusLine } from "./connections/connections-status.js";
 import { enabledSkillsSectionWarning, hasEnabledSkillsSection, loadAgentProfile } from "./agent-instance/profile.js";
 import { disableSkill, enableSkill, installSkillPackage, listInstalledSkills, removeSkill, updateSkillPackage } from "./skills/skill-lifecycle.js";
 import { acquireSkillPackage, updateAcquiredSkillPackage } from "./skills/skill-acquisition.js";
@@ -87,6 +91,14 @@ export async function validateProfile(launchDirectory = process.cwd(), connectDi
 
 export async function start(launchDirectory = process.cwd(), connectDirectory?: string, storeFactory?: (runtimeHome: Awaited<ReturnType<typeof validate>>["runtimeHome"]) => OperationalStore & Partial<TaskOperationsStore>) {
   const { runtimeHome, configuration } = await validate(launchDirectory, connectDirectory);
+  if (configuration.agentProvider === "claude") {
+    // An unusable file refuses startup. InvalidConnectionsError names the file and the problem, never a value.
+    await loadResolvedConnections(runtimeHome);
+    await removeLeftoverMcpConfigDirs();
+  } else if (await lstat(runtimeHome.connectionsFile).then(() => true, () => false)) {
+    // Other providers never refuse to start or fail Turns because of the file, even an invalid one.
+    console.warn(`Warning: ${connectionsIgnoredWarning}`);
+  }
   const release = await acquireRuntimeHomeLock(runtimeHome);
   let store: (OperationalStore & Partial<TaskOperationsStore>) | undefined;
   try {
@@ -434,7 +446,8 @@ export async function startTransport(
       };
       await request.respond(`Project: ${session.project_path}\nSession: ${session.agent_session_id.startsWith("pending:") ? "pending" : "active"}`
         + `\nQueued: ${counts.queued ?? 0}; running: ${counts.running ?? 0}; failed: ${counts.failed ?? 0}; uncertain deliveries: ${counts.uncertain_delivery ?? 0}`
-        + `\n${await roleStatusLine(store, instance.runtimeHome.rolesDirectory)}`);
+        + `\n${await roleStatusLine(store, instance.runtimeHome.rolesDirectory)}`
+        + `\n${await connectionsStatusLine(store, instance.runtimeHome.connectionsFile, instance.configuration.agentProvider)}`);
       return;
     }
     if (!worker) { await request.respond("Control unavailable. Please try again."); return; }
@@ -612,6 +625,14 @@ function parseRoleCommand(args: string[]): { operation: RoleOperation; roleId: s
   throw new Error("Usage: inoai role <list|show|equip <id>|unequip> [--connect-dir .inoai-connect*]");
 }
 
+function parseConnectionsCommand(args: string[]): { operation: "validate" | "list"; connectDirectory: string | undefined } {
+  const connectDirectory = args.length >= 2 && args.at(-2) === "--connect-dir" ? args.at(-1) : undefined;
+  const command = connectDirectory === undefined ? args : args.slice(0, -2);
+  const [operation, ...values] = command;
+  if ((operation === "validate" || operation === "list") && values.length === 0) return { operation, connectDirectory };
+  throw new Error("Usage: inoai connections <validate|list> [--connect-dir .inoai-connect*]");
+}
+
 function parseAllowlistCommand(args: string[]): { operation: AllowlistOperation; userId: string; displayName?: string; connectDirectory?: string } {
   const operation = args[0] === "allowlist:add" ? "add" : args[0] === "allowlist:disable" ? "disable" : undefined;
   const usage = "Usage: inoai allowlist:<add|disable> --user-id <id> [--display-name <name>] [--connect-dir .inoai-connect*]";
@@ -776,6 +797,21 @@ export async function run(args: string[], suppliedTransport?: ChatTransport, sup
   if (args[0] === "role") {
     const { operation, roleId, connectDirectory } = parseRoleCommand(args.slice(1));
     console.log(JSON.stringify(await manageRole(operation, roleId, process.cwd(), connectDirectory)));
+    return;
+  }
+  if (args[0] === "connections") {
+    // Reads only connections.json and .env; never opens SQLite, so it is safe while the agent runs.
+    const { operation, connectDirectory } = parseConnectionsCommand(args.slice(1));
+    const runtimeHome = resolveRuntimeHome(process.cwd(), connectDirectory);
+    const result = await inspectConnections(runtimeHome);
+    if (operation === "list") {
+      console.log(JSON.stringify(result.connections));
+      return;
+    }
+    for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
+    console.log(result.present
+      ? `inoai connections file is valid: ${runtimeHome.connectionsFile} (${result.connections.length} connection${result.connections.length === 1 ? "" : "s"})`
+      : `inoai connections: none (no connections.json in ${runtimeHome.directory})`);
     return;
   }
   if (args[0] === "validate") {

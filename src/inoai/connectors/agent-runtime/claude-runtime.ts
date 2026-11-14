@@ -1,13 +1,13 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import { RuntimeFailure, reviewInstructions } from "../../agent-runtime/ports.js";
-import type { AgentRuntime, ReviewOptions, RuntimeEvent } from "../../agent-runtime/ports.js";
+import type { AgentRuntime, ConnectionStatus, ReviewOptions, RuntimeEvent, TurnConnections, TurnOptions } from "../../agent-runtime/ports.js";
 import { killProbe, removeProbeProjectFolder } from "./concurrency-probe.js";
 
 // "new": created here and never seen to start, so the next Turn uses --session-id.
@@ -19,7 +19,7 @@ type StreamEvent = {
   event?: { type?: string; delta?: { type?: string; text?: unknown } };
   rate_limit_info?: { status?: string };
   is_error?: boolean; result?: unknown; terminal_reason?: string; errors?: unknown; permission_denials?: unknown;
-  usage?: unknown; total_cost_usd?: unknown;
+  usage?: unknown; total_cost_usd?: unknown; mcp_servers?: unknown;
 };
 type Attempt = { started: boolean; result?: StreamEvent; credentialRefused: boolean; authentication: boolean; usage: boolean; spawnFailed: boolean; timedOut: boolean; mismatched: boolean; deniedEvents: number };
 
@@ -39,6 +39,11 @@ type ReviewAttempt = { initSeen: boolean; credentialRefused: boolean; unsafe: bo
 export const claudeReviewLeftoverWarning = "Claude Memory Review: the CLI project folder for the review held unexpected files and was left in place";
 const reviewExitGraceMs = 2_000;
 
+// Per-Turn MCP config directories are named `inoai-mcp-<pid>-XXXXXX` in the system temp folder. The pid lets the
+// startup cleanup skip directories that a running inoai process (another Agent Instance) still uses.
+export const claudeMcpConfigPrefix = "inoai-mcp-";
+const mcpConfigDirPattern = /^inoai-mcp-([1-9][0-9]*)-/;
+
 const authenticationErrors = new Set(["authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required"]);
 const usageErrors = new Set(["rate_limit", "billing_error"]);
 
@@ -55,6 +60,8 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly reviewTimeoutMs: number;
   private readonly homeDir: string;
   private readonly onPermissionDenied?: PermissionDenialListener;
+  // Per-Turn MCP config directories that exist now; close() removes any left by a Turn that was not resumed.
+  private readonly mcpConfigDirs = new Set<string>();
   private closed = false;
 
   constructor({ executable = "claude", model, allowedTools, promptCacheOneHour = false, idleTimeoutMs = 300_000, reviewTimeoutMs = 600_000, homeDir = homedir(), onPermissionDenied }: ClaudeRuntimeOptions = {}) {
@@ -94,6 +101,7 @@ export class ClaudeRuntime implements AgentRuntime {
   async close(): Promise<void> {
     this.closed = true;
     await Promise.all([...this.active.values()].map((active) => this.stop(active, "SIGINT")));
+    await Promise.all([...this.mcpConfigDirs].map((dir) => this.removeMcpConfigDir(dir)));
   }
 
   async createSession(projectPath: string, instructions: string): Promise<string> {
@@ -108,16 +116,27 @@ export class ClaudeRuntime implements AgentRuntime {
     this.sessions.set(sessionId, { projectPath, instructions, state: known?.state ?? "persisted" });
   }
 
-  async *runTurn(sessionId: string, prompt: string): AsyncGenerator<RuntimeEvent> {
+  async *runTurn(sessionId: string, prompt: string, options: TurnOptions = {}): AsyncGenerator<RuntimeEvent> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("Agent Session must be started or resumed first");
     if (this.active.has(sessionId)) throw new Error("Agent Session has an active turn");
     if (this.closed) throw new RuntimeFailure("pre_start", true);
     const active: ActiveTurn = {};
     this.active.set(sessionId, active);
+    // A Turn with no connection servers runs exactly as before: no config file and today's args.
+    const connections = options.connections && Object.keys(options.connections.mcpServers).length ? options.connections : undefined;
+    let mcpConfigDir: string | undefined;
     try {
       const newSession = session.state === "new";
-      const attempt = yield* this.attempt(sessionId, session, prompt, active);
+      let mcpConfig: string | undefined;
+      if (connections) {
+        mcpConfigDir = await this.createMcpConfigDir();
+        mcpConfig = await this.writeMcpConfig(mcpConfigDir, connections);
+        // A cancel or close during the file write found no child to stop; never spawn after it.
+        if (active.cancelRequested) throw new RuntimeFailure("cancelled");
+        if (this.closed) throw new RuntimeFailure("pre_start", true);
+      }
+      const attempt = yield* this.attempt(sessionId, session, prompt, active, mcpConfig, connections);
       const { result } = attempt;
       // Classify from the final result event, not the exit code: SIGINT exits 0 and a login error can report "success".
       const answered = !attempt.spawnFailed && !attempt.credentialRefused && !attempt.mismatched
@@ -148,7 +167,37 @@ export class ClaudeRuntime implements AgentRuntime {
     } finally {
       await this.stop(active, "SIGINT");
       this.active.delete(sessionId);
+      if (mcpConfigDir) await this.removeMcpConfigDir(mcpConfigDir);
     }
+  }
+
+  // The directory is private (mkdtemp creates it with mode 0700). Its path is never logged.
+  private async createMcpConfigDir(): Promise<string> {
+    let dir: string;
+    try {
+      dir = await mkdtemp(join(tmpdir(), `${claudeMcpConfigPrefix}${process.pid}-`));
+    } catch {
+      throw new RuntimeFailure("pre_start", true);
+    }
+    this.mcpConfigDirs.add(dir);
+    return dir;
+  }
+
+  // Writes `{ "mcpServers": ... }` with mode 0600. The file holds filled-in secret values and is never logged.
+  private async writeMcpConfig(dir: string, connections: TurnConnections): Promise<string> {
+    const file = join(dir, "mcp.json");
+    try {
+      await writeFile(file, JSON.stringify({ mcpServers: connections.mcpServers }), { mode: 0o600, flag: "wx" });
+    } catch {
+      throw new RuntimeFailure("pre_start", true);
+    }
+    return file;
+  }
+
+  private async removeMcpConfigDir(dir: string): Promise<void> {
+    // A failed removal is left to the startup cleanup; the error names the path, so it is never reported.
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    this.mcpConfigDirs.delete(dir);
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -282,24 +331,30 @@ export class ClaudeRuntime implements AgentRuntime {
     await exited;
   }
 
-  private args(sessionId: string, session: SessionState): string[] {
+  private args(sessionId: string, session: SessionState, mcpConfig?: string, extraTools: readonly string[] = []): string[] {
+    // Connection tools are merged into the constructor list; a Turn without them keeps the list exactly as configured.
+    const tools = extraTools.length ? [...new Set([...(this.allowedTools ?? []), ...extraTools])] : this.allowedTools;
     return [
       "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       session.state === "new" ? "--session-id" : "--resume", sessionId,
       `--append-system-prompt=${session.instructions}`, "--system-prompt-snapshot", "off",
       "--permission-prompts", "none",
+      // Added on top of the owner's MCP config, never --strict-mcp-config. Joined for the same reason as --allowedTools.
+      // ToolSearch stays unrestricted (no --tools or --disallowedTools): deferred MCP tools load through it.
+      ...(mcpConfig ? [`--mcp-config=${mcpConfig}`] : []),
       // One `--allowedTools=` element: the CLI option is variadic, and the joined form cannot consume later arguments.
-      ...(this.allowedTools ? [`--allowedTools=${this.allowedTools.join(",")}`] : []),
+      ...(tools?.length ? [`--allowedTools=${tools.join(",")}`] : []),
       ...(this.model ? [`--model=${this.model}`] : []),
     ];
   }
 
-  private async *attempt(sessionId: string, session: SessionState, prompt: string, active: ActiveTurn): AsyncGenerator<RuntimeEvent, Attempt> {
+  private async *attempt(sessionId: string, session: SessionState, prompt: string, active: ActiveTurn, mcpConfig?: string, connections?: TurnConnections): AsyncGenerator<RuntimeEvent, Attempt> {
     const outcome: Attempt = { started: false, credentialRefused: false, authentication: false, usage: false, spawnFailed: false, timedOut: false, mismatched: false, deniedEvents: 0 };
     // No shell; stderr is discarded so raw CLI diagnostics never reach logs.
     // The 1-hour cache is added only to this child's environment; inherited cache settings are left as they are.
+    // Connections never change the environment: their secrets reach only their own servers, through the config file.
     const env = this.promptCacheOneHour ? { ...process.env, ENABLE_PROMPT_CACHING_1H: "1" } : undefined;
-    const child = spawn(this.executable, this.args(sessionId, session), { cwd: session.projectPath, stdio: ["pipe", "pipe", "ignore"], ...(env ? { env } : {}) });
+    const child = spawn(this.executable, this.args(sessionId, session, mcpConfig, connections?.allowedTools), { cwd: session.projectPath, stdio: ["pipe", "pipe", "ignore"], ...(env ? { env } : {}) });
     const lines: string[] = [];
     let ended = false;
     let wake: (() => void) | undefined;
@@ -339,7 +394,10 @@ export class ClaudeRuntime implements AgentRuntime {
           } else if (event.session_id !== sessionId) {
             outcome.mismatched = true;
             void this.stop(active, "SIGINT");
-          } else session.state = "persisted";
+          } else {
+            session.state = "persisted";
+            if (connections) yield { type: "connection_status", connections: connectionStatuses(Object.keys(connections.mcpServers), event.mcp_servers) };
+          }
         } else if (event.type === "stream_event" && event.parent_tool_use_id == null
           && event.event?.type === "content_block_delta" && event.event.delta?.type === "text_delta" && typeof event.event.delta.text === "string") {
           yield { type: "progress", text: event.event.delta.text };
@@ -371,6 +429,53 @@ export class ClaudeRuntime implements AgentRuntime {
     }
     await exited;
   }
+}
+
+/**
+ * Keeps only the Turn's connections from the init event's `mcp_servers`, in the Turn's order. Other servers (the
+ * owner's global, plugin, and claude.ai servers) are ignored. A connection missing from the list is `failed`.
+ */
+export function connectionStatuses(names: readonly string[], servers: unknown): { name: string; status: ConnectionStatus }[] {
+  const reported = new Map<string, unknown>();
+  if (Array.isArray(servers)) {
+    for (const server of servers) {
+      if (typeof server !== "object" || server === null) continue;
+      const { name, status } = server as { name?: unknown; status?: unknown };
+      if (typeof name === "string" && !reported.has(name)) reported.set(name, status);
+    }
+  }
+  return names.map((name) => ({ name, status: reported.has(name) ? mapConnectionStatus(reported.get(name)) : "failed" }));
+}
+
+function mapConnectionStatus(status: unknown): ConnectionStatus {
+  if (status === "connected" || status === "failed") return status;
+  if (status === "needs-auth") return "needs_auth";
+  return "unknown";
+}
+
+/**
+ * Removes per-Turn MCP config directories left in `root` by an inoai process that is no longer running (a crash).
+ * It removes only real directories (not symlinks) owned by this user whose name carries a pid that is not alive.
+ * Call it once at startup. Paths are never logged.
+ */
+export async function removeLeftoverMcpConfigDirs(root: string = tmpdir()): Promise<void> {
+  let names: string[];
+  try { names = await readdir(root); } catch { return; }
+  const uid = process.getuid?.();
+  await Promise.all(names.map(async (name) => {
+    const match = mcpConfigDirPattern.exec(name);
+    if (!match || processAlive(Number(match[1]))) return;
+    const path = join(root, name);
+    const stats = await lstat(path).catch(() => undefined);
+    if (!stats?.isDirectory() || (uid !== undefined && stats.uid !== uid)) return;
+    await rm(path, { recursive: true, force: true }).catch(() => undefined);
+  }));
+}
+
+// EPERM means the pid exists under another user; only ESRCH means no such process.
+function processAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 function isEmptyList(value: unknown): boolean {

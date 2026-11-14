@@ -1579,6 +1579,23 @@ export function recordRoleApplied(database: DatabaseSync, sessionId: number, rol
   return createEvent(database, { session_id: sessionId, message_id: null, event_type: "role_applied", detail: `role=${roleId ?? "none"}` }, actor);
 }
 
+/**
+ * The status from each named connection's newest `connection_status` event, across all Sessions. A name with no
+ * event is absent from the result.
+ */
+export function latestConnectionStatuses(database: DatabaseSync, names: string[]): Record<string, string> {
+  const statement = database.prepare(`SELECT detail FROM events WHERE event_type='connection_status' AND deleted_at IS NULL
+    AND substr(detail, 1, length(?)) = ? ORDER BY id DESC LIMIT 1`);
+  const statuses: Record<string, string> = {};
+  for (const name of names) {
+    const prefix = `name=${name} status=`;
+    const row = statement.get(prefix, prefix) as { detail: string | null } | undefined;
+    const status = row?.detail?.slice(prefix.length);
+    if (status && /^\S+$/.test(status)) statuses[name] = status;
+  }
+  return statuses;
+}
+
 export function failApproval(database: DatabaseSync, id: number): void {
   database.prepare(`UPDATE approvals SET state = 'failed', updated_at = unixepoch(), updated_by = 'runtime:codex'
     WHERE id = ? AND state = 'pending' AND deleted_at IS NULL`).run(id);

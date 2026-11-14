@@ -5,7 +5,8 @@ export interface AgentRuntime {
   readonly authenticationNotice?: string;
   createSession(projectPath: string, instructions: string): Promise<string>;
   resumeSession(sessionId: string, projectPath: string, instructions: string): Promise<void>;
-  runTurn(sessionId: string, prompt: string): AsyncIterable<RuntimeEvent>;
+  /** `options` is per Turn. Runtimes without connection support ignore `options.connections`. */
+  runTurn(sessionId: string, prompt: string, options?: TurnOptions): AsyncIterable<RuntimeEvent>;
   cancel(sessionId: string): Promise<void>;
   health(): { state: "ready" | "stopped" | "error" };
   close(): Promise<void>;
@@ -13,6 +14,16 @@ export interface AgentRuntime {
 }
 
 export type ReviewOptions = { signal?: AbortSignal };
+
+/**
+ * One Turn's connections: MCP server configs keyed by connection name, with references already filled in, and the
+ * extra allowed tool names. `mcpServers` holds secret values: never log, store, or print it.
+ */
+export type TurnConnections = { mcpServers: Readonly<Record<string, object>>; allowedTools: readonly string[] };
+
+export type TurnOptions = { connections?: TurnConnections };
+
+export type ConnectionStatus = "connected" | "failed" | "needs_auth" | "unknown";
 
 export const reviewInstructions = [
   "You are inoai's Memory Review summarizer. You only read the text in the user message and reply with text.",
@@ -25,6 +36,8 @@ export type RuntimeEvent =
   | { type: "progress"; text: string }
   | { type: "session"; id: string }
   | { type: "answer"; text: string }
+  // One per Turn with connections, when the runtime reports server status. Lists only the Turn's connections, in order.
+  | { type: "connection_status"; connections: { name: string; status: ConnectionStatus }[] }
   | { type: "usage"; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number; costUsd?: number };
 
 export type RuntimeFailureKind = "authentication" | "usage" | "pre_start" | "timed_out" | "cancelled" | "uncertain" | "session_missing" | "context_exhausted";

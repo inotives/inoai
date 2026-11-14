@@ -90,3 +90,5 @@ The UI redacts credential-shaped text in Task titles, instructions, expected out
 - All other UI data, including Memory, the allowlist, and sessions, stays read-only. Any further UI write needs a new decision.
 
 Amended by [ADR 0031](0031-equippable-roles.md): UI writes are now Tasks and the equipped role (`POST /api/role/equip` and `POST /api/role/unequip`).
+
+Amended by [ADR 0032](0032-external-app-connections.md): the UI also reads `connections.json`, read-only. UI data carries only each connection's name, type, allow list, and last status. The UI never writes `connections.json`.
